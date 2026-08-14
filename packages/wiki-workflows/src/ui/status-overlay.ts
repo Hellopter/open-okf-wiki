@@ -12,6 +12,7 @@ import type {
   WikiRunHandle,
   WikiRunView,
 } from "../producer-types.js";
+import { formatLocalTime } from "../time-format.js";
 import { errorMessage } from "../util.js";
 
 export type WikiOverlayKind = "run" | "agent" | "activity";
@@ -68,13 +69,13 @@ export function initialWikiOverlayState(input: { runId: string; initialTarget?: 
   };
 }
 
-export function reduceWikiOverlay(state: WikiOverlayState, action: WikiOverlayAction, itemCount: number): WikiOverlayState {
+export function reduceWikiOverlay(state: WikiOverlayState, action: WikiOverlayAction, itemCount: number, maxScroll = 0): WikiOverlayState {
   const max = Math.max(0, itemCount - 1);
-  if (action.type === "up") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor - 1, 0, max) } : { ...state, tailing: false, scroll: Math.max(0, state.scroll - 1) };
-  if (action.type === "down") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + 1, 0, max) } : { ...state, scroll: state.scroll + 1 };
-  if (action.type === "page") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + action.direction * PAGE, 0, max) } : { ...state, tailing: false, scroll: Math.max(0, state.scroll + action.direction * PAGE) };
+  if (action.type === "up") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor - 1, 0, max) } : { ...state, tailing: false, scroll: Math.max(0, (state.tailing ? maxScroll : state.scroll) - 1) };
+  if (action.type === "down") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + 1, 0, max) } : { ...state, scroll: (state.tailing ? maxScroll : state.scroll) + 1 };
+  if (action.type === "page") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + action.direction * PAGE, 0, max) } : { ...state, tailing: false, scroll: Math.max(0, (state.tailing ? maxScroll : state.scroll) + action.direction * PAGE) };
   if (action.type === "back" && state.kind !== "run") return { ...state, kind: "run", target: undefined, scroll: 0, tailing: false };
-  if (action.type === "toggleTail" && state.kind !== "run") return { ...state, tailing: !state.tailing, scroll: Number.MAX_SAFE_INTEGER };
+  if (action.type === "toggleTail" && state.kind !== "run") return { ...state, tailing: !state.tailing, scroll: maxScroll };
   if (action.type === "tab" && state.kind === "agent") {
     const tabs: InspectorTab[] = ["overview", "process", "output"];
     const index = tabs.indexOf(state.tab);
@@ -128,6 +129,7 @@ function createStatusOverlay(args: {
   let generation = 0;
   let refreshing = false;
   let now = Date.now();
+  let lastMaxScroll = 0;
   const controller = new AbortController();
   const invalidate = () => { cached = undefined; };
   const nav = () => navigationRows(view).flatMap((row) => row.target ? [row.target] : []);
@@ -215,7 +217,7 @@ function createStatusOverlay(args: {
       if (item?.kind === "agent") state = { ...state, kind: "agent", target: item.target, scroll: 0 };
       else if (item?.kind === "activity") state = { ...state, kind: "activity", scroll: 0 };
     } else {
-      state = reduceWikiOverlay(state, action, nav().length);
+      state = reduceWikiOverlay(state, action, nav().length, lastMaxScroll);
     }
     if (action.type === "filter" || before !== selectedKey(selected())) {
       inspection = undefined;
@@ -266,6 +268,7 @@ function createStatusOverlay(args: {
       const footer = overlayFooter(state, view.status, language);
       const stats = contextLine(state, current, matched, language, args.theme);
       const framed = frameWikiOverlay({ width, title: styledTitle(view, args.theme), body, stats, footer, theme: args.theme, viewport, scroll: state.scroll, tailing: state.tailing, fixedTop: FIXED_BODY_ROWS });
+      lastMaxScroll = framed.maxScroll;
       cached = { width, viewport, lines: framed.lines };
       return framed.lines;
     },
@@ -357,7 +360,7 @@ function renderActivity(entry: WikiActivityEntry, theme: unknown): string {
   const icon = failed ? "✗" : entry.severity === "warning" ? "!" : succeeded ? "✓" : "·";
   const color: ThemeColor = failed ? "error" : entry.severity === "warning" ? "warning" : succeeded ? "success" : "muted";
   const text = entry.kind === "tool" ? [entry.toolName, entry.message].filter(Boolean).join("  ") : entry.message;
-  return `${paint(theme, color, icon)} ${paint(theme, "dim", entry.at.slice(11, 19))}  ${paint(theme, color === "muted" ? "text" : color, text)}`;
+  return `${paint(theme, color, icon)} ${paint(theme, "dim", formatLocalTime(entry.at))}  ${paint(theme, color === "muted" ? "text" : color, text)}`;
 }
 
 function selectedAgent(view: WikiRunView, target: WikiAgentTarget, inspection: WikiAgentInspection | undefined) {

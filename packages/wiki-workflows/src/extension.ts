@@ -286,14 +286,14 @@ async function streamRun(
 
 function refreshLiveSurface(context: ExtensionCommandContext, view: WikiRunView): void {
   if (!context.hasUI) return;
-  if (view.status !== "running") {
-    context.ui.setStatus("wiki", themeLiveStatus(context, view));
-    context.ui.setWidget("wiki", undefined);
+  if (view.status === "running") {
+    context.ui.setStatus("wiki", undefined);
+    const lines = wikiWidgetLines(view);
+    context.ui.setWidget("wiki", lines?.map((line) => themeWikiLiveText(context.ui.theme, line)));
     return;
   }
   context.ui.setStatus("wiki", themeLiveStatus(context, view));
-  const lines = wikiWidgetLines(view);
-  context.ui.setWidget("wiki", lines?.map((line) => themeWikiLiveText(context.ui.theme, line)));
+  context.ui.setWidget("wiki", undefined);
 }
 
 function themeLiveStatus(context: ExtensionCommandContext, view: WikiRunView): string | undefined {

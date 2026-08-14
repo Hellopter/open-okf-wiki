@@ -266,8 +266,8 @@ test("status reuses one live stream and shutdown aborts it", async (t) => {
 test("hasUI refreshes footer and widget after a run", async (t) => {
   const subject = await fixture(t, { hasUI: true });
   await subject.run("auth flows");
-  assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && Boolean(text)));
-  assert.ok(subject.widgets.some(([key]) => key === "wiki"));
+  assert.ok(subject.widgets.some(([key, lines]) => key === "wiki" && Array.isArray(lines)));
+  assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && text === undefined));
 
   const current = subject.views.get("run-1");
   subject.views.set("run-1", {
@@ -279,7 +279,17 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
     },
   });
   await subject.run("status run-1");
-  assert.ok(subject.widgets.some(([, lines]) => Array.isArray(lines) && lines.some((line) => /pages\/auth\.md/.test(line))));
+  const runningWidget = [...subject.widgets].reverse().find(([key]) => key === "wiki");
+  const runningStatus = [...subject.statuses].reverse().find(([key]) => key === "wiki");
+  assert.ok(Array.isArray(runningWidget?.[1]) && runningWidget[1].some((line) => /pages\/auth\.md/.test(line)));
+  assert.equal(runningStatus?.[1], undefined);
+
+  subject.views.set("run-1", { ...subject.views.get("run-1"), status: "succeeded" });
+  await subject.run("status run-1");
+  const settledWidget = [...subject.widgets].reverse().find(([key]) => key === "wiki");
+  const settledStatus = [...subject.statuses].reverse().find(([key]) => key === "wiki");
+  assert.equal(settledWidget?.[1], undefined);
+  assert.match(String(settledStatus?.[1] ?? ""), /published|✓/);
 
   await subject.handlers.get("session_shutdown")();
   assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && text === undefined));

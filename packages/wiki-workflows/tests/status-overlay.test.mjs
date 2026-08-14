@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { formatLocalTime } from "../dist/time-format.js";
 import { frameWikiOverlay, initialWikiOverlayState, openWikiStatusOverlay, reduceWikiOverlay, wikiOverlayMaxHeight } from "../dist/ui/status-overlay.js";
 
 const lead = {
@@ -81,6 +82,35 @@ test("state reducer only models run, agent, and activity concerns", () => {
   assert.equal(state.tab, "process");
   state = reduceWikiOverlay(state, { type: "back" }, 3);
   assert.equal(state.kind, "run");
+  state = { ...state, kind: "agent", target: { kind: "lead" }, tailing: true, scroll: Number.MAX_SAFE_INTEGER };
+  state = reduceWikiOverlay(state, { type: "up" }, 3, 12);
+  assert.equal(state.tailing, false);
+  assert.equal(state.scroll, 11);
+});
+
+test("leaving process tail with up moves off the last line", async () => {
+  const process = Array.from({ length: 40 }, (_, index) => ({
+    sequence: index,
+    at: "2026-08-12T00:00:00.000Z",
+    kind: "tool",
+    severity: "info",
+    message: "",
+    toolName: `tool-${index}`,
+    summary: `file-${index}.ts`,
+    completed: true,
+  }));
+  const { component } = await componentFor(handle({
+    async inspectAgent(target) { return { ...inspection(target), process }; },
+  }), 16, { kind: "lead" }, { fg: (_color, text) => text }, { process: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  component.handleInput("t");
+  const tailed = plain(component.render(80).join("\n"));
+  assert.match(tailed, /tool-39/);
+  component.handleInput("k");
+  const stepped = plain(component.render(80).join("\n"));
+  assert.doesNotMatch(stepped, /tool-39/);
+  assert.match(stepped, /tool-3[0-8]/);
+  component.dispose();
 });
 
 test("overlay frame is bounded by Pi viewport", () => {
@@ -370,8 +400,8 @@ test("activity list shows tool success and failure without start events", async 
   component.handleInput("CONFIRM");
   await new Promise((resolve) => setImmediate(resolve));
   const rendered = plain(component.render(80).join("\n"));
-  assert.match(rendered, /✓ 00:00:02 {2}read(?:\s|$)/);
-  assert.match(rendered, /✗ 00:00:03 {2}write {2}Path is not assigned/);
+  assert.match(rendered, new RegExp(`✓ ${formatLocalTime("2026-08-12T00:00:02.000Z")} {2}read(?:\\s|$)`));
+  assert.match(rendered, new RegExp(`✗ ${formatLocalTime("2026-08-12T00:00:03.000Z")} {2}write {2}Path is not assigned`));
   assert.doesNotMatch(rendered, /read started|succeeded|write failed:/);
   assert.ok(callFor(recorded.calls, "success", /✓/));
   assert.ok(callFor(recorded.calls, "error", /Path is not assigned/));
