@@ -1,5 +1,6 @@
 import type {
   WikiAgentInspection,
+  WikiAgentStatus,
   WikiAgentTarget,
   WikiContextStats,
   WikiRunEvent,
@@ -156,7 +157,7 @@ function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string 
 function renderTaskLine(task: WikiTaskSnapshot): string {
   const attempt = task.attempts !== undefined ? `  [attempt ${task.attempts}]` : "";
   const activity = task.status === "running" ? renderTaskActivity(task) : undefined;
-  return `  ${taskIcon(task.status)} ${task.role}  ${task.id}${attempt}${activity ? `  ·  ${activity}` : ""}`;
+  return `  ${wikiAgentStatusPresentation(task.status).icon} ${task.role}  ${task.id}${attempt}${activity ? `  ·  ${activity}` : ""}`;
 }
 
 function renderTaskActivity(task: WikiTaskSnapshot): string | undefined {
@@ -166,17 +167,6 @@ function renderTaskActivity(task: WikiTaskSnapshot): string | undefined {
     case "tool": return "tool…";
     case "compacting": return "compacting…";
     default: return undefined;
-  }
-}
-
-function taskIcon(status: string | undefined): string {
-  switch (status) {
-    case "queued": return "·";
-    case "running": return "◆";
-    case "complete": return "✓";
-    case "incomplete": return "◐";
-    case "failed": return "✗";
-    default: return "·";
   }
 }
 
@@ -214,32 +204,116 @@ export function renderWikiEvent(event: WikiRunEvent): string {
   return `${prefix}${message}${taskPart}`;
 }
 
-export function renderWikiAgent(inspection: WikiAgentInspection, tab: "overview" | "process" | "output" = "overview"): string {
+export type WikiTextRole = "primary" | "label" | "muted" | "accent" | "success" | "warning" | "error";
+
+export interface WikiTextSpan {
+  text: string;
+  role: WikiTextRole;
+  emphasis?: boolean;
+}
+
+export type WikiTextLine = readonly WikiTextSpan[];
+
+export interface WikiStatusPresentation {
+  icon: string;
+  role: WikiTextRole;
+}
+
+export function wikiAgentStatusPresentation(status: WikiAgentStatus): WikiStatusPresentation {
+  switch (status) {
+    case "running": return { icon: "◆", role: "accent" };
+    case "complete": return { icon: "✓", role: "success" };
+    case "incomplete":
+    case "retrying": return { icon: "◐", role: "warning" };
+    case "failed": return { icon: "✗", role: "error" };
+    case "queued": return { icon: "·", role: "muted" };
+    case "cancelled": return { icon: "○", role: "muted" };
+  }
+}
+
+export function renderWikiAgentLines(
+  inspection: WikiAgentInspection,
+  tab: "overview" | "process" | "output" = "overview",
+): WikiTextLine[] {
   const agent = inspection.agent;
   const id = agent.target.kind === "lead" ? "lead" : `batch-${agent.target.batch}/${agent.target.taskId}`;
   const header = `Wiki ${inspection.runId}  ·  ${id}`;
   if (tab === "process") {
-    const lines = [`${header}  ·  process`];
-    if (inspection.process.length === 0) lines.push("process  unavailable for this agent");
+    const lines: WikiTextLine[] = [[
+      textSpan(header, "primary", true),
+      textSpan("  ·  process", "muted"),
+    ]];
+    if (inspection.process.length === 0) lines.push([
+      textSpan("process  ", "label"),
+      textSpan("unavailable for this agent", "muted"),
+    ]);
     else for (const entry of inspection.process) {
       const tool = entry.toolName ? ` ${entry.toolName}` : "";
       const duration = entry.durationMs === undefined ? "" : ` · ${formatDuration(entry.durationMs)}`;
-      lines.push(`${entry.completed ? "✓" : "◆"} ${entry.kind}${tool}${duration}  ${entry.message}`);
+      const role = entry.severity === "error"
+        ? "error"
+        : entry.severity === "warning"
+          ? "warning"
+          : entry.completed
+            ? "success"
+            : "accent";
+      lines.push([
+        textSpan(`${entry.completed ? "✓" : "◆"} `, role),
+        textSpan(entry.kind, role),
+        ...(tool ? [textSpan(tool, "primary")] : []),
+        ...(duration ? [textSpan(duration, "muted")] : []),
+        textSpan(`  ${entry.message}`, role === "error" || role === "warning" ? role : "primary"),
+      ]);
     }
-    return lines.join("\n");
+    return lines;
   }
   if (tab === "output") {
-    return [header, "output", inspection.handoff ?? agent.summary ?? "  No output yet."].join("\n");
+    return [
+      [textSpan(header, "primary", true)],
+      [textSpan("output", "label")],
+      ...textLines(inspection.handoff ?? agent.summary ?? "  No output yet.", inspection.handoff || agent.summary ? "primary" : "muted"),
+    ];
   }
-  const lines = [header, `${agent.role}  ${agent.status}  ·  ${agent.activity.replaceAll("_", " ")}  ·  attempt ${agent.attempt}`];
-  if (agent.activeTools.length) lines.push(`tools  ${agent.activeTools.map((tool) => tool.name).join(", ")}`);
-  if (agent.lastHeartbeatAt) lines.push(`heartbeat  ${formatLocalDateTime(agent.lastHeartbeatAt)}`);
-  if (agent.lastActivityAt) lines.push(`Pi activity  ${formatLocalDateTime(agent.lastActivityAt)}`);
-  if (agent.deadlineAt) lines.push(`deadline  ${formatLocalDateTime(agent.deadlineAt)}`);
+  const lines: WikiTextLine[] = [
+    [textSpan(header, "primary", true)],
+    [
+      textSpan(`${agent.role}  `, "primary"),
+      textSpan(agent.status, wikiAgentStatusPresentation(agent.status).role, true),
+      textSpan(`  ·  ${agent.activity.replaceAll("_", " ")}  ·  attempt ${agent.attempt}`, "muted"),
+    ],
+  ];
+  if (agent.activeTools.length) lines.push(fieldLine("tools", agent.activeTools.map((tool) => tool.name).join(", "), "accent"));
+  if (agent.lastHeartbeatAt) lines.push(fieldLine("heartbeat", formatLocalDateTime(agent.lastHeartbeatAt), "muted"));
+  if (agent.lastActivityAt) lines.push(fieldLine("Pi activity", formatLocalDateTime(agent.lastActivityAt), "muted"));
+  if (agent.deadlineAt) lines.push(fieldLine("deadline", formatLocalDateTime(agent.deadlineAt), "muted"));
   const stats = renderWikiContextStats(agent.usage);
-  if (stats) lines.push(`context  ${stats}`);
-  if (agent.summary) lines.push(`summary\n  ${agent.summary}`);
-  return lines.join("\n");
+  if (stats) lines.push(fieldLine("context", stats, "primary"));
+  if (agent.summary) {
+    lines.push([textSpan("summary", "label")]);
+    lines.push(...textLines(`  ${agent.summary}`, "primary"));
+  }
+  return lines;
+}
+
+export function renderWikiAgent(
+  inspection: WikiAgentInspection,
+  tab: "overview" | "process" | "output" = "overview",
+): string {
+  return renderWikiAgentLines(inspection, tab)
+    .map((line) => line.map((span) => span.text).join(""))
+    .join("\n");
+}
+
+function textSpan(text: string, role: WikiTextRole, emphasis?: boolean): WikiTextSpan {
+  return emphasis ? { text, role, emphasis } : { text, role };
+}
+
+function textLines(text: string, role: WikiTextRole): WikiTextLine[] {
+  return text.split("\n").map((line) => [textSpan(line, role)]);
+}
+
+function fieldLine(label: string, value: string, valueRole: WikiTextRole): WikiTextLine {
+  return [textSpan(`${label}  `, "label"), textSpan(value, valueRole)];
 }
 
 function formatDuration(milliseconds: number): string {

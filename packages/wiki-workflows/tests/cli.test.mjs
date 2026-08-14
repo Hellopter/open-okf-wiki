@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   parseWikiCliCommand,
+  renderWikiAgent,
+  renderWikiAgentLines,
   renderWikiEvent,
   renderWikiRun,
   renderWikiSnapshot,
   renderWikiRuns,
   renderWikiContextStats,
+  wikiAgentStatusPresentation,
   wikiCliHelp,
 } from "../dist/cli.js";
 
@@ -171,15 +174,25 @@ test("renders a progress card with stage, batch, and task icons", () => {
       ] },
     },
   });
-  assert.match(rendered, /Wiki run-1  update  running  \[4m12s\]/);
-  assert.match(rendered, /stage  lead · batch 2 · 3\/5 done, 1 running/);
-  assert.match(rendered, /focus  auth/);
-  assert.match(rendered, /✓ research  t1  \[attempt 1\]/);
-  assert.match(rendered, /◆ write  t2  \[attempt 2\]/);
-  assert.match(rendered, /· review  t3/);
-  assert.match(rendered, /✗ write  t4  \[attempt 1\]/);
-  assert.match(rendered, /◐ review  t5/);
-  assert.match(rendered, /last  Wrote auth\/domain\.md/);
+  assert.equal(rendered, [
+    "Wiki run-1  update  running  [4m12s]",
+    "stage  lead · batch 2 · 3/5 done, 1 running",
+    "focus  auth",
+    "",
+    "  ✓ research  t1  [attempt 1]",
+    "  ◆ write  t2  [attempt 2]",
+    "  · review  t3",
+    "  ✗ write  t4  [attempt 1]",
+    "  ◐ review  t5",
+    "last  Wrote auth/domain.md",
+  ].join("\n"));
+  for (const [status, icon] of [
+    ["queued", "·"],
+    ["running", "◆"],
+    ["complete", "✓"],
+    ["incomplete", "◐"],
+    ["failed", "✗"],
+  ]) assert.equal(wikiAgentStatusPresentation(status).icon, icon);
 });
 
 test("renders context stats for an agent", () => {
@@ -195,5 +208,89 @@ test("renders context stats for an agent", () => {
       cost: 0.012,
     }),
     "3 turns  4 tools  ↑1.2k  ↓620  ctx 8.1k/200k 4%  $0.01",
+  );
+});
+
+test("structured agent tabs preserve the exact plain-text output", () => {
+  const lastActivityAt = "2026-08-12T00:01:01.000Z";
+  const lastHeartbeatAt = "2026-08-12T00:01:02.000Z";
+  const deadlineAt = "2026-08-12T00:05:00.000Z";
+  const formatDate = (value) => new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium", timeStyle: "medium",
+  }).format(Date.parse(value));
+  const inspection = {
+    runId: "run-1",
+    agent: {
+      target: { kind: "task", batch: 2, taskId: "write-auth" },
+      role: "write",
+      status: "incomplete",
+      attempt: 2,
+      activity: "using_tool",
+      activeTools: [
+        { id: "call-1", name: "read", startedAt: lastActivityAt },
+        { id: "call-2", name: "write", startedAt: lastActivityAt },
+      ],
+      health: "healthy",
+      lastActivityAt,
+      lastHeartbeatAt,
+      deadlineAt,
+      usage: { turns: 2, toolCalls: 3 },
+      summary: "first summary line\nsecond summary line",
+    },
+    process: [],
+    handoff: "first handoff line\nsecond handoff line",
+  };
+  const expected = {
+    overview: [
+      "Wiki run-1  ·  batch-2/write-auth",
+      "write  incomplete  ·  using tool  ·  attempt 2",
+      "tools  read, write",
+      `heartbeat  ${formatDate(lastHeartbeatAt)}`,
+      `Pi activity  ${formatDate(lastActivityAt)}`,
+      `deadline  ${formatDate(deadlineAt)}`,
+      "context  2 turns  3 tools",
+      "summary",
+      "  first summary line",
+      "second summary line",
+    ].join("\n"),
+    process: [
+      "Wiki run-1  ·  batch-2/write-auth  ·  process",
+      "process  unavailable for this agent",
+    ].join("\n"),
+    output: [
+      "Wiki run-1  ·  batch-2/write-auth",
+      "output",
+      "first handoff line",
+      "second handoff line",
+    ].join("\n"),
+  };
+
+  for (const tab of ["overview", "process", "output"]) {
+    const flattened = renderWikiAgentLines(inspection, tab)
+      .map((line) => line.map((span) => span.text).join(""))
+      .join("\n");
+    assert.equal(renderWikiAgent(inspection, tab), expected[tab]);
+    assert.equal(flattened, expected[tab]);
+  }
+});
+
+test("retrying agents share one warning presentation across structured and plain output", () => {
+  const inspection = {
+    runId: "run-2",
+    agent: {
+      target: { kind: "lead" }, role: "lead", status: "retrying", attempt: 3,
+      activity: "retry_wait", activeTools: [], health: "healthy",
+    },
+    process: [],
+  };
+
+  assert.deepEqual(wikiAgentStatusPresentation("retrying"), { icon: "◐", role: "warning" });
+  assert.equal(
+    renderWikiAgent(inspection),
+    "Wiki run-2  ·  lead\nlead  retrying  ·  retry wait  ·  attempt 3",
+  );
+  assert.equal(
+    renderWikiAgentLines(inspection)[1].find((span) => span.text === "retrying")?.role,
+    "warning",
   );
 });
