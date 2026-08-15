@@ -70,8 +70,9 @@ All four execution values are integers:
 
 Timeouts count as transient failures and consume the same retry budget. Provider
 `Retry-After` values take precedence over the configured backoff base.
-`language` is passed to Lead and leaf Agents as the required reader-facing Wiki
-language.
+`language` is required for reader-facing Wiki pages and writer/reviewer
+handoffs. Research briefs are model-readable analysis and do not have to use
+that language.
 
 `generation` is optional. Its fields guide topology and content rather than
 changing runtime limits: `audience` and `purpose` define the reader contract;
@@ -170,11 +171,11 @@ receive accepted references and retrieve only the context they need.
 - The Wiki task runtime is the single retry owner. It owns configurable bounded
   fresh-session retries, concurrency admission, artifact acceptance, and
   pause/resume.
-- Transient 500/502/503/504 and network timeouts use the configured retry count.
+- Transient 400/500/502/503/504 and network timeouts use the configured retry count.
 - 429 pressure reduces delegated admission, honors `Retry-After`, and uses the
   same retry limit. Exhaustion becomes an explicit failed task receipt.
-- Authentication, billing, invalid request, and exhausted quota failures block
-  immediately instead of consuming retry budget.
+- Authentication, billing, local schema/validation, and exhausted quota failures
+  block immediately instead of consuming retry budget.
 - A timeout or cancellation aborts and disposes the Agent. Finalized Markdown
   artifacts remain eligible for later context handoff.
 - Candidate pages are deterministically validated before replacement and again

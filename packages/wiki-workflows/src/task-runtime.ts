@@ -322,12 +322,19 @@ export function classifyTaskFailure(error: unknown, aborted = false): Classified
   if (/\b429\b|too many requests|rate limit/i.test(message)) return classified("rate_limit", message, true, retryAfterMs);
   if (/\b50[0-4]\b|internal server error|service unavailable|bad gateway|gateway timeout/i.test(message)) return classified("server_error", message, true);
   if (/econnreset|socket hang up|connection reset/i.test(message)) return classified("network_reset", message, true);
-  if (/context (?:window|length)|context.*exhaust|overflow|compaction failed/i.test(message)) return classified("context_exhausted", message, true);
+  if (isContextOverflowMessage(message)) return classified("context_exhausted", message, true);
   if (/timed? out|timeout/i.test(message)) return classified("timeout", message, true);
   if (/\b401\b|unauthorized|invalid api key/i.test(message)) return classified("unauthorized", message, false);
   if (/\b403\b|forbidden/i.test(message)) return classified("forbidden", message, false);
+  // Provider HTTP 400 is often a transient gateway fault (empty body, "Invalid Request",
+  // DashScope/Qwen parameter wrapping). Retry it. Local schema/validation still fail closed.
+  if (status === 400 || /\b400\b|bad request/i.test(message)) return classified("server_error", message, true, retryAfterMs);
   if (/invalid request|schema|validation/i.test(message)) return classified(/schema|validation/i.test(message) ? "schema" : "invalid_request", message, false);
   return classified("unknown", message, false);
+}
+
+function isContextOverflowMessage(message: string): boolean {
+  return /context (?:window|length)|context.*exhaust|overflow|compaction failed|range of input length should be|4(?:00|13)\s*(?:status code)?\s*\(no body\)/i.test(message);
 }
 
 function classified(code: WikiTaskFailureCode, message: string, retryable: boolean, retryAfterMs?: number): ClassifiedFailure {

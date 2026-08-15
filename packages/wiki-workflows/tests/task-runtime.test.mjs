@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WikiTaskExecutionError, WikiTaskPauseError } from "../dist/delegate-contracts.js";
-import { WikiTaskRuntime } from "../dist/task-runtime.js";
+import { classifyTaskFailure, WikiTaskRuntime } from "../dist/task-runtime.js";
 
 function store() {
   const writes = [];
@@ -103,6 +103,57 @@ test("429 honors Retry-After, reduces shared admission to one, and retries once"
   assert.deepEqual(sleeps, [250]);
   assert.equal(attempts.get("limited"), 2);
   assert.ok(maxActiveAfterPressure <= 1);
+});
+
+test("provider HTTP 400 is a transient server error and gets one fresh session", async () => {
+  for (const error of [
+    Object.assign(new Error("400 Invalid Request"), { status: 400 }),
+    Object.assign(new Error("400 Bad Request"), { statusCode: 400 }),
+    new Error("400 status code (no body)"),
+    new Error("HTTP 400: invalid_request"),
+  ]) {
+    let calls = 0;
+    const r = runtime({ async run() {
+      calls += 1;
+      throw error;
+    } });
+    const result = await r.delegate([task("http-400")], new AbortController().signal);
+    const classified = classifyTaskFailure(error);
+    assert.equal(classified.retryable, true, error.message);
+    assert.equal(result.receipts[0].attempts, 2, error.message);
+    assert.equal(calls, 2, error.message);
+    assert.equal(result.receipts[0].error?.retryable, true, error.message);
+  }
+});
+
+test("local schema and validation failures still do not retry", async () => {
+  let calls = 0;
+  const r = runtime({ async run() {
+    calls += 1;
+    throw new WikiTaskExecutionError("Wiki page validation failed", "schema");
+  } });
+  const result = await r.delegate([task("schema")], new AbortController().signal);
+  assert.equal(calls, 1);
+  assert.equal(result.receipts[0].attempts, 1);
+  assert.equal(result.receipts[0].error?.retryable, false);
+});
+
+test("classifyTaskFailure treats provider 400 before the invalid-request trap", () => {
+  const invalid = classifyTaskFailure(Object.assign(new Error("400 Invalid Request"), { status: 400 }));
+  assert.equal(invalid.code, "server_error");
+  assert.equal(invalid.retryable, true);
+
+  const overflow = classifyTaskFailure(new Error("400 status code (no body)"));
+  assert.equal(overflow.code, "context_exhausted");
+  assert.equal(overflow.retryable, true);
+
+  const qwen = classifyTaskFailure(new Error("Range of input length should be [1, 131072]"));
+  assert.equal(qwen.code, "context_exhausted");
+  assert.equal(qwen.retryable, true);
+
+  const local = classifyTaskFailure(new Error("invalid request: missing model"));
+  assert.equal(local.code, "invalid_request");
+  assert.equal(local.retryable, false);
 });
 
 test("5xx gets exactly one fresh attempt and quota exits through control flow without retry", async () => {

@@ -104,10 +104,12 @@ disabled. The Wiki task runtime owns the configured fresh-session retry budget
 for recoverable Agent failures through `wiki.transientRetries` and
 `wiki.baseRetryDelayMs`.
 
-500-class transient failures and timeouts use exponential backoff with full
-jitter. 429 reduces shared admission, honors reset metadata, and receives at
-most `wiki.transientRetries` fresh-session retries. Exhaustion remains an
-explicit failed task receipt. 401/403, billing, invalid request, and hard quota
+500-class transient failures, provider HTTP 400, and timeouts use exponential
+backoff with full jitter. Many gateways wrap flakes as `400 Invalid Request` or
+return `400 status code (no body)`; those consume the same retry budget as 5xx.
+429 reduces shared admission, honors reset metadata, and receives at most
+`wiki.transientRetries` fresh-session retries. Exhaustion remains an explicit
+failed task receipt. 401/403, billing, local schema/validation, and hard quota
 errors are non-retryable; quota and usage-limit outcomes durably pause the run.
 
 Pause aborts in-flight Agent sessions after persisting accepted artifacts.

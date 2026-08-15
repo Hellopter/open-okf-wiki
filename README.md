@@ -70,7 +70,8 @@ Timeouts count as transient failures and consume the same retry budget. Provider
 `Retry-After` values take precedence over the configured backoff base.
 
 `language: zh` or `language: en` controls generated titles, descriptions, body
-text, delegated handoffs, and deterministic index text. Code identifiers and
+text, writer/reviewer handoffs, and deterministic index text. Research briefs
+are model-readable and do not have to use that language. Code identifiers and
 source citations remain unchanged.
 
 Each run plans and persists a versioned WikiSpec before writing pages. Published
@@ -152,11 +153,11 @@ of transient retry. It also supplies repository/path authorization,
 configurable concurrency admission and bounded fresh-session retries, durable
 artifact acceptance, deterministic validation, and atomic publication.
 
-Transient 500-class failures and timeouts use the configured fresh-session
+Transient 400/500-class failures and timeouts use the configured fresh-session
 retry count. 429 reduces delegated admission, honors `Retry-After`, and uses
 the same retry limit; exhaustion remains an explicit failed task receipt.
 Authentication, billing,
-invalid requests, and hard quota failures do not retry, and quota failures
+local schema/validation, and hard quota failures do not retry, and quota failures
 durably pause the run. Partial candidate work may remain available to resume,
 but it cannot be published without deterministic validation.
 

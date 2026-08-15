@@ -773,6 +773,30 @@ test("Pi leaf receives the configured Wiki language", async (t) => {
   assert.match(prompt, /Simplified Chinese/);
 });
 
+test("Pi research leaf does not require the Wiki reader language", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let prompt;
+  const createSession = async () => ({ session: {
+    state: {},
+    setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+    async prompt(value) { prompt = value; },
+    async waitForIdle() {}, async abort() {}, dispose() {},
+    getLastAssistantText() { return "# findings"; },
+  } });
+  const artifacts = artifactStore();
+  const runtime = new WikiTaskRuntime({
+    runId: "run-1", cwd: root, sourceScopes: { source: "source" }, candidateWikiRoot, artifactStore: artifacts,
+    agent: new PiWikiLeafAgent(artifacts, { createSession, language: "zh" }),
+  });
+
+  const result = await runtime.delegate([{
+    id: "survey", role: "research", instruction: "Survey auth", sourceScopeIds: ["source"], contextRefs: [],
+  }], new AbortController().signal);
+  assert.equal(result.status, "complete");
+  assert.match(prompt, /does not need to use the Wiki reader language/);
+  assert.doesNotMatch(prompt, /Simplified Chinese/);
+});
+
 test("Pi leaf 429 honors Retry-After through the shared runtime gate with three total requests", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   let sessions = 0;

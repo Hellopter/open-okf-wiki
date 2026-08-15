@@ -29,8 +29,11 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Disabled Pi and provider automatic retry. `WikiTaskRuntime` is the sole
   transient retry owner and permits at most one fresh session.
 - Added shared 429 admission control with `Retry-After`; hard quota and usage
-  limits durably pause the run, while authentication, billing, invalid request,
-  schema, artifact I/O, and publication I/O failures do not retry.
+  limits durably pause the run, while authentication, billing, local
+  schema/validation, artifact I/O, and publication I/O failures do not retry.
+  Provider HTTP 400 is retried as a transient Agent failure.
+- Research briefs no longer inherit the Wiki reader language. Only writer and
+  reviewer prompts require Simplified Chinese or English.
 - Publication continues to use a recoverable rename journal and atomic swap.
 
 ### Observability

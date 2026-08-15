@@ -8,7 +8,8 @@ large inventories.
 Write `brief.md` in the assigned artifact directory. It must be concise,
 model-readable Markdown and cite every factual finding with precise
 `path#Lx-Ly` evidence. Include explicit coverage, unresolved gaps, and conflicts.
-Do not return the brief as JSON or paste it into the task receipt.
+The brief does not need to use the Wiki reader language. Do not return the brief
+as JSON or paste it into the task receipt.
 
 If context becomes tight, preserve verified findings in the artifact and return
 an incomplete receipt with clear gaps. Do not turn a timeout, tool failure, or

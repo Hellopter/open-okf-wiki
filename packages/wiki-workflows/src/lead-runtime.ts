@@ -354,9 +354,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     })));
     const sessionResult = await runPiSession(policy.workspaceRoot, tools, [
         task.instruction,
-        this.options.language === "zh"
-          ? "\nUse Simplified Chinese for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged."
-          : "\nUse English for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged.",
+        leafLanguageInstruction(role, this.options.language),
         task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
         task.reviewPaths?.length ? `\nExact required review paths: ${JSON.stringify(task.reviewPaths)}` : "",
         reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
@@ -521,6 +519,15 @@ function reviewFinishTool(finish: (result: WikiReviewResult) => void): ToolDefin
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;
+}
+
+function leafLanguageInstruction(role: "researcher" | "writer" | "reviewer", language?: "zh" | "en"): string {
+  if (role === "researcher") {
+    return "\nWrite the Markdown handoff as concise model-readable analysis. It does not need to use the Wiki reader language. Keep code identifiers and citations unchanged.";
+  }
+  return language === "zh"
+    ? "\nUse Simplified Chinese for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged."
+    : "\nUse English for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged.";
 }
 
 function writerFrontmatterPrompt(generation?: WikiGenerationProfile): string {
