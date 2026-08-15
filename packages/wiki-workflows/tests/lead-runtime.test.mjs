@@ -6,6 +6,7 @@ import test from "node:test";
 import { Value } from "typebox/value";
 import { WikiTaskExecutionError } from "../dist/delegate-contracts.js";
 import { createPiLeadRuntime, PiWikiLeafAgent } from "../dist/lead-runtime.js";
+import { materializeProductionSkill } from "../dist/skill-store.js";
 import { wikiPlanParameters } from "../dist/wiki-spec.js";
 import { PiSessionObserver } from "../dist/pi-session-observer.js";
 import { WikiTaskRuntime } from "../dist/task-runtime.js";
@@ -26,13 +27,14 @@ async function workspace(t) {
   ].join("\n"));
   const candidateWikiRoot = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
   await mkdir(candidateWikiRoot, { recursive: true });
-  return { root, candidateWikiRoot };
+  const skillRoot = await materializeProductionSkill(root, "run-1");
+  return { root, candidateWikiRoot, skillRoot };
 }
 
-function request(root, candidateWikiRoot) {
+function request(root, candidateWikiRoot, skillRoot = path.join(root, ".okf-wiki", "runs", "run-1", "skill")) {
   return {
     runId: "run-1", cwd: root, operation: "regenerate", preparation: "fresh", focus: undefined,
-    inspection: {}, sourceFingerprint: "source-1", candidateWikiRoot, sourceScopeIds: [], prompt: "Build the Wiki", attempt: 1,
+    inspection: {}, sourceFingerprint: "source-1", candidateWikiRoot, skillRoot, sourceScopeIds: [], prompt: "Build the Wiki", attempt: 1,
     signal: new AbortController().signal, report: async () => {}, generation,
   };
 }
@@ -298,7 +300,7 @@ test("wiki tools use json_schema constrained sampling and reject write tasks wit
 });
 
 test("writer leaf prompt includes frontmatter example only for the writer role", async (t) => {
-  const { root, candidateWikiRoot } = await workspace(t);
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   const artifacts = artifactStore();
   const prompts = {};
   const generationWithSections = { ...generation, templates: { requiredSections: ["Behavior", "Evidence"] } };
@@ -309,6 +311,7 @@ test("writer leaf prompt includes frontmatter example only for the writer role",
     ["reviewer", { id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] }],
   ]) {
     const agent = new PiWikiLeafAgent(artifacts, {
+      skillRoot,
       createSession: async (options) => ({
         session: {
           state: {},
@@ -333,7 +336,11 @@ test("writer leaf prompt includes frontmatter example only for the writer role",
   assert.match(prompts.writer, /description: One-sentence reader summary/);
   assert.match(prompts.writer, /Overview\/Domain\/Architecture\/Module\/Flow\/Concept\/State\/Data/);
   assert.match(prompts.writer, /Required sections: Behavior, Evidence/);
+  assert.match(prompts.writer, /references\/templates\/<pageType>\.md/);
+  assert.match(prompts.writer, /flowchart/);
+  assert.match(prompts.researcher, /Write `brief\.md`/);
   assert.doesNotMatch(prompts.researcher, /type: Domain/);
+  assert.match(prompts.reviewer, /wiki_review_finish/);
   assert.doesNotMatch(prompts.reviewer, /type: Domain/);
 });
 

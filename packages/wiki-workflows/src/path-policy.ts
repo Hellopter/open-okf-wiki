@@ -9,6 +9,8 @@ export interface WorkspaceToolPolicy {
   wikiRoot: string;
   /** Optional unpublished Wiki root used by writer/reviewer tools for this run. */
   candidateWikiRoot?: string;
+  /** Optional materialized production skill; read-only for every role. */
+  skillRoot?: string;
 }
 
 export interface PermittedToolRoot {
@@ -16,7 +18,7 @@ export interface PermittedToolRoot {
   physicalRoot?: string;
 }
 
-export async function workspaceToolPolicy(cwd: string, candidateWikiRoot?: string): Promise<WorkspaceToolPolicy> {
+export async function workspaceToolPolicy(cwd: string, candidateWikiRoot?: string, skillRoot?: string): Promise<WorkspaceToolPolicy> {
   const workspace = await loadWikiWorkspace(cwd);
   const sourceRoots = new Map(workspace.sources.map((source) => [
     source.path,
@@ -28,11 +30,18 @@ export async function workspaceToolPolicy(cwd: string, candidateWikiRoot?: strin
   if (resolvedCandidateRoot === path.resolve(workspace.root)) {
     throw new Error("Workflow configuration error: candidate Wiki root must be a workspace subdirectory");
   }
+  const resolvedSkillRoot = skillRoot === undefined
+    ? undefined
+    : insideWorkspace(workspace.root, skillRoot);
+  if (resolvedSkillRoot === path.resolve(workspace.root)) {
+    throw new Error("Workflow configuration error: production skill root must be a workspace subdirectory");
+  }
   return {
     workspaceRoot: workspace.root,
     sourceRoots,
     wikiRoot: path.join(workspace.root, "wiki"),
     candidateWikiRoot: resolvedCandidateRoot,
+    skillRoot: resolvedSkillRoot,
   };
 }
 

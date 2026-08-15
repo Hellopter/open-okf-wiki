@@ -9,6 +9,10 @@ pnpm build
 pi install ./packages/wiki-workflows
 ```
 
+The host skill ships in the package (`pi.skills`) and is loaded by `pi install`,
+not from the repository `.agents/` directory. Production Lead and delegated
+sessions use a separate packaged skill copied into the run directory.
+
 Run Pi in the repository and use:
 
 ```text

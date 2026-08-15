@@ -109,7 +109,12 @@ test("production passes workspace language and Agent policy to the Lead", async 
   assert.equal(prepared.transientRetries, 3);
   assert.equal(prepared.baseRetryDelayMs, 2500);
   assert.equal(prepared.sessionTimeoutMs, 3_600_000);
+  assert.match(prepared.skillRoot, /\.okf-wiki\/runs\/.+\/skill$/);
   assert.match(prepared.prompt, /Simplified Chinese/);
+  assert.match(prepared.prompt, /Production skill directory: \.okf-wiki\/runs\/.+\/skill/);
+  assert.match(prepared.prompt, /path#Lx-Ly/);
+  assert.match(prepared.prompt, /wiki_plan/);
+  assert.doesNotMatch(prepared.prompt, /\/wiki init/);
 });
 
 test("production publishes a Spec topology and preserves reserved log", async (t) => {

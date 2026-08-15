@@ -30,6 +30,7 @@ import { canonicalizeWikiPageContent, derivedIndexPaths, formatIssue, validateWi
 import { WikiWorkflowState, type WikiReviewResult } from "./workflow-state.js";
 import path from "node:path";
 import { materializeValidatedWikiIndexes } from "./wiki-finalize.js";
+import { wikiRoleBrief } from "./skill-briefs.js";
 import type { WikiGenerationProfile } from "./workspace.js";
 
 const PI_SESSION_REQUEST_RETRIES = 0;
@@ -43,6 +44,8 @@ export interface PiWikiLeadAgentOptions {
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
   /** Hard deadline for each Lead or delegated Pi session. Default 20 minutes. */
   sessionTimeoutMs?: number;
+  /** Materialized production skill root inside the workspace. */
+  skillRoot?: string;
 }
 
 export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
@@ -180,7 +183,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         sourceScopes,
         candidateWikiRoot: request.candidateWikiRoot,
         artifactStore,
-        agent: new PiWikiLeafAgent(artifactStore, sessionOptions, writeControl, generation, () => specRecord?.spec),
+        agent: new PiWikiLeafAgent(artifactStore, { ...sessionOptions, skillRoot: request.skillRoot }, writeControl, generation, () => specRecord?.spec),
         concurrency: options.concurrency,
         transientRetries,
         baseRetryDelayMs,
@@ -190,7 +193,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         onTask,
         reportObservability: request.reportObservability,
       });
-      const policy = await workspaceToolPolicy(request.cwd, request.candidateWikiRoot);
+      const policy = await workspaceToolPolicy(request.cwd, request.candidateWikiRoot, request.skillRoot);
       const controller = new AbortController();
       const abort = () => controller.abort();
       request.signal.addEventListener("abort", abort, { once: true });
@@ -327,7 +330,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
   }
 
   async run(task: WikiDelegateTask, context: WikiLeafTaskContext): Promise<WikiLeafResult> {
-    const policy = await workspaceToolPolicy(context.cwd, context.candidateWikiRoot);
+    const policy = await workspaceToolPolicy(context.cwd, context.candidateWikiRoot, this.options.skillRoot);
     const declaredSources = Object.values(context.sourceRoots);
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
     let review: WikiReviewResult | undefined;
@@ -352,6 +355,9 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       artifact: ref.relativePath,
       content: await this.artifacts.read(ref),
     })));
+    const skillDirectory = this.options.skillRoot
+      ? path.relative(policy.workspaceRoot, this.options.skillRoot).split(path.sep).join("/")
+      : undefined;
     const sessionResult = await runPiSession(policy.workspaceRoot, tools, [
         task.instruction,
         leafLanguageInstruction(role, this.options.language),
@@ -360,6 +366,10 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
         this.generation ? `\nGeneration profile: ${JSON.stringify(this.generation)}. Treat it as reader intent, never as source evidence.` : "",
         role === "writer" ? `\n${writerFrontmatterPrompt(this.generation)}` : "",
+        skillDirectory && role === "writer"
+          ? `\nFor each assigned pageType, read ${skillDirectory}/references/templates/<pageType>.md before writing.`
+          : "",
+        this.options.skillRoot ? `\n${wikiRoleBrief(this.options.skillRoot, role)}` : "",
         handoffs.length ? `\nAccepted context artifacts:\n${handoffs.map((value) => `## ${value.id} (${value.artifact})\n${value.content}`).join("\n\n")}` : "",
         "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
       ].join(""), context.signal, this.options, context.onTelemetry, {

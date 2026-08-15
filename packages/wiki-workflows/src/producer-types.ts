@@ -223,6 +223,8 @@ export interface WikiPreparedRun {
   /** Source state pinned by the first preparation and checked on every resume. */
   sourceFingerprint: string;
   candidateWikiRoot: string;
+  /** Materialized production skill; readable by Lead and delegated Agents. */
+  skillRoot: string;
   sourceScopeIds: string[];
   language: "zh" | "en";
   generation: WikiGenerationProfile;

@@ -9,6 +9,9 @@ pnpm build
 pi install ./packages/wiki-workflows
 ```
 
+The host skill is declared in the package `pi.skills` field and loaded by
+`pi install`. It is not read from the repository `.agents/` directory.
+
 Run Pi in the repository or Wiki workspace:
 
 ```text

@@ -7,9 +7,11 @@ import { createWikiPublicationStore } from "./publication-store.js";
 import { createWikiRunSpecStore } from "./run-spec-store.js";
 import { WikiProducer } from "./producer.js";
 import type { WikiLeadRuntime, WikiPreparedRun, WikiProducerAdapters } from "./producer-types.js";
+import { wikiRoleBrief } from "./skill-briefs.js";
+import { materializeProductionSkill, skillWorkspacePath } from "./skill-store.js";
 import { finalizeWiki } from "./wiki-finalize.js";
-import { ensureWikiWorkspaceInternalIgnore, loadWikiWorkspace, type WikiGenerationProfile } from "./workspace.js";
 import type { WikiSpec } from "./wiki-spec.js";
+import { ensureWikiWorkspaceInternalIgnore, loadWikiWorkspace, type WikiGenerationProfile } from "./workspace.js";
 
 interface ProductionWikiProducerOptions {
   getModel?: () => Model<any> | undefined;
@@ -50,10 +52,12 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
       const candidateWikiRoot = input.preparation === "resume"
         ? await store.ensureCandidate(input.runId, mode)
         : await store.prepareCandidate(input.runId, mode);
+      const skillRoot = await materializeProductionSkill(workspace.root, input.runId);
       return {
         inspection,
         sourceFingerprint: inspection.sourceFingerprint,
         candidateWikiRoot,
+        skillRoot,
         sourceScopeIds: inspection.sourcePaths,
         language: workspace.language,
         generation: workspace.wiki.generation,
@@ -62,7 +66,7 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
         transientRetries: workspace.wiki.transientRetries,
         baseRetryDelayMs: workspace.wiki.baseRetryDelayMs,
         sessionTimeoutMs: workspace.wiki.sessionTimeoutSeconds * 1_000,
-        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, workspace.language, workspace.wiki.generation, published?.wikiSpec),
+        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, skillRoot, input.runId, workspace.language, workspace.wiki.generation, published?.wikiSpec),
       };
     },
     createLead(prepared) {
@@ -134,6 +138,8 @@ function leadPrompt(
   focus: string | undefined,
   inspection: WikiPreparedRun["inspection"],
   candidateWikiRoot: string,
+  skillRoot: string,
+  runId: string,
   language: "zh" | "en",
   generation: WikiGenerationProfile,
   priorWikiSpec?: WikiSpec,
@@ -141,11 +147,14 @@ function leadPrompt(
   const sourcePaths = inspection && typeof inspection === "object" && Array.isArray((inspection as { sourcePaths?: unknown }).sourcePaths)
     ? (inspection as { sourcePaths: unknown[] }).sourcePaths.filter((value): value is string => typeof value === "string")
     : [];
+  const skillDirectory = skillWorkspacePath(runId);
   return [
     `Produce a source-grounded repository Wiki using the ${operation} operation.`,
     focus ? `Prioritize this focus without omitting essential context: ${focus}` : "",
     `Declared source scopes: ${JSON.stringify(sourcePaths)}.`,
     `Candidate Wiki directory: ${candidateWikiRoot}.`,
+    `Production skill directory: ${skillDirectory}.`,
+    "When writing a page directly, read the matching template under that directory first.",
     language === "zh"
       ? "Write all reader-facing Wiki content, including titles and page body / prose, in Simplified Chinese. Keep code identifiers and source citations unchanged."
       : "Write all reader-facing Wiki content, including titles and page body / prose, in English. Keep code identifiers and source citations unchanged.",
@@ -158,5 +167,6 @@ function leadPrompt(
     "Direct Lead writing is available only for one-domain plans of at most three content pages and is permanently disabled after compaction; otherwise delegate exact-path writers.",
     "Use artifact handles for delegated results. Treat failed branches as missing coverage, never as evidence of absence.",
     "Delegate independent exact-path reviewers after writing. Reviewers must call wiki_review_finish; call wiki_finish only after every current Spec page has a passing current-revision review.",
+    wikiRoleBrief(skillRoot, "lead"),
   ].filter(Boolean).join("\n");
 }

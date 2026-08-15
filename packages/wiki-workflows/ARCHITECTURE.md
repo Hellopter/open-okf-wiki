@@ -94,6 +94,13 @@ recent work. The Wiki runtime currently uses Pi's defaults of `reserveTokens: 16
 configurable, but the Wiki runtime neither exposes them in `workspace.yaml` nor
 inherits project or user Pi settings.
 
+Those isolated sessions disable Pi skills, extensions, and prompt templates.
+Prepare copies the packaged production skill into
+`.okf-wiki/runs/<id>/skill/`, injects the assigned role brief into the prompt,
+and adds that directory as a read-only tool root so Agents can load page
+templates on demand. The host `/wiki` skill is a separate package resource and
+is not loaded into production sessions.
+
 Compaction is an intra-session context mechanism. It does not replace the
 content-addressed artifact handoff between independent Agent sessions.
 
