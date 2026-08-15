@@ -46,6 +46,11 @@ wiki:
   transientRetries: 1
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
+  maxDelegatedTasks: 24
+  maxDelegateBatches: 8
+  maxTurnsPerSession: 60
+  maxToolCallsPerSession: 120
+  models: {}
   generation:
     audience: [maintainers, integrators]
     purpose: Explain the system's domains, behavior, and extension points.
@@ -60,7 +65,7 @@ wiki:
       mustCover: [cross-domain links, operational flows]
 ```
 
-All four execution values are integers:
+All execution limit values are integers:
 
 | Setting | Default | Valid range | Meaning |
 | --- | ---: | ---: | --- |
@@ -68,9 +73,36 @@ All four execution values are integers:
 | `transientRetries` | `1` | `0..10` retries | Fresh-session retries for each transient Lead or delegated Agent failure; `0` disables them. |
 | `baseRetryDelayMs` | `1000` | `0..300000` ms | Full-jitter exponential backoff base when the provider supplies no `Retry-After`; `0` removes the local delay. |
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` seconds | Wall-clock deadline applied separately to every Lead and delegated Agent session. |
+| `maxDelegatedTasks` | `24` | `1..10000` tasks | Maximum delegated tasks started across the complete run, including resumed work but excluding retries. |
+| `maxDelegateBatches` | `8` | `1..1000` batches | Maximum asynchronous delegation batches started across the complete run. |
+| `maxTurnsPerSession` | `60` | `1..100000` turns | Hard limit for model turns in each Lead or delegated Pi session. |
+| `maxToolCallsPerSession` | `120` | `1..1000000` calls | Hard limit for tool calls in each Lead or delegated Pi session. |
 
 Timeouts count as transient failures and consume the same retry budget. Provider
 `Retry-After` values take precedence over the configured backoff base.
+Task and batch limits are run-wide and remain consumed after pause/resume.
+Turn and tool-call limits are enforced per persistent Pi session. Token, cost,
+cache, and context-window usage are reported for observation but are not hard
+limits.
+
+`models` optionally overrides the Pi model for any of `lead`, `research`,
+`write`, and `review`. Omitted roles inherit the model and thinking level active
+when the Wiki run starts. Each override requires a Pi registry `provider` and
+`id`; `thinkingLevel` is optional and accepts `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, or `max`:
+
+```yaml
+wiki:
+  models:
+    research:
+      provider: your-provider
+      id: your-model-id
+      thinkingLevel: high
+```
+
+Configured model identifiers must already exist in the active Pi model
+registry. A resumed session restores its persisted model instead of silently
+switching to a newly configured model.
 
 `language: zh` or `language: en` controls generated titles, descriptions, body
 text, writer/reviewer handoffs, and deterministic index text. Research briefs
@@ -99,7 +131,9 @@ require an external `yamlformatter`. Invalid pages are rejected before they can
 replace existing content. Publication additionally requires independent review
 coverage for the current Spec and page revisions.
 
-Every Lead and delegated Agent session enables Pi auto-compaction. When a
+Every Lead and delegated Agent attempt uses a persistent Pi session with
+auto-compaction. Pause/resume reopens the exact session, including its saved
+model, thinking level, messages, tool results, and compaction history. When a
 session approaches its context limit, Pi summarizes older context while
 keeping recent work. Pi itself supports `compaction.enabled`,
 `compaction.reserveTokens`, and `compaction.keepRecentTokens` settings. The Wiki
@@ -150,11 +184,13 @@ task receipt    small coverage/gap/error envelope
 Large prose remains in artifacts and downstream Agents retrieve it on demand.
 JSON is used only where the runtime needs validation and control signals.
 
-Pi supplies Agent sessions, model/tool execution, and context compaction. Pi
-and provider auto-retry are disabled; the Wiki task runtime is the only owner
-of transient retry. It also supplies repository/path authorization,
-configurable concurrency admission and bounded fresh-session retries, durable
-artifact acceptance, deterministic validation, and atomic publication.
+Pi supplies Agent sessions, model/tool execution, skill loading, cancellation,
+usage statistics, and context compaction. Pi and provider auto-retry are
+disabled; the Wiki task runtime is the only owner of transient retry. It also
+supplies asynchronous delegation through start/collect/cancel, repository/path
+authorization, configurable concurrency admission and bounded fresh-session
+retries, durable artifact acceptance, deterministic validation, and atomic
+publication.
 
 Transient 400/500-class failures and timeouts use the configured fresh-session
 retry count. 429 reduces delegated admission, honors `Retry-After`, and uses

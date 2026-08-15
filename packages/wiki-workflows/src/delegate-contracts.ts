@@ -1,4 +1,5 @@
 import type { WikiArtifactRef } from "./artifact-store.js";
+import type { WikiBudgetExhaustedCode } from "./failures.js";
 import type { WikiReviewResult } from "./workflow-state.js";
 
 export type WikiDelegateRole = "research" | "write" | "review";
@@ -40,9 +41,11 @@ export interface WikiDelegateReceipt {
   review?: WikiReviewResult;
 }
 
-export interface WikiDelegateBatchReceipt {
-  status: "complete" | "partial" | "failed";
+export interface WikiDelegateBatchSnapshot {
+  batchId: number;
+  status: "running" | "complete" | "partial" | "failed";
   receipts: WikiDelegateReceipt[];
+  pendingTaskIds: string[];
 }
 
 export type WikiTaskFailureCode =
@@ -60,7 +63,8 @@ export type WikiTaskFailureCode =
   | "schema"
   | "artifact_io"
   | "cancelled"
-  | "unknown";
+  | "unknown"
+  | WikiBudgetExhaustedCode;
 
 export class WikiTaskExecutionError extends Error {
   constructor(

@@ -88,6 +88,15 @@ test("production passes workspace language and Agent policy to the Lead", async 
     "  transientRetries: 3",
     "  baseRetryDelayMs: 2500",
     "  sessionTimeoutSeconds: 3600",
+    "  maxDelegatedTasks: 40",
+    "  maxDelegateBatches: 10",
+    "  maxTurnsPerSession: 75",
+    "  maxToolCallsPerSession: 220",
+    "  models:",
+    "    research:",
+    "      provider: test-provider",
+    "      id: research-model",
+    "      thinkingLevel: high",
     "sources:",
     "  - path: api",
     "    origin:",
@@ -96,7 +105,14 @@ test("production passes workspace language and Agent policy to the Lead", async 
     "",
   ].join("\n"));
   let prepared;
+  const currentModel = { provider: "test-provider", id: "current-model" };
+  const researchModel = { provider: "test-provider", id: "research-model" };
   const producer = createConfiguredWikiProducer({
+    getModel: () => currentModel,
+    getThinkingLevel: () => "medium",
+    getModelRegistry: () => ({ find(provider, id) {
+      return provider === researchModel.provider && id === researchModel.id ? researchModel : undefined;
+    } }),
     createLead(input) {
       prepared = input;
       return { async run() { throw new Error("stop after prepare"); } };
@@ -109,10 +125,14 @@ test("production passes workspace language and Agent policy to the Lead", async 
   assert.equal(prepared.transientRetries, 3);
   assert.equal(prepared.baseRetryDelayMs, 2500);
   assert.equal(prepared.sessionTimeoutMs, 3_600_000);
+  assert.deepEqual(prepared.budgets, { maxDelegatedTasks: 40, maxDelegateBatches: 10, maxTurnsPerSession: 75, maxToolCallsPerSession: 220 });
+  assert.deepEqual(prepared.models, {
+    research: { provider: "test-provider", id: "research-model", thinkingLevel: "high" },
+  });
+  assert.match(prepared.runSessionDirectory, /\.okf-wiki\/runs\/.+\/sessions$/);
   assert.match(prepared.skillRoot, /\.okf-wiki\/runs\/.+\/skill$/);
   assert.match(prepared.prompt, /Simplified Chinese/);
   assert.match(prepared.prompt, /Production skill directory: \.okf-wiki\/runs\/.+\/skill/);
-  assert.match(prepared.prompt, /path#Lx-Ly/);
   assert.match(prepared.prompt, /wiki_plan/);
   assert.doesNotMatch(prepared.prompt, /\/wiki init/);
 });
@@ -171,9 +191,29 @@ test("resume preserves the existing candidate instead of preparing it again", as
         const page = path.join(request.candidateWikiRoot, "runtime", "concepts", "runtime.md");
         if (attempt === 1) {
           await writeCandidate(request);
+          await writeFile(path.join(request.skillRoot, "RUN_MARKER.md"), "original run skill\n", "utf8");
+          await request.report("Lead identity", { phase: "agent_update", telemetry: {
+            target: { kind: "lead" }, attempt: 4, sampledAt: "2026-01-01T00:00:00.000Z",
+            activity: "streaming", activeTools: [], sessionFile: path.join(root, "lead-session.jsonl"),
+          } });
+          await request.persistTaskRuntimeState({
+            batches: [{ batchId: 1, tasks: [{
+              task: { id: "research", role: "research", instruction: "research", sourceScopeIds: [], contextRefs: [] },
+              phase: "queued", attempt: 0, collected: false,
+            }] }],
+          });
           return { kind: "pause", reason: "quota", summary: "wait" };
         }
         assert.equal(await readFile(page, "utf8"), validPage());
+        assert.equal(await readFile(path.join(request.skillRoot, "RUN_MARKER.md"), "utf8"), "original run skill\n");
+        assert.equal(request.leadSessionFile, path.join(root, "lead-session.jsonl"));
+        assert.equal(request.leadSessionAttempt, 4);
+        const nextBatchId = request.taskRuntimeState.batches.reduce(
+          (next, batch) => Math.max(next, batch.batchId + 1),
+          1,
+        );
+        assert.equal(nextBatchId, 2);
+        assert.equal(request.taskRuntimeState.batches[0].tasks[0].task.id, "research");
         return { kind: "complete", summary: "resumed" };
       },
     }),
@@ -185,6 +225,21 @@ test("resume preserves the existing candidate instead of preparing it again", as
   const result = await run.result();
   assert.equal(result.summary, "resumed");
   assert.deepEqual(result.pages, ["overview.md", "runtime/concepts/runtime.md", "runtime/domain.md"]);
+});
+
+test("production rejects an unknown configured role model", async (t) => {
+  const root = await fixture(t);
+  const source = path.join(root, "api");
+  await mkdir(source);
+  await writeFile(path.join(source, "index.ts"), "export const api = true;\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: source });
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:", "  models:",
+    "    review:", "      provider: missing", "      id: unknown", "sources:",
+    "  - path: api", "    origin:", "      type: link", `      localPath: ${JSON.stringify(source)}`, "",
+  ].join("\n"));
+  const producer = createConfiguredWikiProducer({ getModelRegistry: () => ({ find() { return undefined; } }) });
+  await assert.rejects((await producer.start({ cwd: root })).result(), /Unknown Wiki review model: missing\/unknown/);
 });
 
 test("production rejects publication when repository sources drift", async (t) => {

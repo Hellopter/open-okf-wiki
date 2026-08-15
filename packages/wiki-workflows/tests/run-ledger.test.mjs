@@ -209,7 +209,12 @@ test("agent checkpoint transaction updates sidecar, run projection, rejects stal
     activity: "streaming",
     activeTools: [],
     usage: { turns: 2, total: 140 },
-  }, "Writing", { role: "write" });
+    sessionFile: path.join(root, "runs", "run-1", "sessions", "write.jsonl"),
+  }, "Writing", { role: "write", execution: {
+    batchId: 1,
+    task: { id: "write-1", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/overview.md"] },
+    phase: "running", attempt: 2, collected: false,
+  } });
   assert.equal(event.type, "telemetry");
   const [state, record, events] = await Promise.all([
     ledger.read("run-1"),
@@ -219,6 +224,12 @@ test("agent checkpoint transaction updates sidecar, run projection, rejects stal
   assert.deepEqual(state.progress.currentBatch.tasks[0].usage, { turns: 2, total: 140 });
   assert.equal(state.progress.currentBatch.tasks[0].activity, "responding");
   assert.deepEqual(record.agent.usage, { turns: 2, total: 140 });
+  assert.equal(record.sessionFile, path.join(root, "runs", "run-1", "sessions", "write.jsonl"));
+  assert.equal(record.execution.batchId, 1);
+  assert.equal(record.execution.task.id, "write-1");
+  assert.equal(record.execution.phase, "running");
+  assert.equal(record.execution.attempt, 2);
+  assert.deepEqual(state.progress.usage, { turns: 2, total: 140 });
   assert.deepEqual(events.map(({ type }) => type), ["telemetry"]);
 
   await ledger.commitAgent("run-1", {
@@ -239,6 +250,147 @@ test("agent checkpoint transaction updates sidecar, run projection, rejects stal
   assert.equal(stale, undefined);
   assert.deepEqual((await ledger.readAgent("run-1", { kind: "task", batch: 1, taskId: "write-1" })).agent.usage, { turns: 2, total: 140 });
   assert.equal((await ledger.read("run-1")).lastEventSequence, 3);
+});
+
+test("run usage overwrites duplicate telemetry by target and attempt while retaining retry usage", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-ledger-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const ledger = createWikiRunLedger(root);
+  await ledger.create({ id: "run-1", cwd: root, operation: "update", at: "2026-01-01T00:00:00.000Z" });
+  await ledger.append("run-1", {
+    at: "2026-01-01T00:00:01.000Z", type: "progress", message: "lead",
+    data: { stage: "lead", budgets: { maxDelegatedTasks: 24, maxDelegateBatches: 8, maxTurnsPerSession: 60, maxToolCallsPerSession: 120 } },
+  });
+  const checkpoint = async (attempt, turns, total, at) => await ledger.commitAgent("run-1", {
+    target: { kind: "lead" }, attempt, sampledAt: at, activity: "streaming", activeTools: [], usage: { turns, total },
+  }, "usage");
+  await checkpoint(1, 2, 100, "2026-01-01T00:00:02.000Z");
+  await checkpoint(1, 3, 150, "2026-01-01T00:00:03.000Z");
+  await checkpoint(2, 1, 40, "2026-01-01T00:00:04.000Z");
+  const state = await ledger.read("run-1");
+  assert.deepEqual(state.progress.usage, { turns: 4, total: 190 });
+  assert.deepEqual(state.progress.budgets, { maxDelegatedTasks: 24, maxDelegateBatches: 8, maxTurnsPerSession: 60, maxToolCallsPerSession: 120 });
+  assert.equal(Object.keys(state.usageByAttempt).length, 2);
+
+  const file = path.join(root, "runs", "run-1", "run-state.json");
+  const raw = JSON.parse(await readFile(file, "utf8"));
+  delete raw.usageByAttempt;
+  delete raw.progress.usage;
+  delete raw.progress.budgets;
+  await writeFile(file, `${JSON.stringify(raw, null, 2)}\n`);
+  const old = await ledger.read("run-1");
+  assert.equal(old.progress.usage, undefined);
+  assert.equal(old.progress.budgets, undefined);
+});
+
+test("task runtime state survives restart with interleaved batches, duplicate task IDs, and attempts", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-ledger-runtime-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const ledger = createWikiRunLedger(root);
+  await ledger.create({ id: "run-1", cwd: root, operation: "update", at: "2026-01-01T00:00:00.000Z" });
+  await ledger.append("run-1", { at: "2026-01-01T00:00:01.000Z", type: "progress", message: "lead", data: { stage: "lead" } });
+  const task = (id, role = "research") => ({ id, role, instruction: `${role} ${id}`, sourceScopeIds: [], contextRefs: [] });
+  const receipt = { id: "done", role: "research", status: "complete", summary: "done", outputs: [], coverage: ["covered"], gaps: [], attempts: 1 };
+  const runtime = {
+    batches: [
+      { batchId: 1, tasks: [{ task: task("shared"), phase: "queued", attempt: 0, collected: false }] },
+      { batchId: 2, tasks: [
+        { task: task("done"), phase: "terminal", attempt: 1, collected: false, receipt },
+        { task: task("shared", "write"), phase: "running", attempt: 2, collected: false, sessionFile: path.join(root, "sessions", "shared.jsonl") },
+      ] },
+    ],
+  };
+  await ledger.commitTaskRuntimeState("run-1", runtime, "2026-01-01T00:00:02.000Z");
+
+  const restarted = createWikiRunLedger(root);
+  assert.deepEqual(await restarted.readTaskRuntimeState("run-1"), runtime);
+  const state = await restarted.read("run-1");
+  assert.equal(state.taskRuntime, undefined);
+  const rawState = JSON.parse(await readFile(path.join(root, "runs", "run-1", "run-state.json"), "utf8"));
+  assert.equal("taskRuntime" in rawState, false);
+  assert.deepEqual(state.progress.batches.map((batch) => [batch.batch, batch.tasks.map((entry) => entry.id)]), [
+    [1, ["shared"]], [2, ["done", "shared"]],
+  ]);
+  assert.equal((await restarted.readAgent("run-1", { kind: "task", batch: 1, taskId: "shared" })).execution.phase, "queued");
+  assert.equal((await restarted.readAgent("run-1", { kind: "task", batch: 2, taskId: "shared" })).execution.attempt, 2);
+
+  const accepted = await restarted.commitAgent("run-1", {
+    target: { kind: "task", batch: 2, taskId: "shared" }, attempt: 2,
+    sampledAt: "2026-01-01T00:00:03.000Z", activity: "streaming", activeTools: [], usage: { turns: 3 },
+  }, "resumed telemetry", { role: "write" });
+  assert.equal(accepted.type, "telemetry");
+  const stale = await restarted.commitAgent("run-1", {
+    target: { kind: "task", batch: 2, taskId: "shared" }, attempt: 1,
+    sampledAt: "2026-01-01T00:00:04.000Z", usage: { turns: 99 },
+  }, "stale telemetry", { role: "write" });
+  assert.equal(stale, undefined);
+  assert.deepEqual((await restarted.readAgent("run-1", { kind: "task", batch: 2, taskId: "shared" })).agent.usage, { turns: 3 });
+
+  runtime.batches[1].tasks[0].collected = true;
+  await restarted.commitTaskRuntimeState("run-1", runtime, "2026-01-01T00:00:05.000Z");
+  assert.equal((await createWikiRunLedger(root).readTaskRuntimeState("run-1")).batches[1].tasks[0].collected, true);
+});
+
+test("paused task runtime state round-trips pause reason, attempt, and exact session", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-ledger-paused-runtime-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const ledger = createWikiRunLedger(root);
+  await ledger.create({ id: "run-1", cwd: root, operation: "update", at: "2026-01-01T00:00:00.000Z" });
+  const sessionFile = path.join(root, "sessions", "research.jsonl");
+  const runtime = {
+    batches: [{ batchId: 1, tasks: [
+      {
+        task: { id: "manual-paused", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [] },
+        phase: "paused", attempt: 1, collected: false, sessionFile: path.join(root, "sessions", "write.jsonl"),
+      },
+      {
+        task: { id: "provider-paused", role: "research", instruction: "research", sourceScopeIds: [], contextRefs: [] },
+        phase: "paused", attempt: 3, collected: false, sessionFile,
+        pause: { code: "quota", message: "Provider quota exhausted", retryable: false, retryAfterMs: 30_000 },
+      },
+    ] }],
+  };
+  await ledger.commitTaskRuntimeState("run-1", runtime, "2026-01-01T00:00:01.000Z");
+
+  const restarted = createWikiRunLedger(root);
+  assert.deepEqual(await restarted.readTaskRuntimeState("run-1"), runtime);
+  const provider = await restarted.readAgent("run-1", { kind: "task", batch: 1, taskId: "provider-paused" });
+  assert.equal(provider.agent.status, "retrying");
+  assert.equal(provider.agent.activity, "retry_wait");
+  assert.equal(provider.execution.pause.code, "quota");
+  assert.equal(provider.sessionFile, sessionFile);
+  assert.equal((await restarted.read("run-1")).progress.currentBatch.tasks[0].status, "running");
+
+  await assert.rejects(ledger.commitTaskRuntimeState("run-1", {
+    batches: [{ batchId: 1, tasks: [{
+      task: runtime.batches[0].tasks[1].task, phase: "paused", attempt: 0, collected: false,
+    }] }],
+  }, "2026-01-01T00:00:02.000Z"), /Invalid Wiki task runtime task/);
+});
+
+test("task runtime checkpoint journal recovers queued, running, and terminal-uncollected sidecars atomically", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-ledger-runtime-crash-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  let armed = false;
+  const crashing = createWikiRunLedger(root, { fault(point) {
+    if (armed && point === "afterAgent") throw new Error("crash:afterAgent");
+  } });
+  await crashing.create({ id: "run-1", cwd: root, operation: "update", at: "2026-01-01T00:00:00.000Z" });
+  const definition = (id) => ({ id, role: "research", instruction: id, sourceScopeIds: [], contextRefs: [] });
+  const receipt = { id: "terminal", role: "research", status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1 };
+  const runtime = {
+    batches: [{ batchId: 1, tasks: [
+      { task: definition("queued"), phase: "queued", attempt: 0, collected: false },
+      { task: definition("running"), phase: "running", attempt: 2, collected: false, sessionFile: path.join(root, "running.jsonl") },
+      { task: definition("terminal"), phase: "terminal", attempt: 1, collected: false, receipt },
+    ] }],
+  };
+  armed = true;
+  await assert.rejects(crashing.commitTaskRuntimeState("run-1", runtime, "2026-01-01T00:00:01.000Z"), /crash:afterAgent/);
+  const recovered = createWikiRunLedger(root);
+  assert.deepEqual(await recovered.readTaskRuntimeState("run-1"), runtime);
+  assert.equal((await recovered.read("run-1")).lastEventSequence, 1);
+  await assert.rejects(readFile(path.join(root, "runs", "run-1", "pending-transaction.json")), /ENOENT/);
 });
 
 for (const faultPoint of ["afterJournal", "afterAgent", "afterState", "afterEvent", "afterActivity"]) {

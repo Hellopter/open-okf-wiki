@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { wikiRoleBrief } from "../dist/skill-briefs.js";
 import {
   PRODUCTION_SKILL_REQUIRED_FILES,
   materializeProductionSkill,
@@ -20,6 +19,10 @@ test("packaged production skill contains required files and not the host skill",
   const production = await readFile(path.join(root, "SKILL.md"), "utf8");
   assert.match(production, /wiki_plan/);
   assert.doesNotMatch(production, /\/wiki init/);
+  for (const role of ["researcher", "writer", "reviewer"]) {
+    const roleSkill = await readFile(path.join(root, "roles", role, "SKILL.md"), "utf8");
+    assert.match(roleSkill, new RegExp(`name: wiki-production-${role}`));
+  }
 });
 
 test("materialize copies the production skill into the run directory", async (t) => {
@@ -47,26 +50,27 @@ test("materialize replaces a stale copy and fails when the source tree is incomp
   await assert.rejects(materializeProductionSkill(workspace, "run-3", broken), /missing references\/common.md/);
 });
 
-test("resume rematerializes a missing production skill directory", async (t) => {
+test("resume preserves the run skill snapshot and rejects a missing snapshot", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
   const skillRoot = await materializeProductionSkill(workspace, "run-4");
+  await writeFile(path.join(skillRoot, "SNAPSHOT.md"), "pinned\n");
+  const restored = await materializeProductionSkill(workspace, "run-4", undefined, "resume");
+  assert.equal(await readFile(path.join(restored, "SNAPSHOT.md"), "utf8"), "pinned\n");
   await rm(skillRoot, { recursive: true, force: true });
-  const restored = await materializeProductionSkill(workspace, "run-4");
-  await readFile(path.join(restored, "SKILL.md"), "utf8");
+  await assert.rejects(materializeProductionSkill(workspace, "run-4", undefined, "resume"), /missing SKILL\.md/);
 });
 
-test("role briefs load assigned files and reject missing ones", async (t) => {
+test("role skills point to the shared and assigned production references", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
   const skillRoot = await materializeProductionSkill(workspace, "run-5");
-  const lead = wikiRoleBrief(skillRoot, "lead");
-  assert.match(lead, /wiki_plan/);
-  assert.match(lead, /path#Lx-Ly/);
-  assert.doesNotMatch(lead, /\/wiki init/);
-  assert.match(wikiRoleBrief(skillRoot, "researcher"), /Write `brief\.md`/);
-  assert.match(wikiRoleBrief(skillRoot, "writer"), /templates\/<pageType>\.md/);
-  assert.match(wikiRoleBrief(skillRoot, "reviewer"), /wiki_review_finish/);
-  await rm(path.join(skillRoot, "references", "write.md"));
-  assert.throws(() => wikiRoleBrief(skillRoot, "writer"), /missing references\/write.md/);
+  const researcher = await readFile(path.join(skillRoot, "roles", "researcher", "SKILL.md"), "utf8");
+  const writer = await readFile(path.join(skillRoot, "roles", "writer", "SKILL.md"), "utf8");
+  const reviewer = await readFile(path.join(skillRoot, "roles", "reviewer", "SKILL.md"), "utf8");
+  assert.match(researcher, /references\/research\.md/);
+  assert.match(researcher, /wiki_research_finish/);
+  assert.match(writer, /references\/write\.md/);
+  assert.match(reviewer, /references\/review\.md/);
+  assert.match(reviewer, /wiki_review_finish/);
 });

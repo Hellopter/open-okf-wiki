@@ -66,6 +66,11 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.wiki.transientRetries, 1);
   assert.equal(workspace.wiki.baseRetryDelayMs, 1000);
   assert.equal(workspace.wiki.sessionTimeoutSeconds, 1200);
+  assert.equal(workspace.wiki.maxDelegatedTasks, 24);
+  assert.equal(workspace.wiki.maxDelegateBatches, 8);
+  assert.equal(workspace.wiki.maxTurnsPerSession, 60);
+  assert.equal(workspace.wiki.maxToolCallsPerSession, 120);
+  assert.deepEqual(workspace.wiki.models, {});
   assert.deepEqual(workspace.wiki.generation, {
     audience: [], purpose: "", focus: { include: [], exclude: [] },
     granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] },
@@ -90,6 +95,15 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     "  transientRetries: 3",
     "  baseRetryDelayMs: 2500",
     "  sessionTimeoutSeconds: 3600",
+    "  maxDelegatedTasks: 48",
+    "  maxDelegateBatches: 12",
+    "  maxTurnsPerSession: 80",
+    "  maxToolCallsPerSession: 240",
+    "  models:",
+    "    research:",
+    "      provider: anthropic",
+    "      id: claude-sonnet",
+    "      thinkingLevel: high",
     "sources: []",
     "",
   ].join("\n");
@@ -102,6 +116,11 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     transientRetries: 3,
     baseRetryDelayMs: 2500,
     sessionTimeoutSeconds: 3600,
+    maxDelegatedTasks: 48,
+    maxDelegateBatches: 12,
+    maxTurnsPerSession: 80,
+    maxToolCallsPerSession: 240,
+    models: { research: { provider: "anthropic", id: "claude-sonnet", thinkingLevel: "high" } },
     generation: {
       audience: [], purpose: "", focus: { include: [], exclude: [] },
       granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] },
@@ -115,9 +134,23 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 0"],
     ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 1.5"],
     ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 2147484"],
+    ["  maxDelegatedTasks: 48", "  maxDelegatedTasks: 0"],
+    ["  maxDelegateBatches: 12", "  maxDelegateBatches: 0"],
+    ["  maxTurnsPerSession: 80", "  maxTurnsPerSession: 0"],
+    ["  maxToolCallsPerSession: 240", "  maxToolCallsPerSession: 0"],
   ]) {
     await writeFile(configPath, validConfig.replace(valid, invalid));
     await assert.rejects(loadWikiWorkspace(root), /must be an integer/);
+  }
+
+  for (const invalid of [
+    validConfig.replace("      thinkingLevel: high", "      thinkingLevel: enormous"),
+    validConfig.replace("      provider: anthropic", "      provider: ''"),
+    validConfig.replace("      id: claude-sonnet", "      unknown: claude-sonnet"),
+    validConfig.replace("  exclude: []", "  unexpected: true"),
+  ]) {
+    await writeFile(configPath, invalid);
+    await assert.rejects(loadWikiWorkspace(root), /thinking level|non-empty string|unknown field/);
   }
 });
 

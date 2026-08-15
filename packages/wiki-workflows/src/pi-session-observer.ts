@@ -131,7 +131,7 @@ export class PiSessionObserver {
         this.activeTools.delete(event.toolCallId);
         this.activity = this.activeTools.size > 0
           ? "using_tool"
-          : event.toolName === "wiki_delegate" ? "synthesizing"
+          : isDelegateTool(event.toolName) ? "synthesizing"
           : event.toolName === "wiki_finish" ? "finishing"
           : "waiting_model";
         this.addProcess({
@@ -220,6 +220,7 @@ export class PiSessionObserver {
       deadlineAt: this.deadlineAt,
       process: this.process.map((entry) => ({ ...entry })),
       ...(includeUsage ? { usage: readSessionUsage(this.session) } : {}),
+      ...(this.session.sessionFile ? { sessionFile: this.session.sessionFile } : {}),
     };
     this.delivery = this.delivery.then(async () => await this.deliver(telemetry));
   }
@@ -278,7 +279,7 @@ export class PiSessionObserver {
 }
 
 function toolActivity(name: string): WikiAgentActivity {
-  if (name === "wiki_delegate") return "delegating";
+  if (isDelegateTool(name)) return "delegating";
   if (name === "wiki_finish") return "finishing";
   return "using_tool";
 }
@@ -296,8 +297,23 @@ function safeToolSummary(name: string, rawArgs: unknown, workspaceRoot: string):
   const relativePath = safePath(args.path, workspaceRoot);
   if (name === "read" || name === "ls" || name === "write" || name === "edit") return relativePath;
   if (name === "grep" || name === "find") return joinSummary(shortString(args.pattern, 80), relativePath);
-  if (name === "wiki_delegate") return delegateSummary(args.tasks);
+  if (name === "wiki_delegate_start") return delegateSummary(args.tasks);
+  if (name === "wiki_delegate_collect") return joinSummary(batchSummary(args.batchId), shortString(args.until, 16));
+  if (name === "wiki_delegate_cancel") return joinSummary(batchSummary(args.batchId), taskIdsSummary(args.taskIds));
   return undefined;
+}
+
+function isDelegateTool(name: string): boolean {
+  return name === "wiki_delegate_start" || name === "wiki_delegate_collect" || name === "wiki_delegate_cancel";
+}
+
+function batchSummary(value: unknown): string | undefined {
+  return Number.isInteger(value) && (value as number) > 0 ? `batch ${value}` : undefined;
+}
+
+function taskIdsSummary(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return joinSummary(...value.slice(0, 8).map((entry) => shortString(entry, 32)));
 }
 
 function delegateSummary(rawTasks: unknown): string | undefined {

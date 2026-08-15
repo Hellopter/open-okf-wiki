@@ -31,6 +31,7 @@ export { workspaceToolPolicy };
 export interface WikiWriteControl {
   prepare(path: string, content: string, role: "lead" | "writer"): Promise<string>;
   committed(path: string, role: "lead" | "writer"): Promise<void>;
+  aborted(path: string, role: "lead" | "writer"): Promise<void>;
 }
 
 export function workflowTools(
@@ -263,9 +264,13 @@ async function guardedWrite(root: string, file: string, content: string, allowed
   await assertContainedAbsolutePath(root, file, true);
   const relative = path.relative(path.resolve(root), path.resolve(file)).split(path.sep).join("/");
   const prepared = control ? await control.prepare(`wiki/${relative}`, content, "writer") : content;
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeText(file, prepared);
-  await control?.committed(`wiki/${relative}`, "writer");
+  try {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeText(file, prepared);
+    await control?.committed(`wiki/${relative}`, "writer");
+  } catch (error) {
+    try { await control?.aborted(`wiki/${relative}`, "writer"); } finally { throw error; }
+  }
 }
 
 async function guardedRead(root: string, file: string, allowedPaths: ReadonlySet<string>): Promise<Buffer> {
@@ -305,8 +310,12 @@ async function guardedLeadWrite(root: string, file: string, content: string, con
   await assertContainedAbsolutePath(root, file, true);
   await mkdir(path.dirname(file), { recursive: true });
   const prepared = control ? await control.prepare(`wiki/${relative}`, content, "lead") : content;
-  await writeText(file, prepared);
-  await control?.committed(`wiki/${relative}`, "lead");
+  try {
+    await writeText(file, prepared);
+    await control?.committed(`wiki/${relative}`, "lead");
+  } catch (error) {
+    try { await control?.aborted(`wiki/${relative}`, "lead"); } finally { throw error; }
+  }
 }
 
 async function guardedLeadRead(root: string, file: string): Promise<Buffer> {

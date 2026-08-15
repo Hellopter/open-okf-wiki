@@ -1,11 +1,15 @@
-import type { WikiGenerationProfile } from "./workspace.js";
+import type { WikiGenerationProfile, WikiRoleModelConfig } from "./workspace.js";
 import type { WikiSpec } from "./wiki-spec.js";
+import type { WikiArtifactRef } from "./artifact-store.js";
+import type { WikiDelegateError, WikiDelegateGap, WikiDelegateReceipt, WikiDelegateTask } from "./delegate-contracts.js";
 
 export type WikiProducerOperation = "update" | "regenerate";
 
 export type WikiRunStatus = "running" | "paused" | "succeeded" | "failed" | "cancelled";
 
 export type WikiRunControl = "pause" | "resume" | "cancel";
+
+export const WIKI_MANUAL_PAUSE = Symbol.for("okf-wiki.manual-pause");
 
 export interface WikiProducerRequest {
   cwd: string;
@@ -136,6 +140,49 @@ export interface WikiAgentTelemetry {
   deadlineAt?: string;
   usage?: WikiContextStats;
   process?: WikiActivityEntry[];
+  /** Pi-managed persistent session file for exact resume. */
+  sessionFile?: string;
+}
+
+export interface WikiExecutionBudgets {
+  maxDelegatedTasks: number;
+  maxDelegateBatches: number;
+  maxTurnsPerSession: number;
+  maxToolCallsPerSession: number;
+}
+
+export interface WikiTaskRuntimePartial {
+  outputs: WikiArtifactRef[];
+  coverage: string[];
+  gaps: WikiDelegateGap[];
+}
+
+export interface WikiTaskRuntimeExecution {
+  task: WikiDelegateTask;
+  phase: "queued" | "running" | "paused" | "terminal";
+  attempt: number;
+  collected: boolean;
+  /** Provider pause details; manual pauses intentionally have no task failure. */
+  pause?: WikiDelegateError;
+  partial?: WikiTaskRuntimePartial;
+}
+
+export interface WikiTaskRuntimeTaskState extends WikiTaskRuntimeExecution {
+  sessionFile?: string;
+  receipt?: WikiDelegateReceipt;
+}
+
+export interface WikiTaskRuntimeBatchState {
+  batchId: number;
+  tasks: WikiTaskRuntimeTaskState[];
+}
+
+export interface WikiTaskRuntimeState {
+  batches: WikiTaskRuntimeBatchState[];
+}
+
+export interface WikiAgentExecution extends WikiTaskRuntimeExecution {
+  batchId: number;
 }
 
 export interface WikiRunProgress {
@@ -146,6 +193,9 @@ export interface WikiRunProgress {
   recentActivity?: WikiActivityEntry[];
   language?: "zh" | "en";
   lastMessage?: string;
+  /** Aggregate terminal/current usage, deduplicated by Agent target and attempt. */
+  usage?: WikiContextStats;
+  budgets?: WikiExecutionBudgets;
 }
 
 export interface WikiAgentInspection {
@@ -162,6 +212,9 @@ export interface WikiAgentRecord {
   agent: WikiAgentSnapshot;
   process: WikiActivityEntry[];
   receipt?: import("./delegate-contracts.js").WikiDelegateReceipt;
+  sessionFile?: string;
+  /** Durable task execution state not duplicated in the LLM-visible receipt. */
+  execution?: WikiAgentExecution;
 }
 
 export interface WikiActivityPage {
@@ -231,6 +284,13 @@ export interface WikiPreparedRun {
   /** Last published topology supplied to incremental planning. */
   priorWikiSpec?: WikiSpec;
   maxConcurrentAgents: number;
+  budgets: WikiExecutionBudgets;
+  /** Stable role selections; the production Pi adapter resolves them to provider models. */
+  models: WikiRoleModelConfig;
+  taskRuntimeState: WikiTaskRuntimeState;
+  runSessionDirectory: string;
+  leadSessionFile?: string;
+  leadSessionAttempt?: number;
   transientRetries: number;
   /** Per-session wall-clock deadline, converted from workspace seconds. */
   sessionTimeoutMs: number;
@@ -242,6 +302,7 @@ export interface WikiLeadExecutionRequest extends WikiRunAdapterContext, WikiPre
   attempt: number;
   report(message: string, data?: Record<string, unknown>): Promise<void>;
   reportObservability(input: { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string }): Promise<void>;
+  persistTaskRuntimeState(state: WikiTaskRuntimeState): Promise<void>;
 }
 
 export type WikiLeadOutcome =

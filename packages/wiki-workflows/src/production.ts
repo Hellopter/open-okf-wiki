@@ -1,21 +1,23 @@
-import type { Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { inspectWiki } from "./inspect.js";
-import { createPiLeadRuntime } from "./lead-runtime.js";
+import { createPiLeadRuntime, type PiWikiRoleModels } from "./lead-runtime.js";
 import { createWikiPublicationStore } from "./publication-store.js";
 import { createWikiRunSpecStore } from "./run-spec-store.js";
 import { WikiProducer } from "./producer.js";
 import type { WikiLeadRuntime, WikiPreparedRun, WikiProducerAdapters } from "./producer-types.js";
-import { wikiRoleBrief } from "./skill-briefs.js";
+import { createWikiRunLedger } from "./run-ledger.js";
 import { materializeProductionSkill, skillWorkspacePath } from "./skill-store.js";
 import { finalizeWiki } from "./wiki-finalize.js";
 import type { WikiSpec } from "./wiki-spec.js";
-import { ensureWikiWorkspaceInternalIgnore, loadWikiWorkspace, type WikiGenerationProfile } from "./workspace.js";
+import { ensureWikiWorkspaceInternalIgnore, loadWikiWorkspace, type WikiGenerationProfile, type WikiRoleModelConfig } from "./workspace.js";
 
 interface ProductionWikiProducerOptions {
-  getModel?: () => Model<any> | undefined;
+  getModel?: () => Model<Api> | undefined;
   getThinkingLevel?: () => ThinkingLevel | undefined;
+  getModelRegistry?: () => ModelRegistry | undefined;
   /** @internal Deterministic production-seam injection for integration tests. */
   createLead?: (prepared: WikiPreparedRun) => WikiLeadRuntime;
 }
@@ -52,7 +54,13 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
       const candidateWikiRoot = input.preparation === "resume"
         ? await store.ensureCandidate(input.runId, mode)
         : await store.prepareCandidate(input.runId, mode);
-      const skillRoot = await materializeProductionSkill(workspace.root, input.runId);
+      const skillRoot = await materializeProductionSkill(workspace.root, input.runId, undefined, input.preparation);
+      const runRoot = path.join(workspace.root, ".okf-wiki", "runs", input.runId);
+      const ledger = createWikiRunLedger(path.join(workspace.root, ".okf-wiki"));
+      const [leadRecord, taskRuntimeState] = await Promise.all([
+        input.preparation === "resume" ? ledger.readAgent(input.runId, { kind: "lead" }) : undefined,
+        ledger.readTaskRuntimeState(input.runId),
+      ]);
       return {
         inspection,
         sourceFingerprint: inspection.sourceFingerprint,
@@ -63,16 +71,33 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
         generation: workspace.wiki.generation,
         ...(published?.wikiSpec ? { priorWikiSpec: published.wikiSpec } : {}),
         maxConcurrentAgents: workspace.wiki.maxConcurrentAgents,
+        budgets: {
+          maxDelegatedTasks: workspace.wiki.maxDelegatedTasks,
+          maxDelegateBatches: workspace.wiki.maxDelegateBatches,
+          maxTurnsPerSession: workspace.wiki.maxTurnsPerSession,
+          maxToolCallsPerSession: workspace.wiki.maxToolCallsPerSession,
+        },
+        models: workspace.wiki.models,
+        taskRuntimeState,
+        runSessionDirectory: path.join(runRoot, "sessions"),
+        ...(leadRecord?.sessionFile ? { leadSessionFile: leadRecord.sessionFile } : {}),
+        ...(leadRecord ? { leadSessionAttempt: leadRecord.agent.attempt } : {}),
         transientRetries: workspace.wiki.transientRetries,
         baseRetryDelayMs: workspace.wiki.baseRetryDelayMs,
         sessionTimeoutMs: workspace.wiki.sessionTimeoutSeconds * 1_000,
-        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, skillRoot, input.runId, workspace.language, workspace.wiki.generation, published?.wikiSpec),
+        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, input.runId, workspace.language, workspace.wiki.generation, published?.wikiSpec),
       };
     },
     createLead(prepared) {
+      const models = resolveRoleModels(prepared.models, options);
       return options.createLead?.(prepared) ?? createPiLeadRuntime({
-        model: options.getModel?.(),
-        thinkingLevel: options.getThinkingLevel?.(),
+        model: models.lead.model,
+        thinkingLevel: models.lead.thinkingLevel,
+        models,
+        budgets: prepared.budgets,
+        runSessionDirectory: prepared.runSessionDirectory,
+        leadSessionFile: prepared.leadSessionFile,
+        leadSessionAttempt: prepared.leadSessionAttempt,
         language: prepared.language,
         concurrency: prepared.maxConcurrentAgents - 1,
         transientRetries: prepared.transientRetries,
@@ -138,7 +163,6 @@ function leadPrompt(
   focus: string | undefined,
   inspection: WikiPreparedRun["inspection"],
   candidateWikiRoot: string,
-  skillRoot: string,
   runId: string,
   language: "zh" | "en",
   generation: WikiGenerationProfile,
@@ -167,6 +191,26 @@ function leadPrompt(
     "Direct Lead writing is available only for one-domain plans of at most three content pages and is permanently disabled after compaction; otherwise delegate exact-path writers.",
     "Use artifact handles for delegated results. Treat failed branches as missing coverage, never as evidence of absence.",
     "Delegate independent exact-path reviewers after writing. Reviewers must call wiki_review_finish; call wiki_finish only after every current Spec page has a passing current-revision review.",
-    wikiRoleBrief(skillRoot, "lead"),
   ].filter(Boolean).join("\n");
+}
+
+const MODEL_ROLES = ["lead", "research", "write", "review"] as const;
+
+function resolveRoleModels(config: WikiRoleModelConfig, options: ProductionWikiProducerOptions): PiWikiRoleModels {
+  const inherited = { model: options.getModel?.(), thinkingLevel: options.getThinkingLevel?.() };
+  const registry = options.getModelRegistry?.();
+  const resolve = (role: (typeof MODEL_ROLES)[number]): PiWikiRoleModels[typeof role] => {
+    const override = config[role];
+    if (!override) return { ...inherited };
+    if (!registry) throw new Error(`Wiki ${role} model override requires the Pi model registry`);
+    const model = registry.find(override.provider, override.id);
+    if (!model) throw new Error(`Unknown Wiki ${role} model: ${override.provider}/${override.id}`);
+    return { model, thinkingLevel: override.thinkingLevel ?? inherited.thinkingLevel };
+  };
+  return {
+    lead: resolve("lead"),
+    research: resolve("research"),
+    write: resolve("write"),
+    review: resolve("review"),
+  };
 }

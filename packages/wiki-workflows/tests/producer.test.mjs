@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { WikiProducer } from "../dist/producer.js";
+import { createWikiRunLedger } from "../dist/run-ledger.js";
 
 async function temporaryWorkspace(t) {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "wiki-producer-"));
@@ -110,6 +111,81 @@ test("resume preserves the candidate and cancel preserves terminal immutability"
   gates[1].resolve();
   await assert.rejects(handle.result(), /cancelled/);
   await assert.rejects(handle.control("resume"), /cannot be controlled/);
+});
+
+test("manual pause durably checkpoints running tasks and resume injects them before cancel", async (t) => {
+  const cwd = await temporaryWorkspace(t);
+  const ledger = createWikiRunLedger(path.join(cwd, ".okf-wiki"));
+  const task = {
+    id: "write-paused", role: "write", instruction: "write", sourceScopeIds: ["source"], contextRefs: [],
+  };
+  const sessionFile = path.join(cwd, ".okf-wiki", "sessions", "write-paused.jsonl");
+  const emptyRuntime = { batches: [] };
+  const entered = [deferred(), deferred()];
+  let invocation = 0;
+  const producer = new WikiProducer({
+    createId: () => "run-paused-leaf",
+    adapters: {
+      async prepare(input) {
+        const taskRuntimeState = input.preparation === "resume"
+          ? await ledger.readTaskRuntimeState(input.runId)
+          : emptyRuntime;
+        return {
+          inspection: {}, sourceFingerprint: "source-1", candidateWikiRoot: path.join(cwd, ".candidate"),
+          skillRoot: path.join(cwd, ".skills"), sourceScopeIds: ["source"], language: "en", generation: {},
+          priorWikiSpec: undefined, maxConcurrentAgents: 1,
+          budgets: { maxDelegatedTasks: 24, maxDelegateBatches: 8, maxTurnsPerSession: 60, maxToolCallsPerSession: 120 },
+          models: {}, taskRuntimeState, runSessionDirectory: path.join(cwd, ".okf-wiki", "sessions"),
+          transientRetries: 0, sessionTimeoutMs: 60_000, baseRetryDelayMs: 1, prompt: "Produce Wiki",
+        };
+      },
+      createLead() {
+        return { async run(input) {
+          const current = invocation++;
+          if (current === 0) {
+            await input.persistTaskRuntimeState({
+              batches: [{ batchId: 1, tasks: [{ task, phase: "running", attempt: 2, collected: false, sessionFile }] }],
+            });
+          } else {
+            assert.equal(input.taskRuntimeState.batches[0].tasks[0].phase, "paused");
+            assert.equal(input.taskRuntimeState.batches[0].tasks[0].attempt, 2);
+            assert.equal(input.taskRuntimeState.batches[0].tasks[0].sessionFile, sessionFile);
+          }
+          entered[current].resolve();
+          await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
+          const cancelled = input.signal.reason !== Symbol.for("okf-wiki.manual-pause");
+          assert.equal(input.signal.reason === Symbol.for("okf-wiki.manual-pause"), !cancelled);
+          await input.persistTaskRuntimeState({
+            batches: [{ batchId: 1, tasks: [{
+              task, phase: cancelled ? "terminal" : "paused", attempt: 2, collected: false, sessionFile,
+              ...(cancelled ? { receipt: {
+                id: task.id, role: task.role, status: "failed", summary: "cancelled", outputs: [], coverage: [], gaps: [],
+                error: { code: "cancelled", message: "Wiki run was manually cancelled", retryable: false }, attempts: 2,
+              } } : {}),
+            }] }],
+          });
+          return { kind: "complete", summary: "interrupted" };
+        } };
+      },
+      async validate() { return { ok: true }; },
+      async publish() { return { pages: [], sourceFingerprint: "source-1" }; },
+    },
+  });
+
+  const handle = await producer.start({ cwd });
+  await entered[0].promise;
+  assert.equal((await handle.control("pause")).status, "paused");
+  const paused = await ledger.readTaskRuntimeState(handle.id);
+  assert.equal(paused.batches[0].tasks[0].phase, "paused");
+  assert.equal(paused.batches[0].tasks[0].attempt, 2);
+  assert.equal(paused.batches[0].tasks[0].sessionFile, sessionFile);
+
+  assert.equal((await handle.control("resume")).status, "running");
+  await entered[1].promise;
+  assert.equal((await handle.control("cancel")).status, "cancelled");
+  const cancelled = await ledger.readTaskRuntimeState(handle.id);
+  assert.equal(cancelled.batches[0].tasks[0].phase, "terminal");
+  assert.equal(cancelled.batches[0].tasks[0].receipt.error.code, "cancelled");
 });
 
 test("fresh producer lists and opens disk runs, recovering interruption as paused", async (t) => {

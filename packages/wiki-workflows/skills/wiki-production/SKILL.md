@@ -27,9 +27,13 @@ source copies, or alternate plans.
 
 3. Write directly only when the accepted plan has exactly one domain and at
    most three content pages. After context compaction, always delegate writing.
-4. For independent or context-heavy work, call `wiki_delegate` with bounded
-   research, write, or review tasks.
-5. Read delegated Markdown artifacts by reference; treat failed or incomplete
+4. For independent or context-heavy work, call `wiki_delegate_start` with
+   bounded research, write, or review tasks. Continue useful Lead work while
+   they run, then call `wiki_delegate_collect`. Use `wiki_delegate_cancel` when
+   pending work is no longer useful.
+5. Read delegated Markdown artifacts by reference with bounded `read` calls.
+   When passing an artifact to another task, copy its exact
+   `receipt.outputs[].nodeId` into that task's `contextRefs`; treat failed or incomplete
    receipts as missing coverage, never as evidence of absence.
 6. Delegate independent review of every current Spec page. Reviewers call
    `wiki_review_finish` with a structured verdict; any write or plan revision

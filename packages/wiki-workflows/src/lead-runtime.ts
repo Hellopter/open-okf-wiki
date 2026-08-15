@@ -8,16 +8,24 @@ import {
   type CreateAgentSessionOptions,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { workflowTools, workspaceToolPolicy, type WikiWriteControl } from "./agent-tools.js";
-import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
-import { boundedDelegateSummary, WikiTaskExecutionError, WikiTaskPauseError, type WikiDelegateBatchReceipt, type WikiDelegateTask } from "./delegate-contracts.js";
+import { createWikiArtifactStore } from "./artifact-store.js";
+import {
+  boundedDelegateSummary,
+  WikiTaskExecutionError,
+  WikiTaskPauseError,
+  type WikiDelegateBatchSnapshot,
+  type WikiDelegateGap,
+  type WikiDelegateTask,
+} from "./delegate-contracts.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiLeadRuntime, WikiTaskSnapshot } from "./producer-types.js";
+import type { WikiExecutionBudgets } from "./producer-types.js";
 import { PiSessionObserver, readSessionUsage, type PiSessionObserverOptions } from "./pi-session-observer.js";
-import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
+import { classifyTaskFailure, WikiTaskRuntime, WikiWritePathLease, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
 import { createWikiRunSpecStore, type WikiRunSpecRecord } from "./run-spec-store.js";
 import {
   parseWikiSpec,
@@ -30,15 +38,15 @@ import { canonicalizeWikiPageContent, derivedIndexPaths, formatIssue, validateWi
 import { WikiWorkflowState, type WikiReviewResult } from "./workflow-state.js";
 import path from "node:path";
 import { materializeValidatedWikiIndexes } from "./wiki-finalize.js";
-import { wikiRoleBrief } from "./skill-briefs.js";
-import type { WikiGenerationProfile } from "./workspace.js";
+import type { WikiAgentRole, WikiGenerationProfile } from "./workspace.js";
+import { WikiBudgetExhaustedError } from "./failures.js";
 
 const PI_SESSION_REQUEST_RETRIES = 0;
 const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
 const MAX_SESSION_TIMEOUT_MS = 2_147_483_647;
 
 export interface PiWikiLeadAgentOptions {
-  model?: Model<any>;
+  model?: Model<Api>;
   thinkingLevel?: ThinkingLevel;
   language?: "zh" | "en";
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
@@ -46,6 +54,14 @@ export interface PiWikiLeadAgentOptions {
   sessionTimeoutMs?: number;
   /** Materialized production skill root inside the workspace. */
   skillRoot?: string;
+  /** Run-scoped persistent Pi session directory. */
+  sessionDir?: string;
+  /** Exact Pi session file to reopen. */
+  sessionFile?: string;
+  budgets?: WikiExecutionBudgets;
+  /** Single Pi skill exposed to this session. */
+  skillName?: string;
+  skillPath?: string;
 }
 
 export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
@@ -55,7 +71,18 @@ export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   random?: () => number;
   now?: () => number;
+  models?: PiWikiRoleModels;
+  runSessionDirectory?: string;
+  leadSessionFile?: string;
+  leadSessionAttempt?: number;
 }
+
+export interface PiWikiRoleModel {
+  model?: Model<Api>;
+  thinkingLevel?: ThinkingLevel;
+}
+
+export type PiWikiRoleModels = Record<WikiAgentRole, PiWikiRoleModel>;
 
 /** Complete reusable production Adapter for WikiProducer's model-facing seam. */
 export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): WikiLeadRuntime {
@@ -64,18 +91,26 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
   if (!Number.isInteger(transientRetries) || transientRetries < 0) throw new Error("transientRetries must be a non-negative integer");
   if (!Number.isFinite(baseRetryDelayMs) || baseRetryDelayMs < 0) throw new Error("baseRetryDelayMs must be non-negative");
   const sessionTimeoutMs = validatedSessionTimeoutMs(options.sessionTimeoutMs);
+  const leadModel = options.models?.lead ?? { model: options.model, thinkingLevel: options.thinkingLevel };
   const sessionOptions = {
-    model: options.model,
-    thinkingLevel: options.thinkingLevel,
+    model: leadModel.model,
+    thinkingLevel: leadModel.thinkingLevel,
     createSession: options.createSession,
     sessionTimeoutMs,
     language: options.language,
+    budgets: options.budgets,
   };
   return {
     async run(request) {
       const specStore = createWikiRunSpecStore({ workspace: request.cwd });
       let specRecord = await specStore.read(request.runId);
       const workflowState = await WikiWorkflowState.open(request.cwd, request.runId);
+      const controller = new AbortController();
+      const abort = () => controller.abort(request.signal.reason);
+      request.signal.addEventListener("abort", abort, { once: true });
+      if (request.signal.aborted) controller.abort(request.signal.reason);
+      const writeLease = new WikiWritePathLease();
+      const leadWriteReleases = new Map<string, () => void>();
       const generation = request.generation;
       const requiredSections = generation.templates.requiredSections;
       const requiredReviewCoverage = generation.review.mustCover;
@@ -101,57 +136,85 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           const issues = await validateWikiPageContent(request.cwd, specRecord.spec, relative, content, candidateDirectory, undefined, requiredSections);
           if (issues.length) throw new Error(`Wiki page validation failed before write: ${issues.map(formatIssue).join("; ")}`);
           const canonical = canonicalizeWikiPageContent(content);
-          await workflowState.beginWrite();
-          return canonical;
+          const release = role === "lead" ? await writeLease.acquire([pagePath], controller.signal) : undefined;
+          try {
+            if (release) leadWriteReleases.set(pagePath, release);
+            return canonical;
+          } catch (error) {
+            release?.();
+            throw error;
+          }
         },
-        async committed() { await tryIndexes(); },
+        async committed(pagePath, role) {
+          try {
+            await workflowState.beginWrite();
+            await tryIndexes();
+          } finally {
+            if (role === "lead") {
+              leadWriteReleases.get(pagePath)?.();
+              leadWriteReleases.delete(pagePath);
+            }
+          }
+        },
+        async aborted(pagePath, role) {
+          if (role === "lead") {
+            leadWriteReleases.get(pagePath)?.();
+            leadWriteReleases.delete(pagePath);
+          }
+        },
       };
       const artifactStore = createWikiArtifactStore({ workspace: request.cwd });
       const sourceScopes = Object.fromEntries(request.sourceScopeIds.map((id) => [id, id]));
-      let batch = 0;
-      let batchTotal = 0;
-      const batchTasks = new Map<string, WikiTaskSnapshot>();
+      const budgets = request.budgets ?? options.budgets;
+      const roleModels = options.models;
+      const runSessionDirectory = request.runSessionDirectory ?? options.runSessionDirectory ?? options.sessionDir;
+      const batchTasks = new Map<number, Map<string, WikiTaskSnapshot>>();
       const snapshotNow = () => new Date((options.now ?? Date.now)()).toISOString();
       const onTask = async (event: WikiTaskProgressEvent): Promise<void> => {
+        let projection = batchTasks.get(event.batchId);
+        if (!projection) {
+          projection = new Map();
+          batchTasks.set(event.batchId, projection);
+        }
         const taskId = event.task.id;
         if (event.phase === "queued") {
-          batchTasks.set(taskId, { id: taskId, role: event.task.role, status: "queued" });
-          const tasks = [...batchTasks.values()];
+          projection.set(taskId, { id: taskId, role: event.task.role, status: "queued" });
+          const tasks = [...projection.values()];
           await request.report(`Delegated ${tasks.map((task) => task.id).join(", ")}`, {
             stage: "lead",
-            batch,
-            total: batchTotal,
+            batch: event.batchId,
+            total: projection.size,
             completed: 0,
             tasks,
           });
           return;
         }
-        const current = batchTasks.get(taskId) ?? { id: taskId, role: event.task.role, status: "queued" as const };
+        const current = projection.get(taskId) ?? { id: taskId, role: event.task.role, status: "queued" as const };
         if (event.phase === "start") {
           current.status = "running";
           current.startedAt = snapshotNow();
           current.updatedAt = current.startedAt;
           applyTelemetry(current, event.telemetry);
-          batchTasks.set(taskId, current);
+          projection.set(taskId, current);
           await request.report(`${event.task.role} ${taskId} started`, {
             stage: "lead",
-            batch,
-            total: batchTotal,
-            completed: countCompleted(batchTasks),
-            tasks: [...batchTasks.values()],
+            batch: event.batchId,
+            total: projection.size,
+            completed: countCompleted(projection),
+            tasks: [...projection.values()],
             taskId,
           });
           return;
         }
         if (event.phase === "update" && event.telemetry) {
           applyTelemetry(current, event.telemetry);
-          batchTasks.set(taskId, current);
+          projection.set(taskId, current);
           await request.report(`${event.task.role} ${taskId} telemetry`, {
             stage: "lead",
-            batch,
-            total: batchTotal,
-            completed: countCompleted(batchTasks),
-            tasks: [...batchTasks.values()],
+            batch: event.batchId,
+            total: projection.size,
+            completed: countCompleted(projection),
+            tasks: [...projection.values()],
             taskId,
             phase: "update",
             telemetry: event.telemetry,
@@ -164,14 +227,14 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         current.updatedAt = snapshotNow();
         if (event.usage) current.usage = event.usage;
         applyTelemetry(current, event.telemetry);
-        batchTasks.set(taskId, current);
-        const completed = countCompleted(batchTasks);
+        projection.set(taskId, current);
+        const completed = countCompleted(projection);
         await request.report(`${event.task.role} ${taskId} ${current.status}`, {
           stage: "lead",
-          batch,
-          total: batchTotal,
+          batch: event.batchId,
+          total: projection.size,
           completed,
-          tasks: [...batchTasks.values()],
+          tasks: [...projection.values()],
           taskId,
           receipt: event.receipt,
           usage: event.usage,
@@ -183,8 +246,18 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         sourceScopes,
         candidateWikiRoot: request.candidateWikiRoot,
         artifactStore,
-        agent: new PiWikiLeafAgent(artifactStore, { ...sessionOptions, skillRoot: request.skillRoot }, writeControl, generation, () => specRecord?.spec),
+        agent: new PiWikiLeafAgent({
+          ...sessionOptions,
+          skillRoot: request.skillRoot,
+          sessionDir: runSessionDirectory,
+          budgets,
+        }, writeControl, generation, () => specRecord?.spec, roleModels),
         concurrency: options.concurrency,
+        maxDelegatedTasks: budgets?.maxDelegatedTasks,
+        maxDelegateBatches: budgets?.maxDelegateBatches,
+        restoredState: request.taskRuntimeState,
+        onStateChanged: async (state) => await request.persistTaskRuntimeState(state),
+        writeLease,
         transientRetries,
         baseRetryDelayMs,
         sleep: options.sleep,
@@ -194,74 +267,101 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         reportObservability: request.reportObservability,
       });
       const policy = await workspaceToolPolicy(request.cwd, request.candidateWikiRoot, request.skillRoot);
-      const controller = new AbortController();
-      const abort = () => controller.abort();
-      request.signal.addEventListener("abort", abort, { once: true });
-      if (request.signal.aborted) controller.abort();
+      await tasks.resume(controller.signal);
       let finishSummary: string | undefined;
       let pause: WikiTaskPauseError | undefined;
-      let delegateBatches = 0;
-      let transition = Promise.resolve();
-      const serialize = async <T>(operation: () => Promise<T>): Promise<T> => {
-        const previous = transition;
-        let release!: () => void;
-        transition = new Promise<void>((resolve) => { release = resolve; });
-        await previous.catch(() => {});
-        try { return await operation(); } finally { release(); }
+      const reviewSnapshots = new Map<number, ReturnType<WikiWorkflowState["snapshot"]>>();
+      const acceptedReviews = new Set<string>();
+      const staleReviews = new Set<string>();
+      const acceptCollectedReviews = async (snapshot: WikiDelegateBatchSnapshot): Promise<WikiDelegateBatchSnapshot> => {
+        const captured = reviewSnapshots.get(snapshot.batchId);
+        if (!captured) return snapshot;
+        for (const receipt of snapshot.receipts.filter((item) => item.role === "review" && item.status === "complete" && item.review)) {
+          const key = `${snapshot.batchId}:${receipt.id}:${receipt.attempts}`;
+          if (acceptedReviews.has(key) || staleReviews.has(key)) continue;
+          if (await workflowState.acceptReview(receipt.id, captured, specRecord?.revision ?? 0, receipt.review!)) acceptedReviews.add(key);
+          else staleReviews.add(key);
+        }
+        if (staleReviews.size === 0) return snapshot;
+        return {
+          ...snapshot,
+          receipts: snapshot.receipts.map((receipt) => {
+            const key = `${snapshot.batchId}:${receipt.id}:${receipt.attempts}`;
+            return staleReviews.has(key)
+              ? { ...receipt, status: "incomplete", summary: "Review became stale while the delegated task was running", review: undefined }
+              : receipt;
+          }),
+        };
       };
-      const leadTools = [
+      const leadTools = withExecutionModes([
         ...workflowTools(policy, "lead", undefined, request.sourceScopeIds, undefined, writeControl),
-        planTool(async (input) => await serialize(async () => {
+        planTool(async (input) => {
           const spec = parseWikiSpec(input);
           specRecord = await specStore.save(request.runId, spec, specRecord?.revision ?? 0);
           await workflowState.invalidateReviews();
           await tryIndexes();
           return { revision: specRecord.revision, pages: wikiSpecPagePaths(spec), directWriteAllowed: leadMayWrite(spec, workflowState.compactionObserved) };
-        })),
-        delegateTool(async (delegated) => await serialize(async () => {
+        }),
+        delegateStartTool(async (delegated) => {
+          assertDelegationAllowed(delegated, specRecord?.spec);
+          if (delegated.some((task) => task.role === "review")) writeLease.assertReviewAllowed();
+          if (delegated.some((task) => task.role === "review") && !await tryIndexes()) {
+            throw new Error("Review requires every current WikiSpec page to validate and deterministic indexes to be materialized");
+          }
+          const started = await tasks.start(delegated, controller.signal);
+          if (delegated.some((task) => task.role === "review")) reviewSnapshots.set(started.batchId, workflowState.snapshot(specRecord!.revision));
+          return started;
+        }),
+        delegateCollectTool(async (batchId, collectOptions) => {
           try {
-            assertDelegationAllowed(delegated, specRecord?.spec);
-            if (delegated.some((task) => task.role === "review") && !await tryIndexes()) {
-              throw new Error("Review requires every current WikiSpec page to validate and deterministic indexes to be materialized");
-            }
-            const captured = workflowState.snapshot(specRecord!.revision);
-            batch += 1;
-            batchTotal = delegated.length;
-            batchTasks.clear();
-            const receipt = await tasks.delegate(delegated, controller.signal);
-            for (const reviewed of receipt.receipts.filter((item) => item.role === "review" && item.status === "complete" && item.review)) {
-              const accepted = await workflowState.acceptReview(reviewed.id, captured, specRecord?.revision ?? 0, reviewed.review!);
-              if (!accepted) {
-                reviewed.status = "incomplete";
-                reviewed.summary = "Review became stale while the delegated task was running";
-                reviewed.review = undefined;
-              }
-            }
-            delegateBatches += 1;
-            return receipt;
+            return await acceptCollectedReviews(await tasks.collect(batchId, collectOptions, controller.signal));
           } catch (error) {
             if (error instanceof WikiTaskPauseError) {
               pause = error;
-              controller.abort();
+              controller.abort(error);
             }
             throw error;
           }
-        })),
+        }),
+        delegateCancelTool(async (batchId, taskIds, reason) => await acceptCollectedReviews(await tasks.cancel(batchId, taskIds, reason))),
         finishTool((summary) => {
           if (finishSummary) throw new Error("wiki_finish may be accepted only once");
           if (!summary.trim()) throw new Error("wiki_finish requires a summary");
           if (!specRecord) throw new Error("wiki_finish requires an accepted WikiSpec");
+          try {
+            tasks.assertFinishable();
+          } catch (error) {
+            if (error instanceof WikiTaskPauseError) {
+              pause = error;
+              controller.abort(error);
+            }
+            throw error;
+          }
           workflowState.assertPublishable(specRecord.revision, wikiSpecPagePaths(specRecord.spec).map(addWikiPrefix), requiredReviewCoverage);
           finishSummary = boundedDelegateSummary(summary);
         }),
-      ];
+      ]);
       await request.report("Wiki Lead is deciding adaptive research and writing tasks", { stage: "lead", sourceScopeCount: Object.keys(sourceScopes).length });
       try {
         const maxAttempts = transientRetries + 1;
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-          if (attempt > 1) finishSummary = undefined;
+        const attemptBase = Math.max(request.attempt, request.leadSessionAttempt ?? options.leadSessionAttempt ?? request.attempt);
+        for (let retryIndex = 0; retryIndex < maxAttempts; retryIndex += 1) {
+          const attempt = attemptBase + retryIndex;
+          if (retryIndex > 0) finishSummary = undefined;
           try {
-            await runPiSession(policy.workspaceRoot, leadTools, request.prompt, controller.signal, sessionOptions, async (telemetry) => {
+            const leadSessionDir = runSessionDirectory ? path.join(runSessionDirectory, "lead") : undefined;
+            const resumeFile = retryIndex === 0
+              ? request.leadSessionFile ?? options.leadSessionFile ?? options.sessionFile
+              : undefined;
+            await runPiSession(policy.workspaceRoot, leadTools, request.prompt, controller.signal, {
+              ...sessionOptions,
+              sessionDir: leadSessionDir,
+              sessionFile: resumeFile,
+              skillRoot: request.skillRoot,
+              skillName: "wiki-production",
+              skillPath: request.skillRoot,
+              budgets,
+            }, async (telemetry) => {
               if (telemetry.activity === "compacting") await workflowState.observeCompaction();
               await request.report("Wiki Lead telemetry", { phase: "agent_update", telemetry });
             }, { target: { kind: "lead" }, attempt, now: options.now, onHealth: request.reportObservability });
@@ -271,12 +371,13 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             const failure = classifyTaskFailure(error, request.signal.aborted);
             if (failure.code === "quota" || failure.code === "usage_limit") {
               pause = new WikiTaskPauseError(failure.code, failure.message, failure.retryAfterMs);
+              controller.abort(pause);
               break;
             }
-            if (!failure.retryable || attempt >= maxAttempts) throw error;
+            if (!failure.retryable || retryIndex + 1 >= maxAttempts) throw error;
             const delay = failure.code === "rate_limit" && failure.retryAfterMs !== undefined
               ? failure.retryAfterMs
-              : retryDelay(baseRetryDelayMs, attempt, options.random ?? Math.random);
+              : retryDelay(baseRetryDelayMs, retryIndex + 1, options.random ?? Math.random);
             const sampledAt = snapshotNow();
             const retryTelemetry: WikiAgentTelemetry = {
               target: { kind: "lead" },
@@ -311,7 +412,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         return { kind: "pause", reason: pause.reason, summary: pause.message, retryAt };
       }
       if (!finishSummary) throw new Error("Lead agent completed without wiki_finish");
-      await request.report("Wiki Lead finished", { delegateBatches });
+      await request.report("Wiki Lead finished");
       return { kind: "complete", summary: finishSummary };
     },
   };
@@ -320,25 +421,31 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
 /** Pi Adapter for one delegated leaf; TaskRuntime owns retries and artifact acceptance. */
 export class PiWikiLeafAgent implements WikiLeafAgent {
   constructor(
-    private readonly artifacts: WikiArtifactStore,
     private readonly options: PiWikiLeadAgentOptions = {},
     private readonly writeControl?: WikiWriteControl,
     private readonly generation?: WikiGenerationProfile,
     private readonly currentSpec?: () => WikiSpec | undefined,
+    private readonly roleModels?: PiWikiRoleModels,
   ) {
     validatedSessionTimeoutMs(options.sessionTimeoutMs);
   }
 
   async run(task: WikiDelegateTask, context: WikiLeafTaskContext): Promise<WikiLeafResult> {
     const policy = await workspaceToolPolicy(context.cwd, context.candidateWikiRoot, this.options.skillRoot);
-    const declaredSources = Object.values(context.sourceRoots);
+    const artifactHandoffs = Object.entries(context.contextArtifacts).map(([id, ref]) => {
+      const file = path.resolve(policy.workspaceRoot, ref.relativePath);
+      policy.sourceRoots.set(ref.relativePath, { logicalRoot: file, physicalRoot: file });
+      return { id, path: ref.relativePath, sha256: ref.sha256, sizeBytes: ref.sizeBytes };
+    });
+    const declaredSources = [...Object.values(context.sourceRoots), ...artifactHandoffs.map((handoff) => handoff.path)];
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
     let review: WikiReviewResult | undefined;
+    let research: ResearchCompletion | undefined;
     const spec = this.currentSpec?.();
     const reviewIndexes = task.role === "review" && spec
       ? derivedIndexPaths(wikiSpecPagePaths(spec)).map(addWikiPrefix)
       : [];
-    const tools = [
+    const tools = withExecutionModes([
       ...workflowTools(policy, role, task.writePaths, declaredSources, task.reviewPaths, this.writeControl, reviewIndexes),
       ...(role === "reviewer" ? [reviewFinishTool((result) => {
         if (review) throw new Error("wiki_review_finish may be accepted only once");
@@ -349,15 +456,20 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         if (result.findings.some((finding) => !assigned.has(finding.path))) throw new Error("Review finding path is outside the assigned reviewPaths");
         review = result;
       })] : []),
-    ];
-    const handoffs = await Promise.all(Object.entries(context.contextArtifacts).map(async ([id, ref]) => ({
-      id,
-      artifact: ref.relativePath,
-      content: await this.artifacts.read(ref),
-    })));
+      ...(role === "researcher" ? [researchFinishTool((result) => {
+        if (research) throw new Error("wiki_research_finish may be accepted only once");
+        research = result;
+      })] : []),
+    ]);
     const skillDirectory = this.options.skillRoot
       ? path.relative(policy.workspaceRoot, this.options.skillRoot).split(path.sep).join("/")
       : undefined;
+    const roleSkillName = `wiki-production-${role}`;
+    const roleSkillPath = this.options.skillRoot ? path.join(this.options.skillRoot, "roles", role) : undefined;
+    const taskSessionDir = this.options.sessionDir
+      ? path.join(this.options.sessionDir, "tasks", String(context.batch), task.id, String(context.attempt))
+      : undefined;
+    const roleModel = this.roleModels?.[task.role] ?? { model: this.options.model, thinkingLevel: this.options.thinkingLevel };
     const sessionResult = await runPiSession(policy.workspaceRoot, tools, [
         task.instruction,
         leafLanguageInstruction(role, this.options.language),
@@ -369,10 +481,19 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         skillDirectory && role === "writer"
           ? `\nFor each assigned pageType, read ${skillDirectory}/references/templates/<pageType>.md before writing.`
           : "",
-        this.options.skillRoot ? `\n${wikiRoleBrief(this.options.skillRoot, role)}` : "",
-        handoffs.length ? `\nAccepted context artifacts:\n${handoffs.map((value) => `## ${value.id} (${value.artifact})\n${value.content}`).join("\n\n")}` : "",
+        artifactHandoffs.length
+          ? `\nAccepted context artifacts (read only the ranges needed):\n${artifactHandoffs.map((value) => `- ${value.id}: ${value.path} (${value.sizeBytes} bytes, sha256 ${value.sha256})`).join("\n")}`
+          : "",
         "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
-      ].join(""), context.signal, this.options, context.onTelemetry, {
+      ].join(""), context.signal, {
+        ...this.options,
+        model: roleModel.model,
+        thinkingLevel: roleModel.thinkingLevel,
+        sessionDir: taskSessionDir,
+        sessionFile: context.sessionFile,
+        skillName: roleSkillPath ? roleSkillName : undefined,
+        skillPath: roleSkillPath,
+      }, context.onTelemetry, {
         target: { kind: "task", batch: context.batch, taskId: task.id },
         attempt: context.attempt,
         onHealth: context.reportObservability,
@@ -380,7 +501,14 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const markdown = sessionResult.text.trim();
     if (!markdown) throw new Error("Delegated agent produced empty output");
     if (role === "reviewer" && !review) throw new Error("Reviewer completed without wiki_review_finish");
-    return { summary: firstLine(markdown), markdown, usage: sessionResult.usage, ...(review ? { review } : {}) };
+    if (role === "researcher" && !research) throw new Error("Researcher completed without wiki_research_finish");
+    return {
+      summary: research?.summary ?? firstLine(markdown),
+      markdown,
+      usage: sessionResult.usage,
+      ...(review ? { review } : {}),
+      ...(research ? { status: research.status, coverage: research.coverage, gaps: research.gaps } : {}),
+    };
   }
 }
 
@@ -406,6 +534,14 @@ function retryDelay(baseRetryDelayMs: number, attempt: number, random: () => num
 }
 
 const JSON_SCHEMA_PREFER = { type: "json_schema", strict: "prefer" } as const;
+const PARALLEL_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
+function withExecutionModes(tools: ToolDefinition<any, any, any>[]): ToolDefinition<any, any, any>[] {
+  return tools.map((tool) => ({
+    ...tool,
+    executionMode: PARALLEL_READ_TOOLS.has(tool.name) ? "parallel" : "sequential",
+  } as ToolDefinition<any, any, any>));
+}
 
 const delegateTaskBase = {
   id: Type.String({ minLength: 1, maxLength: 128 }),
@@ -453,21 +589,66 @@ function planTool(save: (spec: unknown) => Promise<unknown>): ToolDefinition<any
   } as ToolDefinition<any, any, any>;
 }
 
-function delegateTool(delegate: (tasks: WikiDelegateTask[]) => Promise<WikiDelegateBatchReceipt>): ToolDefinition<any, any, any> {
+function delegateStartTool(start: (tasks: WikiDelegateTask[]) => Promise<{ batchId: number }>): ToolDefinition<any, any, any> {
   return {
-    name: "wiki_delegate",
-    label: "Delegate Wiki tasks",
-    description: "Run one bounded batch of Wiki research, writing, or review tasks. Returns small receipts and artifact handles; failed branches do not discard successful branches.",
-    promptSnippet: "Run one bounded research, write, or review batch",
+    name: "wiki_delegate_start",
+    label: "Start Wiki tasks",
+    description: "Start one bounded asynchronous batch of Wiki research, writing, or review tasks and return its batch ID immediately.",
+    promptSnippet: "Start one bounded asynchronous research, write, or review batch",
     promptGuidelines: [
-      "Do not mix write and review tasks in one wiki_delegate batch.",
-      "wiki_delegate paths must be current Spec wiki/... paths.",
+      "Each instruction must state its goal, scope, expected artifact or page, and stop condition.",
+      "When chaining delegated work, populate contextRefs from the exact nodeId values in prior receipt.outputs entries.",
+      "Do not mix write and review tasks in one wiki_delegate_start batch.",
+      "wiki_delegate_start paths must be current Spec wiki/... paths.",
     ],
     parameters: Type.Object({ tasks: Type.Array(delegateTaskSchema, { minItems: 1 }) }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
-      const result = await delegate((params as { tasks: WikiDelegateTask[] }).tasks);
+      const result = await start((params as { tasks: WikiDelegateTask[] }).tasks);
       return toolResult(result);
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+function delegateCollectTool(
+  collect: (batchId: number, options: { until: "any" | "all"; timeoutSeconds: number }) => Promise<WikiDelegateBatchSnapshot>,
+): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_delegate_collect",
+    label: "Collect Wiki tasks",
+    description: "Collect completed receipts from an asynchronous Wiki task batch, optionally waiting for any or all pending tasks.",
+    promptSnippet: "Collect receipts from a started Wiki task batch",
+    promptGuidelines: ["Use timeoutSeconds 0 for a non-blocking status check."],
+    parameters: Type.Object({
+      batchId: Type.Integer({ minimum: 1 }),
+      until: StringEnum(["any", "all"]),
+      timeoutSeconds: Type.Integer({ minimum: 0, maximum: 60 }),
+    }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
+    async execute(_id, params) {
+      const input = params as { batchId: number; until: "any" | "all"; timeoutSeconds: number };
+      return toolResult(await collect(input.batchId, { until: input.until, timeoutSeconds: input.timeoutSeconds }));
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+function delegateCancelTool(
+  cancel: (batchId: number, taskIds?: string[], reason?: string) => Promise<WikiDelegateBatchSnapshot>,
+): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_delegate_cancel",
+    label: "Cancel Wiki tasks",
+    description: "Cancel pending tasks in an asynchronous Wiki batch, or cancel the whole batch when taskIds is omitted.",
+    promptSnippet: "Cancel no-longer-useful Wiki tasks",
+    parameters: Type.Object({
+      batchId: Type.Integer({ minimum: 1 }),
+      taskIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+      reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
+    }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
+    async execute(_id, params) {
+      const input = params as { batchId: number; taskIds?: string[]; reason?: string };
+      return toolResult(await cancel(input.batchId, input.taskIds, input.reason));
     },
   } as ToolDefinition<any, any, any>;
 }
@@ -504,6 +685,38 @@ const reviewFindingSchema = Type.Object({
   evidence: Type.Array(Type.String({ minLength: 1 }), { description: "Source locators supporting the finding" }),
   suggestion: Type.String({ minLength: 1, description: "Concrete repair the writer should make" }),
 }, { additionalProperties: false });
+
+interface ResearchCompletion {
+  status: "complete" | "incomplete";
+  summary: string;
+  coverage: string[];
+  gaps: WikiDelegateGap[];
+}
+
+const researchGapSchema = Type.Object({
+  question: Type.String({ minLength: 1, description: "Unresolved evidence question" }),
+  sourceScopeIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+}, { additionalProperties: false });
+
+function researchFinishTool(finish: (result: ResearchCompletion) => void): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_research_finish",
+    label: "Finish Wiki research",
+    description: "Submit structured coverage and gaps for the Markdown research handoff that the host will persist.",
+    promptSnippet: "Submit the structured research completion receipt",
+    parameters: Type.Object({
+      status: StringEnum(["complete", "incomplete"]),
+      summary: Type.String({ minLength: 1, maxLength: 1024 }),
+      coverage: Type.Array(Type.String({ minLength: 1 })),
+      gaps: Type.Array(researchGapSchema),
+    }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
+    async execute(_id, params) {
+      finish(params as ResearchCompletion);
+      return toolResult({ accepted: true });
+    },
+  } as ToolDefinition<any, any, any>;
+}
 
 function reviewFinishTool(finish: (result: WikiReviewResult) => void): ToolDefinition<any, any, any> {
   return {
@@ -591,7 +804,7 @@ function leadMayWrite(spec: WikiSpec, compacted: boolean): boolean {
 
 function assertDelegationAllowed(tasks: readonly WikiDelegateTask[], spec: WikiSpec | undefined): void {
   if (tasks.some((task) => task.role === "write") && tasks.some((task) => task.role === "review")) {
-    throw new Error("A wiki_delegate batch may not mix write and review tasks");
+    throw new Error("A wiki_delegate_start batch may not mix write and review tasks");
   }
   for (const task of tasks) {
     if (task.role === "research") continue;
@@ -662,20 +875,56 @@ async function runPiSession(
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    additionalSkillPaths: options.skillPath ? [options.skillPath] : [],
   });
   await loader.reload();
-  const created = await (options.createSession ?? createAgentSession)({
+  if (options.skillName) {
+    const skills = loader.getSkills().skills;
+    if (skills.length !== 1 || skills[0].name !== options.skillName) {
+      throw new Error(`Required Wiki production skill is unavailable: ${options.skillName}`);
+    }
+  }
+  const sessionFile = options.sessionFile;
+  const sessionManager = sessionFile
+    ? SessionManager.open(sessionFile, options.sessionDir, cwd)
+    : SessionManager.create(cwd, options.sessionDir);
+  let session: AgentSession | undefined;
+  let budgetError: WikiBudgetExhaustedError | undefined;
+  let toolCalls = 0;
+  const guardedTools = tools.map((tool) => {
+    const execute = tool.execute;
+    return {
+      ...tool,
+      async execute(toolCallId, params, toolSignal, onUpdate, context) {
+        const limit = options.budgets?.maxToolCallsPerSession;
+        if (limit !== undefined && toolCalls >= limit) {
+          budgetError = sessionToolBudgetError(limit, toolCalls);
+          void session?.abort();
+          throw budgetError;
+        }
+        toolCalls += 1;
+        return await execute(toolCallId, params, toolSignal, onUpdate, context);
+      },
+    } as ToolDefinition<any, any, any>;
+  });
+  const createOptions: CreateAgentSessionOptions = {
     cwd,
-    model: options.model,
-    thinkingLevel: options.thinkingLevel,
-    sessionManager: SessionManager.inMemory(cwd),
+    sessionManager,
     settingsManager: settings,
     resourceLoader: loader,
     noTools: "builtin",
-    tools: tools.map((tool) => tool.name),
-    customTools: tools,
-  });
-  const session: AgentSession = created.session;
+    tools: guardedTools.map((tool) => tool.name),
+    customTools: guardedTools,
+    ...(!sessionFile ? { model: options.model, thinkingLevel: options.thinkingLevel } : {}),
+  };
+  const created = await (options.createSession ?? createAgentSession)(createOptions);
+  session = created.session;
+  if (created.modelFallbackMessage) {
+    session.dispose();
+    throw new Error(`Could not restore the persisted Wiki model: ${created.modelFallbackMessage}`);
+  }
   const sessionObserver = onTelemetry && observer
     ? new PiSessionObserver(session, {
       ...observer,
@@ -686,27 +935,73 @@ async function runPiSession(
     })
     : undefined;
   const abort = () => { void session.abort(); };
+  const initialUsage = readSessionUsage(session);
+  let turns = initialUsage?.turns ?? 0;
+  toolCalls = initialUsage?.toolCalls ?? 0;
+  if (options.budgets && turns >= options.budgets.maxTurnsPerSession) {
+    session.dispose();
+    throw sessionTurnBudgetError(options.budgets.maxTurnsPerSession, turns);
+  }
+  if (options.budgets && toolCalls >= options.budgets.maxToolCallsPerSession) {
+    session.dispose();
+    throw sessionToolBudgetError(options.budgets.maxToolCallsPerSession, toolCalls);
+  }
+  const stopBudgetMonitor = typeof session.subscribe === "function"
+    ? session.subscribe((event) => {
+      if (event.type === "turn_end") turns += 1;
+      if (event.type === "turn_start" && !budgetError && options.budgets && turns >= options.budgets.maxTurnsPerSession) {
+        budgetError = sessionTurnBudgetError(options.budgets.maxTurnsPerSession, turns);
+      }
+      if (budgetError) void session.abort();
+    })
+    : undefined;
   signal.addEventListener("abort", abort, { once: true });
   try {
-    session.setAutoCompactionEnabled(true);
-    session.setAutoRetryEnabled(false);
     sessionObserver?.start();
     try {
-      await runSessionWithDeadline(session, prompt, signal, options.sessionTimeoutMs);
+      const expandedPrompt = options.skillName ? `/skill:${options.skillName} ${prompt}` : prompt;
+      await runSessionWithDeadline(session, expandedPrompt, signal, options.sessionTimeoutMs);
     } catch (error) {
-      await sessionObserver?.failed(error);
-      throw error;
+      const failure = budgetError ?? (signal.aborted ? sessionAbortReason(signal) : error);
+      await sessionObserver?.failed(failure);
+      throw failure;
     }
-    if (signal.aborted) throw new WikiTaskExecutionError("Wiki agent session cancelled", "cancelled");
+    if (budgetError) throw budgetError;
+    if (signal.aborted) throw sessionAbortReason(signal);
     const stateError = typeof session.state.errorMessage === "string" ? session.state.errorMessage : undefined;
     if (stateError) throw new Error(stateError);
     const text = session.getLastAssistantText() ?? "";
     return { text, usage: readSessionUsage(session) };
   } finally {
     signal.removeEventListener("abort", abort);
+    stopBudgetMonitor?.();
     await sessionObserver?.stop();
     session.dispose();
   }
+}
+
+function sessionAbortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const message = typeof signal.reason === "string" && signal.reason.trim()
+    ? signal.reason
+    : "Wiki agent session cancelled";
+  return new WikiTaskExecutionError(message, "cancelled", { cause: signal.reason });
+}
+
+function sessionTurnBudgetError(limit: number, turns: number): WikiBudgetExhaustedError {
+  return new WikiBudgetExhaustedError(
+    `Pi session turn limit exhausted (${limit})`,
+    "session_turns_exhausted",
+    { limit, turns },
+  );
+}
+
+function sessionToolBudgetError(limit: number, toolCalls: number): WikiBudgetExhaustedError {
+  return new WikiBudgetExhaustedError(
+    `Pi session tool-call limit exhausted (${limit})`,
+    "session_tool_calls_exhausted",
+    { limit, toolCalls },
+  );
 }
 
 type ObserverContext = {

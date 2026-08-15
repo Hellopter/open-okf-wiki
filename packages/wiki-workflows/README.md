@@ -49,6 +49,11 @@ wiki:
   transientRetries: 1
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
+  maxDelegatedTasks: 24
+  maxDelegateBatches: 8
+  maxTurnsPerSession: 60
+  maxToolCallsPerSession: 120
+  models: {}
   generation:
     audience: [maintainers, integrators]
     purpose: Explain the system's domains, behavior, and extension points.
@@ -63,7 +68,7 @@ wiki:
       mustCover: [cross-domain links, operational flows]
 ```
 
-All four execution values are integers:
+All execution limit values are integers:
 
 | Setting | Default | Valid range | Meaning |
 | --- | ---: | ---: | --- |
@@ -71,9 +76,37 @@ All four execution values are integers:
 | `transientRetries` | `1` | `0..10` retries | Fresh-session retries for each transient Lead or delegated Agent failure; `0` disables them. |
 | `baseRetryDelayMs` | `1000` | `0..300000` ms | Full-jitter exponential backoff base when the provider supplies no `Retry-After`; `0` removes the local delay. |
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` seconds | Wall-clock deadline applied separately to every Lead and delegated Agent session. |
+| `maxDelegatedTasks` | `24` | `1..10000` tasks | Maximum delegated tasks started across the complete run, including resumed work but excluding retries. |
+| `maxDelegateBatches` | `8` | `1..1000` batches | Maximum asynchronous delegation batches started across the complete run. |
+| `maxTurnsPerSession` | `60` | `1..100000` turns | Hard limit for model turns in each Lead or delegated Pi session. |
+| `maxToolCallsPerSession` | `120` | `1..1000000` calls | Hard limit for tool calls in each Lead or delegated Pi session. |
 
 Timeouts count as transient failures and consume the same retry budget. Provider
 `Retry-After` values take precedence over the configured backoff base.
+Task and batch limits are run-wide and remain consumed after pause/resume.
+Turn and tool-call limits are enforced per persistent Pi session. Token, cost,
+cache, and context-window usage are reported for observation but are not hard
+limits.
+
+`models` optionally overrides the Pi model for any of `lead`, `research`,
+`write`, and `review`. Omitted roles inherit the model and thinking level active
+when the Wiki run starts. Each override requires a Pi registry `provider` and
+`id`; `thinkingLevel` is optional and accepts `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, or `max`:
+
+```yaml
+wiki:
+  models:
+    research:
+      provider: your-provider
+      id: your-model-id
+      thinkingLevel: high
+```
+
+Configured model identifiers must already exist in the active Pi model
+registry. A resumed session restores its persisted model instead of silently
+switching to a newly configured model.
+
 `language` is required for reader-facing Wiki pages and writer/reviewer
 handoffs. Research briefs are model-readable analysis and do not have to use
 that language.
@@ -139,9 +172,11 @@ Inspect -> Spec plan -> Lead/Writer loop -> Review -> Validate -> Publish
 The Lead loop dynamically chooses research scope, fan-out, follow-up questions,
 page groups, and verification. It is a Wiki-specific runtime, not a reusable
 workflow DSL. Shared admission bounds concurrent Agents, and every session has
-a wall-clock deadline. Each Lead and delegated Agent receives a fresh Pi
-session with auto-compaction enabled. Compaction summarizes older context when
-the session approaches its context limit and preserves recent work.
+a wall-clock deadline. Lead and delegated attempts use persistent Pi sessions
+with auto-compaction; pause/resume reopens the exact session with its saved
+model, thinking level, messages, tool results, and compaction history.
+Compaction summarizes older context when the session approaches its context
+limit and preserves recent work.
 
 The Lead may write directly only for a one-domain Spec with at most three pages.
 Larger plans use delegated Writers, and any Lead compaction permanently disables
@@ -165,16 +200,17 @@ receive accepted references and retrieve only the context they need.
 
 ## Reliability
 
-- Pi owns one Agent's model loop, compaction, and tools. Auto-compaction is
+- Pi owns one Agent's model loop, persistent session, skill loading,
+  compaction, cancellation, usage statistics, and tool execution. Auto-compaction is
   always enabled with Pi's in-memory defaults (`reserveTokens: 16384`,
   `keepRecentTokens: 20000`). Pi itself exposes `compaction.enabled`,
   `compaction.reserveTokens`, and `compaction.keepRecentTokens` settings, but
   the Wiki runtime does not expose them in `workspace.yaml` or inherit project
   or user Pi settings.
 - Pi automatic turn and provider retries are disabled.
-- The Wiki task runtime is the single retry owner. It owns configurable bounded
-  fresh-session retries, concurrency admission, artifact acceptance, and
-  pause/resume.
+- The Wiki task runtime is the single retry owner. It owns asynchronous
+  start/collect/cancel batches, configurable bounded fresh-session retries,
+  concurrency admission, artifact acceptance, and durable pause/resume.
 - Transient 400/500/502/503/504 and network timeouts use the configured retry count.
 - 429 pressure reduces delegated admission, honors `Retry-After`, and uses the
   same retry limit. Exhaustion becomes an explicit failed task receipt.

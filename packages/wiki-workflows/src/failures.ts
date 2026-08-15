@@ -15,6 +15,10 @@ export type WikiNodeErrorCode =
   | "execution_failed"
   | "cancelled"
   | "research_rounds_exhausted"
+  | "delegated_tasks_exhausted"
+  | "delegate_batches_exhausted"
+  | "session_turns_exhausted"
+  | "session_tool_calls_exhausted"
   | "same_defects_twice"
   | "same_validation_twice"
   | "unroutable_validation"
@@ -48,6 +52,10 @@ export interface WikiFailure {
 /** Budget codes that block the run (not retryable agent attempts). */
 export const WIKI_BUDGET_EXHAUSTED_CODES = [
   "research_rounds_exhausted",
+  "delegated_tasks_exhausted",
+  "delegate_batches_exhausted",
+  "session_turns_exhausted",
+  "session_tool_calls_exhausted",
 ] as const satisfies readonly WikiNodeErrorCode[];
 
 export type WikiBudgetExhaustedCode = (typeof WIKI_BUDGET_EXHAUSTED_CODES)[number];
@@ -89,7 +97,7 @@ export function errorMessage(error: unknown): string {
 }
 
 export function isWikiBudgetExhaustedCode(code: unknown): code is WikiBudgetExhaustedCode {
-  return code === "research_rounds_exhausted";
+  return typeof code === "string" && (WIKI_BUDGET_EXHAUSTED_CODES as readonly string[]).includes(code);
 }
 
 /** True for WikiBudgetExhaustedError or duck-typed `{ code: budget… }`. */

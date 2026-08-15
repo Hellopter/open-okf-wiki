@@ -10,6 +10,9 @@ export const PRODUCTION_SKILL_REQUIRED_FILES = [
   "references/research.md",
   "references/write.md",
   "references/review.md",
+  "roles/researcher/SKILL.md",
+  "roles/writer/SKILL.md",
+  "roles/reviewer/SKILL.md",
 ] as const;
 
 /** Packaged production skill; resolved from dist/ to ../skills/wiki-production. */
@@ -22,15 +25,20 @@ export function skillWorkspacePath(runId: string): string {
   return `.okf-wiki/runs/${runId}/skill`;
 }
 
-/** Copy the packaged production skill into the run directory. Replaces a stale copy. */
+/** Snapshot the production skill for a fresh run; resume only verifies that snapshot. */
 export async function materializeProductionSkill(
   workspace: string,
   runId: string,
   sourceRoot = packagedProductionSkillRoot(),
+  preparation: "fresh" | "resume" = "fresh",
 ): Promise<string> {
   assertRunId(runId);
-  await assertProductionSkillTree(sourceRoot, "Packaged Wiki production skill");
   const destination = path.resolve(workspace, skillWorkspacePath(runId));
+  if (preparation === "resume") {
+    await assertProductionSkillTree(destination, "Materialized Wiki production skill");
+    return destination;
+  }
+  await assertProductionSkillTree(sourceRoot, "Packaged Wiki production skill");
   await rm(destination, { recursive: true, force: true });
   await mkdir(path.dirname(destination), { recursive: true });
   await cp(sourceRoot, destination, { recursive: true });

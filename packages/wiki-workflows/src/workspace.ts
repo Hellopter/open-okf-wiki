@@ -38,8 +38,28 @@ export interface WikiWorkspaceWikiConfig {
   baseRetryDelayMs: number;
   /** Wall-clock deadline, in seconds, for each Lead or delegated Agent session. */
   sessionTimeoutSeconds: number;
+  /** Run-wide hard limit for delegated tasks across every batch. */
+  maxDelegatedTasks: number;
+  /** Run-wide hard limit for delegation batches. */
+  maxDelegateBatches: number;
+  /** Hard turn limit for each Lead or delegated Agent session. */
+  maxTurnsPerSession: number;
+  /** Hard tool-call limit for each Lead or delegated Agent session. */
+  maxToolCallsPerSession: number;
+  /** Optional role-specific Pi model selections. Missing roles inherit the active model. */
+  models: WikiRoleModelConfig;
   generation: WikiGenerationProfile;
 }
+
+export type WikiAgentRole = "lead" | "research" | "write" | "review";
+
+export interface WikiModelConfig {
+  provider: string;
+  id: string;
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+export type WikiRoleModelConfig = Partial<Record<WikiAgentRole, WikiModelConfig>>;
 
 export interface WikiGenerationProfile {
   audience: string[];
@@ -65,6 +85,11 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   transientRetries: 1,
   baseRetryDelayMs: 1_000,
   sessionTimeoutSeconds: 1_200,
+  maxDelegatedTasks: 24,
+  maxDelegateBatches: 8,
+  maxTurnsPerSession: 60,
+  maxToolCallsPerSession: 120,
+  models: {},
   generation: structuredClone(DEFAULT_WIKI_GENERATION_PROFILE),
 };
 
@@ -323,16 +348,44 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
 }
 
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
-  if (!isRecord(value)) throw new Error("workspace.yaml wiki must be an object");
-  const exclude = parseStringArray(value.exclude, "wiki.exclude");
+  const wiki = strictObject(value, "wiki", [
+    "exclude", "maxConcurrentAgents", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds",
+    "maxDelegatedTasks", "maxDelegateBatches", "maxTurnsPerSession", "maxToolCallsPerSession", "models", "generation",
+  ]);
+  const exclude = parseStringArray(wiki.exclude, "wiki.exclude");
   return {
     exclude,
-    maxConcurrentAgents: parseInteger(value.maxConcurrentAgents, "wiki.maxConcurrentAgents", DEFAULT_WORKSPACE_WIKI_CONFIG.maxConcurrentAgents, 2, 64),
-    transientRetries: parseInteger(value.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
-    baseRetryDelayMs: parseInteger(value.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
-    sessionTimeoutSeconds: parseInteger(value.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),
-    generation: parseGenerationProfile(value.generation),
+    maxConcurrentAgents: parseInteger(wiki.maxConcurrentAgents, "wiki.maxConcurrentAgents", DEFAULT_WORKSPACE_WIKI_CONFIG.maxConcurrentAgents, 2, 64),
+    transientRetries: parseInteger(wiki.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
+    baseRetryDelayMs: parseInteger(wiki.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
+    sessionTimeoutSeconds: parseInteger(wiki.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),
+    maxDelegatedTasks: parseInteger(wiki.maxDelegatedTasks, "wiki.maxDelegatedTasks", DEFAULT_WORKSPACE_WIKI_CONFIG.maxDelegatedTasks, 1, 10_000),
+    maxDelegateBatches: parseInteger(wiki.maxDelegateBatches, "wiki.maxDelegateBatches", DEFAULT_WORKSPACE_WIKI_CONFIG.maxDelegateBatches, 1, 1_000),
+    maxTurnsPerSession: parseInteger(wiki.maxTurnsPerSession, "wiki.maxTurnsPerSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxTurnsPerSession, 1, 100_000),
+    maxToolCallsPerSession: parseInteger(wiki.maxToolCallsPerSession, "wiki.maxToolCallsPerSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxToolCallsPerSession, 1, 1_000_000),
+    models: parseRoleModels(wiki.models),
+    generation: parseGenerationProfile(wiki.generation),
   };
+}
+
+function parseRoleModels(value: unknown): WikiRoleModelConfig {
+  if (value === undefined) return {};
+  const models = strictObject(value, "wiki.models", ["lead", "research", "write", "review"]);
+  return Object.fromEntries(Object.entries(models).map(([role, raw]) => {
+    const model = strictObject(raw, `wiki.models.${role}`, ["provider", "id", "thinkingLevel"]);
+    const provider = requiredTrimmedString(model.provider, `wiki.models.${role}.provider`);
+    const id = requiredTrimmedString(model.id, `wiki.models.${role}.id`);
+    const thinkingLevel = model.thinkingLevel;
+    if (thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(thinkingLevel))) {
+      throw new Error(`workspace.yaml wiki.models.${role}.thinkingLevel must be a valid Pi thinking level`);
+    }
+    return [role, { provider, id, ...(thinkingLevel !== undefined ? { thinkingLevel } : {}) }];
+  })) as WikiRoleModelConfig;
+}
+
+function requiredTrimmedString(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`workspace.yaml ${field} must be a non-empty string`);
+  return value.trim();
 }
 
 function parseGenerationProfile(value: unknown): WikiGenerationProfile {

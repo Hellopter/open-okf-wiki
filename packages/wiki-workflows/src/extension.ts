@@ -33,6 +33,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       producer ??= options.createProducer?.(active) ?? createConfiguredWikiProducer({
         getModel: () => context?.model,
         getThinkingLevel: () => context?.thinkingLevel,
+        getModelRegistry: () => context?.modelRegistry,
       });
       return producer;
     };

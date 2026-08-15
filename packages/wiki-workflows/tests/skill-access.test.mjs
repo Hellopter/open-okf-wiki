@@ -16,7 +16,7 @@ async function workspace(t) {
   execFileSync("git", ["init", "--quiet"], { cwd: source });
   await writeFile(path.join(root, "workspace.yaml"), [
     "version: 1", "language: en", "defaultSourceIgnores: true",
-    "wiki:", "  exclude: []", "  terminology: {}", "  domains: []",
+    "wiki:", "  exclude: []",
     "sources:", "  - path: source", "    origin:", "      type: link", `      localPath: ${JSON.stringify(source)}`, "",
   ].join("\n"));
   const candidateWikiRoot = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");

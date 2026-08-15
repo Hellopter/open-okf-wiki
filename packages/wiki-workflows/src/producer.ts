@@ -8,6 +8,7 @@ import {
   type WikiRunState,
 } from "./run-ledger.js";
 import {
+  WIKI_MANUAL_PAUSE,
   WikiRunResultError,
   type WikiLeadExecutionRequest,
   type WikiProducerOptions,
@@ -138,7 +139,7 @@ export class WikiProducer {
       } else if (!state.sourceFingerprint || state.sourceFingerprint !== prepared.sourceFingerprint) {
         throw new Error("Repository sources changed while the Wiki run was paused; start a new update run");
       }
-      await this.emit(ledger, runId, "progress", "Running Wiki lead", { stage: "lead" });
+      await this.emit(ledger, runId, "progress", "Running Wiki lead", { stage: "lead", budgets: prepared.budgets });
       const lead = await this.options.adapters.createLead({ ...base, ...prepared });
       const leadContext: WikiLeadExecutionRequest = {
         ...base,
@@ -148,6 +149,10 @@ export class WikiProducer {
         reportObservability: async (input) => {
           const event = await ledger.commitHealth(runId, input);
           if (event) this.publish(event);
+        },
+        persistTaskRuntimeState: async (runtimeState) => {
+          const event = await ledger.commitTaskRuntimeState(runId, runtimeState, this.timestamp());
+          this.publish(event);
         },
       };
       const leadOutcome = await lead.run(leadContext);
@@ -195,7 +200,7 @@ export class WikiProducer {
     if (action === "pause") {
       if (state.status !== "running") throw new Error(`Wiki run ${runId} is not running`);
       await ledger.update(runId, (current) => ({ ...current, status: "paused" }));
-      this.controllers.get(runId)?.abort();
+      this.controllers.get(runId)?.abort(WIKI_MANUAL_PAUSE);
       await settleBounded(this.executions.get(runId));
       await this.emit(ledger, runId, "paused", "Wiki run paused");
     } else if (action === "resume") {

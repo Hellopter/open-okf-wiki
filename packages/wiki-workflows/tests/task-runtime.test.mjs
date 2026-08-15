@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { WikiTaskExecutionError, WikiTaskPauseError } from "../dist/delegate-contracts.js";
-import { classifyTaskFailure, WikiTaskRuntime } from "../dist/task-runtime.js";
+import { WikiBudgetExhaustedError } from "../dist/failures.js";
+import { WIKI_MANUAL_PAUSE } from "../dist/producer-types.js";
+import { classifyTaskFailure, WikiTaskRuntime, WikiWritePathLease } from "../dist/task-runtime.js";
 
 function store() {
   const writes = [];
@@ -25,14 +31,27 @@ function runtime(agent, values = {}) {
   });
 }
 
+async function runBatch(subject, tasks, signal = new AbortController().signal) {
+  const { batchId } = await subject.start(tasks, signal);
+  return await subject.collect(batchId, { until: "all", timeoutSeconds: 60 });
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error("Timed out waiting for test condition");
+}
+
 test("preflights source scopes, context refs, and overlapping write paths", async () => {
   const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) });
-  await assert.rejects(r.delegate([task("bad", { sourceScopeIds: ["secret"] })], new AbortController().signal), /undeclared source scope/);
-  await assert.rejects(r.delegate([task("bad-ref", { contextRefs: ["missing"] })], new AbortController().signal), /undeclared context artifact/);
-  await assert.rejects(r.delegate([
+  await assert.rejects(runBatch(r, [task("bad", { sourceScopeIds: ["secret"] })]), /undeclared source scope/);
+  await assert.rejects(runBatch(r, [task("bad-ref", { contextRefs: ["missing"] })]), /undeclared context artifact/);
+  await assert.rejects(runBatch(r, [
     task("w1", { role: "write", writePaths: ["wiki/core/page.md"] }),
     task("w2", { role: "write", writePaths: ["wiki/core/page.md"] }),
-  ], new AbortController().signal), /overlap/);
+  ]), /overlap/);
 });
 
 test("preflights delegated writes with the publication path contract", async () => {
@@ -46,16 +65,16 @@ test("preflights delegated writes with the publication path contract", async () 
     "wiki/log.md",
   ]) {
     await assert.rejects(
-      r.delegate([task("writer", { role: "write", writePaths: [writePath] })], new AbortController().signal),
+      runBatch(r, [task("writer", { role: "write", writePaths: [writePath] })]),
       /Unsafe Wiki write path/,
       writePath,
     );
   }
 
-  const result = await r.delegate([
+  const result = await runBatch(r, [
     task("root", { role: "write", writePaths: ["wiki/architecture.md"] }),
     task("nested", { role: "write", writePaths: ["wiki/core/page.md"] }),
-  ], new AbortController().signal);
+  ]);
   assert.equal(result.status, "complete");
 });
 
@@ -66,7 +85,7 @@ test("preserves successful branches when a fanout is partial", async () => {
       return { summary: "accepted", markdown: "# Accepted", coverage: ["entrypoint"] };
     },
   });
-  const result = await r.delegate([task("good"), task("bad")], new AbortController().signal);
+  const result = await runBatch(r, [task("good"), task("bad")]);
   assert.equal(result.status, "partial");
   assert.equal(result.receipts.find((value) => value.id === "good").outputs.length, 1);
   assert.equal(result.receipts.find((value) => value.id === "bad").status, "failed");
@@ -98,7 +117,7 @@ test("429 honors Retry-After, reduces shared admission to one, and retries once"
     now: () => now,
     sleep: async (ms) => { sleeps.push(ms); },
   });
-  const result = await r.delegate([task("limited"), task("next")], new AbortController().signal);
+  const result = await runBatch(r, [task("limited"), task("next")]);
   assert.equal(result.status, "complete");
   assert.deepEqual(sleeps, [250]);
   assert.equal(attempts.get("limited"), 2);
@@ -117,7 +136,7 @@ test("provider HTTP 400 is a transient server error and gets one fresh session",
       calls += 1;
       throw error;
     } });
-    const result = await r.delegate([task("http-400")], new AbortController().signal);
+    const result = await runBatch(r, [task("http-400")]);
     const classified = classifyTaskFailure(error);
     assert.equal(classified.retryable, true, error.message);
     assert.equal(result.receipts[0].attempts, 2, error.message);
@@ -132,7 +151,7 @@ test("local schema and validation failures still do not retry", async () => {
     calls += 1;
     throw new WikiTaskExecutionError("Wiki page validation failed", "schema");
   } });
-  const result = await r.delegate([task("schema")], new AbortController().signal);
+  const result = await runBatch(r, [task("schema")]);
   assert.equal(calls, 1);
   assert.equal(result.receipts[0].attempts, 1);
   assert.equal(result.receipts[0].error?.retryable, false);
@@ -162,7 +181,7 @@ test("5xx gets exactly one fresh attempt and quota exits through control flow wi
     serverAttempts += 1;
     throw new WikiTaskExecutionError("server unavailable", "server_error");
   } });
-  const failed = await server.delegate([task("server")], new AbortController().signal);
+  const failed = await runBatch(server, [task("server")]);
   assert.equal(serverAttempts, 2);
   assert.equal(failed.receipts[0].attempts, 2);
 
@@ -172,7 +191,7 @@ test("5xx gets exactly one fresh attempt and quota exits through control flow wi
     throw new WikiTaskExecutionError("quota exceeded", "quota", { retryAfterMs: 30_000 });
   } });
   await assert.rejects(
-    quota.delegate([task("quota")], new AbortController().signal),
+    runBatch(quota, [task("quota")]),
     (error) => error instanceof WikiTaskPauseError && error.reason === "quota" && error.retryAfterMs === 30_000,
   );
   assert.equal(quotaAttempts, 1);
@@ -185,7 +204,7 @@ test("transient retry count is configurable", async () => {
       calls += 1;
       throw new WikiTaskExecutionError("service unavailable", "server_error");
     } }, { transientRetries });
-    const result = await r.delegate([task(`retry-${transientRetries}`)], new AbortController().signal);
+    const result = await runBatch(r, [task(`retry-${transientRetries}`)]);
     assert.equal(result.receipts[0].attempts, transientRetries + 1);
     assert.equal(calls, transientRetries + 1);
   }
@@ -199,7 +218,7 @@ test("timeout and context exhaustion return incomplete receipts and retain seale
       calls += 1;
       throw new WikiTaskExecutionError(code, code, { partialMarkdown: `# Partial ${code}`, coverage: ["partial"] });
     } }, { artifactStore: artifacts });
-    const result = await r.delegate([task(code)], new AbortController().signal);
+    const result = await runBatch(r, [task(code)]);
     assert.equal(result.receipts[0].status, "incomplete");
     assert.equal(result.receipts[0].outputs.length, 2);
     assert.equal(result.receipts[0].attempts, 2);
@@ -220,7 +239,7 @@ test("batch of two tasks emits queued then interleaved start/end progress", asyn
       events.push(event);
     },
   });
-  const result = await r.delegate([task("a"), task("b")], new AbortController().signal);
+  const result = await runBatch(r, [task("a"), task("b")]);
   assert.equal(result.status, "complete");
   const phases = events.map((event) => event.phase);
   assert.deepEqual(phases.slice(0, 2), ["queued", "queued"]);
@@ -243,7 +262,7 @@ test("failed and incomplete tasks still emit end with receipt status", async () 
       failedEvents.push(event);
     },
   });
-  const failedResult = await failed.delegate([task("fail")], new AbortController().signal);
+  const failedResult = await runBatch(failed, [task("fail")]);
   assert.equal(failedResult.receipts[0].status, "failed");
   const failedEnd = failedEvents.find((event) => event.phase === "end");
   assert.ok(failedEnd);
@@ -260,17 +279,18 @@ test("failed and incomplete tasks still emit end with receipt status", async () 
       incompleteEvents.push(event);
     },
   });
-  const incompleteResult = await incomplete.delegate([task("slow")], new AbortController().signal);
+  const incompleteResult = await runBatch(incomplete, [task("slow")]);
   assert.equal(incompleteResult.receipts[0].status, "incomplete");
   const incompleteEnd = incompleteEvents.find((event) => event.phase === "end");
   assert.ok(incompleteEnd);
   assert.equal(incompleteEnd.receipt?.status, "incomplete");
 });
 
-test("quota and usage_limit emit end before throwing WikiTaskPauseError", async () => {
+test("quota and usage_limit persist a resumable pause without a terminal receipt", async () => {
   for (const code of ["quota", "usage_limit"]) {
     /** @type {WikiTaskProgressEvent[]} */
     const events = [];
+    let latestState;
     const r = runtime({
       async run() {
         throw new WikiTaskExecutionError(`${code} exceeded`, code);
@@ -279,18 +299,18 @@ test("quota and usage_limit emit end before throwing WikiTaskPauseError", async 
       onTask(event) {
         events.push(event);
       },
+      onStateChanged(state) { latestState = structuredClone(state); },
     });
     await assert.rejects(
-      r.delegate([task(code)], new AbortController().signal),
+      runBatch(r, [task(code)]),
       (error) => error instanceof WikiTaskPauseError && error.reason === code,
     );
-    const endEvent = events.find((event) => event.phase === "end");
-    assert.ok(endEvent, `${code} must emit end`);
-    assert.equal(endEvent.receipt?.status, "failed");
-    assert.equal(endEvent.receipt?.error?.code, code);
+    const paused = latestState.batches[0].tasks[0];
+    assert.equal(paused.phase, "paused");
+    assert.equal(paused.pause.code, code);
+    assert.equal(paused.receipt, undefined);
     const phases = events.map((event) => event.phase);
-    assert.ok(phases.includes("end"));
-    assert.deepEqual(phases.slice(0, 2), ["queued", "start"]);
+    assert.deepEqual(phases, ["queued", "start"]);
   }
 });
 
@@ -307,7 +327,7 @@ test("onTask throwing does not fail delegate of a successful agent", async () =>
       throw new Error("onTask boom");
     },
   });
-  const result = await r.delegate([task("ok")], new AbortController().signal);
+  const result = await runBatch(r, [task("ok")]);
   assert.equal(result.status, "complete");
   assert.equal(result.receipts[0].status, "complete");
   const phases = events.map((event) => event.phase);
@@ -331,7 +351,7 @@ test("forwards normalized attempt-aware telemetry before task end", async () => 
       if (event.phase === "update" && event.telemetry.sampledAt.endsWith("01.000Z")) await firstDelivery;
     },
   });
-  const delegated = r.delegate([task("live")], new AbortController().signal);
+  const delegated = runBatch(r, [task("live")]);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(events.filter((event) => event.phase === "end").length, 0);
   releaseFirst();
@@ -354,8 +374,8 @@ test("passes an incrementing batch identity to delegated agents", async () => {
       return { summary: "ok", markdown: "ok" };
     },
   });
-  await r.delegate([task("first")], new AbortController().signal);
-  await r.delegate([task("second")], new AbortController().signal);
+  await runBatch(r, [task("first")]);
+  await runBatch(r, [task("second")]);
   assert.deepEqual(batches, [1, 2]);
 });
 
@@ -370,6 +390,363 @@ test("telemetry delivery failures do not fail or delay task completion", async (
       if (event.phase === "update") throw new Error("telemetry unavailable");
     },
   });
-  const result = await r.delegate([task("observable")], new AbortController().signal);
+  const result = await runBatch(r, [task("observable")]);
   assert.equal(result.status, "complete");
+});
+
+test("start returns before background tasks finish and collect exposes an immediate snapshot", async () => {
+  let finish;
+  const blocked = new Promise((resolve) => { finish = resolve; });
+  const r = runtime({ async run() {
+    await blocked;
+    return { summary: "ok", markdown: "ok" };
+  } });
+
+  const started = await r.start([task("background")], new AbortController().signal);
+  assert.deepEqual(started, { batchId: 1 });
+  assert.throws(() => r.assertFinishable(), /terminal state/);
+  const live = await r.collect(started.batchId, { until: "all", timeoutSeconds: 0 });
+  assert.equal(live.status, "running");
+  assert.deepEqual(live.pendingTaskIds, ["background"]);
+
+  finish();
+  const complete = await r.collect(started.batchId, { until: "all", timeoutSeconds: 1 });
+  assert.equal(complete.status, "complete");
+  assert.doesNotThrow(() => r.assertFinishable());
+});
+
+test("collect any returns partial progress while all waits for every task", async () => {
+  const finishes = new Map();
+  const r = runtime({ async run(value) {
+    await new Promise((resolve) => { finishes.set(value.id, resolve); });
+    return { summary: value.id, markdown: value.id };
+  } }, { concurrency: 2 });
+  const { batchId } = await r.start([task("first"), task("second")], new AbortController().signal);
+  while (finishes.size < 2) await new Promise((resolve) => setImmediate(resolve));
+
+  finishes.get("second")();
+  const any = await r.collect(batchId, { until: "any", timeoutSeconds: 1 });
+  assert.equal(any.status, "running");
+  assert.deepEqual(any.receipts.map((value) => value.id), ["second"]);
+  assert.deepEqual(any.pendingTaskIds, ["first"]);
+  assert.equal((await r.collect(batchId, { until: "all", timeoutSeconds: 0 })).status, "running");
+
+  finishes.get("first")();
+  const all = await r.collect(batchId, { until: "all", timeoutSeconds: 1 });
+  assert.equal(all.status, "complete");
+  assert.deepEqual(all.receipts.map((value) => value.id), ["first", "second"]);
+});
+
+test("collect timeout is bounded and does not cancel background work", async () => {
+  let finish;
+  const r = runtime({ async run() {
+    await new Promise((resolve) => { finish = resolve; });
+    return { summary: "ok", markdown: "ok" };
+  } });
+  const { batchId } = await r.start([task("slow")], new AbortController().signal);
+  const timedOut = await r.collect(batchId, { until: "any", timeoutSeconds: 0.01 });
+  assert.equal(timedOut.status, "running");
+  assert.throws(() => r.assertFinishable(), /terminal state/);
+  await assert.rejects(r.collect(batchId, { until: "all", timeoutSeconds: 61 }), /between 0 and 60/);
+  finish();
+  assert.equal((await r.collect(batchId, { until: "all", timeoutSeconds: 1 })).status, "complete");
+});
+
+test("cancel supports selected tasks and the remaining batch", async () => {
+  const r = runtime({ async run(_value, context) {
+    await new Promise((resolve, reject) => {
+      if (context.signal.aborted) return reject(context.signal.reason);
+      context.signal.addEventListener("abort", () => reject(context.signal.reason), { once: true });
+    });
+    return { summary: "unreachable", markdown: "unreachable" };
+  } }, { concurrency: 2 });
+  const { batchId } = await r.start([task("keep"), task("stop")], new AbortController().signal);
+
+  const partial = await r.cancel(batchId, ["stop"], "no longer needed");
+  assert.equal(partial.status, "running");
+  assert.equal(partial.receipts[0].id, "stop");
+  assert.equal(partial.receipts[0].error?.code, "cancelled");
+  assert.deepEqual(partial.pendingTaskIds, ["keep"]);
+
+  const cancelled = await r.cancel(batchId, undefined, "stop batch");
+  assert.equal(cancelled.status, "failed");
+  assert.ok(cancelled.receipts.every((value) => value.error?.code === "cancelled"));
+});
+
+test("the run-level signal cancels every task in a batch", async () => {
+  const r = runtime({ async run(_value, context) {
+    await new Promise((resolve, reject) => {
+      if (context.signal.aborted) return reject(context.signal.reason);
+      context.signal.addEventListener("abort", () => reject(context.signal.reason), { once: true });
+    });
+    return { summary: "unreachable", markdown: "unreachable" };
+  } }, { concurrency: 2 });
+  const run = new AbortController();
+  const { batchId } = await r.start([task("one"), task("two")], run.signal);
+  run.abort();
+
+  const result = await r.collect(batchId, { until: "all", timeoutSeconds: 1 });
+  assert.equal(result.status, "failed");
+  assert.ok(result.receipts.every((value) => value.error?.code === "cancelled"));
+});
+
+test("write path leases serialize overlapping writes across batches", async () => {
+  const finishes = new Map();
+  const started = [];
+  let active = 0;
+  let maxActive = 0;
+  const r = runtime({ async run(value) {
+    started.push(value.id);
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => { finishes.set(value.id, resolve); });
+    active -= 1;
+    return { summary: "ok", markdown: "ok" };
+  } }, { concurrency: 2 });
+  const write = (id) => task(id, { role: "write", writePaths: ["wiki/core/shared.md"] });
+  const first = await r.start([write("first-write")], new AbortController().signal);
+  const second = await r.start([write("second-write")], new AbortController().signal);
+  while (!finishes.has("first-write")) await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["first-write"]);
+
+  finishes.get("first-write")();
+  await r.collect(first.batchId, { until: "all", timeoutSeconds: 1 });
+  while (!finishes.has("second-write")) await new Promise((resolve) => setImmediate(resolve));
+  finishes.get("second-write")();
+  await r.collect(second.batchId, { until: "all", timeoutSeconds: 1 });
+  assert.equal(maxActive, 1);
+});
+
+test("task and batch limits reject new starts with budget errors", async () => {
+  const byTasks = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, { maxDelegatedTasks: 1 });
+  await assert.rejects(
+    byTasks.start([task("one"), task("two")], new AbortController().signal),
+    (error) => error?.name === "WikiBudgetExhaustedError" && error.code === "delegated_tasks_exhausted",
+  );
+
+  const byBatches = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, { maxDelegateBatches: 1 });
+  await byBatches.start([task("allowed")], new AbortController().signal);
+  await assert.rejects(
+    byBatches.start([task("blocked")], new AbortController().signal),
+    (error) => error?.name === "WikiBudgetExhaustedError" && error.code === "delegate_batches_exhausted",
+  );
+});
+
+test("background task failures are consumed without an unhandled rejection", async () => {
+  const unhandled = [];
+  const listener = (error) => { unhandled.push(error); };
+  process.on("unhandledRejection", listener);
+  try {
+    const r = runtime({ async run() { throw new Error("background failure"); } });
+    const { batchId } = await r.start([task("detached")], new AbortController().signal);
+    await r.collect(batchId, { until: "all", timeoutSeconds: 1 });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", listener);
+  }
+});
+
+test("restores queued and running tasks with exact attempt and session identity", async () => {
+  const contexts = new Map();
+  const restoredState = {
+    batches: [{
+      batchId: 1,
+      tasks: [
+        { task: task("queued"), phase: "queued", attempt: 1, collected: false },
+        { task: task("running"), phase: "running", attempt: 2, sessionFile: "/sessions/running.jsonl", collected: false },
+      ],
+    }],
+  };
+  let latestState;
+  const r = runtime({ async run(value, context) {
+    contexts.set(value.id, { attempt: context.attempt, sessionFile: context.sessionFile });
+    return { summary: "resumed", markdown: "resumed" };
+  } }, {
+    transientRetries: 2,
+    restoredState,
+    onStateChanged(state) { latestState = structuredClone(state); },
+  });
+
+  await r.resume(new AbortController().signal);
+  const result = await r.collect(1, { until: "all", timeoutSeconds: 1 });
+  assert.equal(result.status, "complete");
+  assert.deepEqual(contexts.get("queued"), { attempt: 2, sessionFile: undefined });
+  assert.deepEqual(contexts.get("running"), { attempt: 2, sessionFile: "/sessions/running.jsonl" });
+  assert.ok(latestState.batches[0].tasks.every((value) => value.phase === "terminal" && value.collected));
+});
+
+test("terminal uncollected receipts survive reconstruction and block finish", async () => {
+  let latestState;
+  const first = runtime({ run: async () => ({ summary: "done", markdown: "done" }) }, {
+    onStateChanged(state) { latestState = structuredClone(state); },
+  });
+  const { batchId } = await first.start([task("durable")], new AbortController().signal);
+  await waitFor(() => latestState?.batches[0]?.tasks[0]?.phase === "terminal");
+  assert.throws(() => first.assertFinishable(), /receipt to be collected/);
+
+  const restored = runtime({ run: async () => { throw new Error("terminal tasks must not restart"); } }, {
+    restoredState: latestState,
+    onStateChanged(state) { latestState = structuredClone(state); },
+  });
+  await restored.resume(new AbortController().signal);
+  assert.throws(() => restored.assertFinishable(), /receipt to be collected/);
+  assert.equal((await restored.collect(batchId, { until: "all", timeoutSeconds: 0 })).status, "complete");
+  assert.doesNotThrow(() => restored.assertFinishable());
+  assert.equal(latestState.batches[0].tasks[0].collected, true);
+});
+
+test("restored counters preserve budgets and next batch identity", async () => {
+  let latestState;
+  const original = runtime({ run: async () => ({ summary: "done", markdown: "done" }) }, {
+    onStateChanged(state) { latestState = structuredClone(state); },
+  });
+  await runBatch(original, [task("same-id")]);
+
+  const exhausted = runtime({ run: async () => ({ summary: "unused", markdown: "unused" }) }, {
+    restoredState: latestState,
+    maxDelegatedTasks: 1,
+    maxDelegateBatches: 1,
+  });
+  await assert.rejects(exhausted.start([task("new")], new AbortController().signal), (error) => error.code === "delegate_batches_exhausted");
+
+  const taskExhausted = runtime({ run: async () => ({ summary: "unused", markdown: "unused" }) }, {
+    restoredState: latestState,
+    maxDelegatedTasks: 1,
+    maxDelegateBatches: 2,
+  });
+  await assert.rejects(taskExhausted.start([task("new")], new AbortController().signal), (error) => error.code === "delegated_tasks_exhausted");
+
+  const continued = runtime({ run: async () => ({ summary: "continued", markdown: "continued" }) }, {
+    restoredState: latestState,
+    maxDelegatedTasks: 2,
+    maxDelegateBatches: 2,
+  });
+  const started = await continued.start([task("same-id")], new AbortController().signal);
+  assert.equal(started.batchId, 2);
+  assert.equal((await continued.collect(2, { until: "all", timeoutSeconds: 1 })).status, "complete");
+});
+
+test("provider quota resumes the same attempt and session before succeeding", async () => {
+  let latestState;
+  const first = runtime({ async run(value, context) {
+    await context.onTelemetry({
+      target: { kind: "task", batch: context.batch, taskId: value.id },
+      attempt: context.attempt,
+      sampledAt: "2026-01-01T00:00:00.000Z",
+      activity: "waiting_model",
+      activeTools: [],
+      sessionFile: "/sessions/quota.jsonl",
+    });
+    throw new WikiTaskExecutionError("quota exhausted", "quota", { retryAfterMs: 500 });
+  } }, { onStateChanged(state) { latestState = structuredClone(state); } });
+  await first.start([task("quota-state")], new AbortController().signal);
+  await waitFor(() => latestState?.batches[0]?.tasks[0]?.phase === "paused");
+  assert.throws(() => first.assertFinishable(), (error) => error instanceof WikiTaskPauseError && error.reason === "quota");
+  await assert.rejects(first.collect(1, { until: "all", timeoutSeconds: 0 }), (error) => error instanceof WikiTaskPauseError);
+  assert.equal(latestState.batches[0].tasks[0].attempt, 1);
+  assert.equal(latestState.batches[0].tasks[0].sessionFile, "/sessions/quota.jsonl");
+  assert.equal(latestState.batches[0].tasks[0].receipt, undefined);
+
+  let resumedContext;
+  const restored = runtime({ async run(_value, context) {
+    resumedContext = { attempt: context.attempt, sessionFile: context.sessionFile };
+    return { summary: "recovered", markdown: "recovered" };
+  } }, { restoredState: latestState });
+  await restored.resume(new AbortController().signal);
+  const result = await restored.collect(1, { until: "all", timeoutSeconds: 1 });
+  assert.equal(result.status, "complete");
+  assert.deepEqual(resumedContext, { attempt: 1, sessionFile: "/sessions/quota.jsonl" });
+  assert.doesNotThrow(() => restored.assertFinishable());
+});
+
+test("manual pause preserves a running task for exact resume without a cancelled receipt", async () => {
+  let latestState;
+  const run = new AbortController();
+  const first = runtime({ async run(value, context) {
+    await context.onTelemetry({
+      target: { kind: "task", batch: context.batch, taskId: value.id },
+      attempt: context.attempt,
+      sampledAt: "2026-01-01T00:00:00.000Z",
+      activity: "waiting_model",
+      activeTools: [],
+      sessionFile: "/sessions/manual.jsonl",
+    });
+    await new Promise((resolve, reject) => context.signal.addEventListener("abort", () => reject(context.signal.reason), { once: true }));
+    return { summary: "unreachable", markdown: "unreachable" };
+  } }, { onStateChanged(state) { latestState = structuredClone(state); } });
+  await first.start([task("manual")], run.signal);
+  await waitFor(() => latestState?.batches[0]?.tasks[0]?.sessionFile === "/sessions/manual.jsonl");
+  run.abort(WIKI_MANUAL_PAUSE);
+  await waitFor(() => latestState?.batches[0]?.tasks[0]?.phase === "paused");
+  assert.equal(latestState.batches[0].tasks[0].receipt, undefined);
+  assert.equal(latestState.batches[0].tasks[0].pause, undefined);
+
+  let resumedContext;
+  const restored = runtime({ async run(_value, context) {
+    resumedContext = { attempt: context.attempt, sessionFile: context.sessionFile };
+    return { summary: "resumed", markdown: "resumed" };
+  } }, { restoredState: latestState });
+  await restored.resume(new AbortController().signal);
+  assert.equal((await restored.collect(1, { until: "all", timeoutSeconds: 1 })).status, "complete");
+  assert.deepEqual(resumedContext, { attempt: 1, sessionFile: "/sessions/manual.jsonl" });
+});
+
+test("duplicate task ids produce independent batch-qualified artifact handles", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-task-artifacts-"));
+  t.after(async () => await rm(workspace, { recursive: true, force: true }));
+  const artifactStore = createWikiArtifactStore({ workspace });
+  let consumedHandles;
+  const r = new WikiTaskRuntime({
+    runId: "run-1",
+    cwd: workspace,
+    sourceScopes: { api: "api" },
+    artifactStore,
+    agent: { async run(value, context) {
+      if (value.id === "consumer") consumedHandles = Object.keys(context.contextArtifacts).sort();
+      return { summary: value.id, markdown: `${value.id}:${context.batch}` };
+    } },
+  });
+  const first = await runBatch(r, [task("reused")]);
+  const second = await runBatch(r, [task("reused")]);
+  const handles = [first.receipts[0].outputs[0].nodeId, second.receipts[0].outputs[0].nodeId];
+  assert.deepEqual(handles, ["b1-reused", "b2-reused"]);
+  await runBatch(r, [task("consumer", { contextRefs: handles })]);
+  assert.deepEqual(consumedHandles, handles);
+
+  const manifest = JSON.parse(await readFile(path.join(workspace, ".okf-wiki", "runs", "run-1", "manifest.json"), "utf8"));
+  assert.ok(handles.every((handle) => manifest.artifacts.some((artifact) => artifact.nodeId === handle)));
+  assert.equal(manifest.artifacts.filter((artifact) => handles.includes(artifact.nodeId)).length, 2);
+});
+
+test("progress events carry immutable batch identity for duplicate ids across batches", async () => {
+  const events = [];
+  const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, {
+    onTask(event) { events.push(event); },
+  });
+  await runBatch(r, [task("reused")]);
+  await runBatch(r, [task("reused")]);
+  assert.deepEqual([...new Set(events.slice(0, 3).map((event) => event.batchId))], [1]);
+  assert.deepEqual([...new Set(events.slice(3).map((event) => event.batchId))], [2]);
+  assert.ok(events.every((event) => Object.hasOwn(event, "batchId")));
+});
+
+test("review admission observes the shared run write lease", async () => {
+  const lease = new WikiWritePathLease();
+  const release = await lease.acquire(["wiki/core/page.md"], new AbortController().signal);
+  const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, { writeLease: lease });
+  await assert.rejects(
+    r.start([task("review", { role: "review", reviewPaths: ["wiki/core/page.md"] })], new AbortController().signal),
+    /review is blocked.*writes are active/i,
+  );
+  release();
+});
+
+test("classifyTaskFailure preserves session budget codes", () => {
+  for (const code of ["session_turns_exhausted", "session_tool_calls_exhausted"]) {
+    const failure = classifyTaskFailure(new WikiBudgetExhaustedError("session budget exhausted", code));
+    assert.equal(failure.code, code);
+    assert.equal(failure.retryable, false);
+  }
 });
