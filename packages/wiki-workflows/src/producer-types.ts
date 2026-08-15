@@ -1,31 +1,43 @@
-import type { WikiGenerationProfile, WikiRoleModelConfig } from "./workspace.js";
-import type { WikiSpec } from "./wiki-spec.js";
-import type { WikiArtifactRef } from "./artifact-store.js";
-import type { WikiDelegateError, WikiDelegateGap, WikiDelegateReceipt, WikiDelegateTask } from "./delegate-contracts.js";
-
-export type WikiProducerOperation = "update" | "regenerate";
-
 export type WikiRunStatus = "running" | "paused" | "succeeded" | "failed" | "cancelled";
 
 export type WikiRunControl = "pause" | "resume" | "cancel";
 
-export const WIKI_MANUAL_PAUSE = Symbol.for("okf-wiki.manual-pause");
-
 export interface WikiProducerRequest {
   cwd: string;
-  operation?: WikiProducerOperation;
   focus?: string;
 }
 
-export interface WikiRunEvent {
+interface WikiRunEventBase {
   version: 1;
   runId: string;
   sequence: number;
   at: string;
-  type: "started" | "progress" | "telemetry" | "paused" | "resumed" | "cancelled" | "completed" | "failed";
   message: string;
-  data?: Record<string, unknown>;
 }
+
+/** Durable run facts. Each variant owns its complete, typed payload. */
+export type WikiRunEvent = WikiRunEventBase & (
+  | { type: "started" }
+  | { type: "stage"; stage: WikiRunStage; budgets?: WikiExecutionBudgets }
+  | { type: "progress" }
+  | {
+      type: "delegate";
+      phase: "queued" | "started" | "updated" | "completed" | "settled";
+      batch: number;
+      completed: number;
+      total: number;
+      tasks?: WikiTaskSnapshot[];
+      taskId?: string;
+    }
+  | { type: "telemetry"; phase: "agent_update"; target: WikiAgentTarget }
+  | { type: "telemetry"; phase: "observability_health"; target: WikiAgentTarget; status: "degraded" | "healthy" }
+  | { type: "paused"; reason?: WikiRunPause["reason"]; retryAt?: string }
+  | { type: "resumed" }
+  | { type: "cancelled" }
+  | { type: "completed" }
+  | { type: "failed" }
+  | { type: "warning"; code: "cleanup_failed"; detail: string }
+);
 
 export type WikiRunStage = "prepare" | "lead" | "validate" | "publish";
 
@@ -151,40 +163,6 @@ export interface WikiExecutionBudgets {
   maxToolCallsPerSession: number;
 }
 
-export interface WikiTaskRuntimePartial {
-  outputs: WikiArtifactRef[];
-  coverage: string[];
-  gaps: WikiDelegateGap[];
-}
-
-export interface WikiTaskRuntimeExecution {
-  task: WikiDelegateTask;
-  phase: "queued" | "running" | "paused" | "terminal";
-  attempt: number;
-  collected: boolean;
-  /** Provider pause details; manual pauses intentionally have no task failure. */
-  pause?: WikiDelegateError;
-  partial?: WikiTaskRuntimePartial;
-}
-
-export interface WikiTaskRuntimeTaskState extends WikiTaskRuntimeExecution {
-  sessionFile?: string;
-  receipt?: WikiDelegateReceipt;
-}
-
-export interface WikiTaskRuntimeBatchState {
-  batchId: number;
-  tasks: WikiTaskRuntimeTaskState[];
-}
-
-export interface WikiTaskRuntimeState {
-  batches: WikiTaskRuntimeBatchState[];
-}
-
-export interface WikiAgentExecution extends WikiTaskRuntimeExecution {
-  batchId: number;
-}
-
 export interface WikiRunProgress {
   stage: WikiRunStage;
   lead?: WikiAgentSnapshot;
@@ -202,19 +180,27 @@ export interface WikiAgentInspection {
   runId: string;
   agent: WikiAgentSnapshot;
   process: WikiActivityEntry[];
-  receipt?: import("./delegate-contracts.js").WikiDelegateReceipt;
+  outcome?: WikiAgentOutcome;
   handoff?: string;
   handoffPath?: string;
 }
 
-/** Durable bounded process record for either the lead or one delegated task. */
-export interface WikiAgentRecord {
-  agent: WikiAgentSnapshot;
-  process: WikiActivityEntry[];
-  receipt?: import("./delegate-contracts.js").WikiDelegateReceipt;
-  sessionFile?: string;
-  /** Durable task execution state not duplicated in the LLM-visible receipt. */
-  execution?: WikiAgentExecution;
+/** Stable public projection of an Agent outcome; durable implementation references stay private. */
+export interface WikiAgentOutcome {
+  id: string;
+  role: "research" | "write" | "review";
+  status: "complete" | "incomplete" | "failed";
+  summary: string;
+  coverage: string[];
+  gaps: Array<{ question: string; sourceScopeIds?: string[] }>;
+  error?: { code: string; message: string; retryable: boolean; retryAfterMs?: number };
+  attempts: number;
+  review?: {
+    verdict: "pass" | "changes_requested";
+    reviewedPaths: string[];
+    findings: Array<{ path: string; severity: "critical" | "major" | "minor"; message: string; evidence: string[]; suggestion: string }>;
+    profileCoverage: string[];
+  };
 }
 
 export interface WikiActivityPage {
@@ -225,7 +211,6 @@ export interface WikiActivityPage {
 export interface WikiRunView {
   id: string;
   cwd: string;
-  operation: WikiProducerOperation;
   focus?: string;
   status: WikiRunStatus;
   createdAt: string;
@@ -234,7 +219,14 @@ export interface WikiRunView {
   lastEventSequence: number;
   error?: string;
   pause?: WikiRunPause;
+  warnings?: WikiRunWarning[];
   progress?: WikiRunProgress;
+}
+
+export interface WikiRunWarning {
+  code: "cleanup_failed";
+  message: string;
+  at: string;
 }
 
 export interface WikiProducerResult {
@@ -254,87 +246,24 @@ export interface WikiRunPause {
 export interface WikiRunHandle {
   readonly id: string;
   view(): Promise<WikiRunView>;
-  events(after?: number, signal?: AbortSignal): AsyncIterable<WikiRunEvent>;
+  updates(after?: number, signal?: AbortSignal): AsyncIterable<WikiRunUpdate>;
   result(): Promise<WikiProducerResult>;
   control(action: WikiRunControl): Promise<WikiRunView>;
   inspectAgent(target: WikiAgentTarget): Promise<WikiAgentInspection | undefined>;
   activity(options?: { before?: number; limit?: number; actor?: WikiAgentTarget; severity?: WikiActivityEntry["severity"] }): Promise<WikiActivityPage>;
 }
 
-export interface WikiRunAdapterContext {
-  runId: string;
-  cwd: string;
-  operation: WikiProducerOperation;
-  focus?: string;
-  signal: AbortSignal;
-  /** Fresh creates a candidate; resume must preserve the existing candidate. */
-  preparation: "fresh" | "resume";
+/** Complete public producer interface. Implementations are intentionally opaque. */
+export interface WikiProducer {
+  start(request: WikiProducerRequest): Promise<WikiRunHandle>;
+  open(runId: string, cwd: string): Promise<WikiRunHandle | undefined>;
+  list(cwd: string): Promise<WikiRunView[]>;
 }
 
-export interface WikiPreparedRun {
-  inspection: unknown;
-  /** Source state pinned by the first preparation and checked on every resume. */
-  sourceFingerprint: string;
-  candidateWikiRoot: string;
-  /** Materialized production skill; readable by Lead and delegated Agents. */
-  skillRoot: string;
-  sourceScopeIds: string[];
-  language: "zh" | "en";
-  generation: WikiGenerationProfile;
-  /** Last published topology supplied to incremental planning. */
-  priorWikiSpec?: WikiSpec;
-  maxConcurrentAgents: number;
-  budgets: WikiExecutionBudgets;
-  /** Stable role selections; the production Pi adapter resolves them to provider models. */
-  models: WikiRoleModelConfig;
-  taskRuntimeState: WikiTaskRuntimeState;
-  runSessionDirectory: string;
-  leadSessionFile?: string;
-  leadSessionAttempt?: number;
-  transientRetries: number;
-  /** Per-session wall-clock deadline, converted from workspace seconds. */
-  sessionTimeoutMs: number;
-  baseRetryDelayMs: number;
-  prompt: string;
-}
-
-export interface WikiLeadExecutionRequest extends WikiRunAdapterContext, WikiPreparedRun {
-  attempt: number;
-  report(message: string, data?: Record<string, unknown>): Promise<void>;
-  reportObservability(input: { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string }): Promise<void>;
-  persistTaskRuntimeState(state: WikiTaskRuntimeState): Promise<void>;
-}
-
-export type WikiLeadOutcome =
-  | { kind: "complete"; summary: string }
-  | { kind: "pause"; reason: WikiRunPause["reason"]; summary: string; retryAt?: string };
-
-/** Run-scoped model port. Production creates it with pinned scopes/artifacts/candidate. */
-export interface WikiLeadRuntime {
-  run(request: WikiLeadExecutionRequest): Promise<WikiLeadOutcome>;
-}
-
-/** @internal Production composition seam; callers use createProductionWikiProducer. */
-export interface WikiProducerAdapters {
-  prepare(input: WikiRunAdapterContext): Promise<WikiPreparedRun>;
-  createLead(input: WikiRunAdapterContext & WikiPreparedRun): WikiLeadRuntime | Promise<WikiLeadRuntime>;
-  /** Deterministically validate the candidate directory; no model-authored spec input. */
-  validate(input: WikiRunAdapterContext & WikiPreparedRun & {
-    leadOutcome: WikiLeadOutcome;
-  }): Promise<unknown>;
-  publish(input: WikiRunAdapterContext & WikiPreparedRun & {
-    leadOutcome: WikiLeadOutcome;
-    validation: unknown;
-  }): Promise<{ pages: string[]; sourceFingerprint: string }>;
-}
-
-/** @internal Production composition options. */
-export interface WikiProducerOptions {
-  adapters: WikiProducerAdapters;
-  now?: () => Date;
-  createId?: () => string;
-  /** Override only for isolated tests. Defaults to `<cwd>/.okf-wiki`. */
-  ledgerRoot?: (cwd: string) => string;
+export interface WikiRunUpdate {
+  event: WikiRunEvent;
+  /** Durable projection produced by the same run transaction as `event`. */
+  view: WikiRunView;
 }
 
 export class WikiRunResultError extends Error {

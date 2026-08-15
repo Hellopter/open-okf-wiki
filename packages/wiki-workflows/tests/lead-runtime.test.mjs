@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { Value } from "typebox/value";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { WikiTaskExecutionError } from "../dist/delegate-contracts.js";
+import { createWikiDelegateContract, WikiTaskExecutionError } from "../dist/delegate-contracts.js";
 import { createPiLeadRuntime, PiWikiLeafAgent } from "../dist/lead-runtime.js";
 import { materializeProductionSkill } from "../dist/skill-store.js";
 import { wikiPlanParameters } from "../dist/wiki-spec.js";
@@ -28,21 +28,29 @@ async function workspace(t) {
   ].join("\n"));
   const candidateWikiRoot = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
   await mkdir(candidateWikiRoot, { recursive: true });
+  await writeFile(path.join(root, ".okf-wiki", "runs", "run-1", "run-state.json"), JSON.stringify({ version: 2, id: "run-1", status: "running", attempt: 1, executionToken: "execution-1" }));
   const skillRoot = await materializeProductionSkill(root, "run-1");
   return { root, candidateWikiRoot, skillRoot };
 }
 
 function request(root, candidateWikiRoot, skillRoot = path.join(root, ".okf-wiki", "runs", "run-1", "skill")) {
   return {
-    runId: "run-1", cwd: root, operation: "regenerate", preparation: "fresh", focus: undefined,
-    inspection: {}, sourceFingerprint: "source-1", candidateWikiRoot, skillRoot, sourceScopeIds: [], prompt: "Build the Wiki", attempt: 1,
-    taskRuntimeState: { batches: [] },
-    persistTaskRuntimeState: async () => {},
-    signal: new AbortController().signal, report: async () => {}, generation,
+    runId: "run-1", cwd: root, preparation: "fresh", focus: undefined,
+    sourcePlan: pinnedPlan(root), sourceFingerprint: "a".repeat(64), candidateWikiRoot, skillRoot, sourceScopeIds: ["source"], prompt: "Build the Wiki", attempt: 1, executionToken: "execution-1",
+    signal: new AbortController().signal, record: async () => {}, generation, language: "en",
+  };
+}
+
+function pinnedPlan(root) {
+  const source = path.join(root, "source");
+  return {
+    workspaceRoot: root, workspaceRealPath: root, configPath: path.join(root, "workspace.yaml"), defaultSourceIgnores: true, excludes: [], fingerprint: "a".repeat(64),
+    sources: [{ scopeId: "source", logicalPath: "source", absolutePath: source, realPath: source, repositoryRoot: source, repositoryIdentity: "test-source", head: "0".repeat(40), dirtyFingerprint: "b".repeat(64) }],
   };
 }
 
 const generation = { audience: [], purpose: "", focus: { include: [], exclude: [] }, granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] } };
+const transactionalWriter = { async replacePage() {} };
 
 function page(pageType, pagePath) {
   return { pageType, path: pagePath, title: pagePath, purpose: "Document behavior", readerQuestions: [], requiredFacets: [], findingIds: [] };
@@ -103,8 +111,24 @@ async function delegateAndCollect(tools, tasks, timeoutSeconds = 60) {
 
 async function runtimeDelegate(runtime, tasks) {
   const signal = new AbortController().signal;
-  const started = await runtime.start(tasks, signal);
+  const batchId = runtimeBatches.get(runtime) ?? 1;
+  runtimeBatches.set(runtime, batchId + 1);
+  const contracts = tasks.map((task) => createWikiDelegateContract(batchId, task, task.role === "review" ? { version: 1, candidateRevision: 1, treeDigest: "a".repeat(64), policyDigest: "b".repeat(64), paths: task.reviewPaths } : undefined));
+  const started = await runtime.start(contracts, signal);
   return await runtime.collect(started.batchId, { until: "all", timeoutSeconds: 60 }, signal);
+}
+
+const runtimeBatches = new WeakMap();
+function runtimeTransitions() {
+  const batches = new Map();
+  const saved = (batchId, taskId) => batches.get(batchId).get(taskId);
+  return {
+    async batchQueued(contracts) { batches.set(contracts[0].batchId, new Map(contracts.map((task) => [task.id, { task, phase: "queued", attempt: 0, collected: false }]))); },
+    async taskStarted(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "running", attempt: input.attempt, sessionFile: input.sessionFile, partial: input.partial }); },
+    async taskPaused(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "paused", attempt: input.attempt, pause: input.pause }); },
+    async taskSettled(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "terminal", receipt: input.receipt }); },
+    async tasksCollected(batchId, taskIds) { for (const taskId of taskIds) saved(batchId, taskId).collected = true; },
+  };
 }
 
 test("governed Lead rejects writes before wiki_plan without replacing an existing page", async (t) => {
@@ -282,12 +306,11 @@ test("Lead projects duplicate task IDs independently by runtime batchId", async 
     })(options),
   });
   const input = request(root, candidateWikiRoot);
-  input.report = async (_message, data) => { if (data?.batch) reports.push(data); };
+  input.record = async (observation) => { if (observation.kind === "batch" && observation.phase === "completed") reports.push(observation); };
   await assert.rejects(runtime.run(input), /without wiki_finish/);
 
-  const terminal = reports.filter((data) => data.receipt);
-  assert.deepEqual(new Set(terminal.map((data) => data.batch)), new Set([1, 2]));
-  assert.ok(terminal.every((data) => data.tasks.length === 1 && data.tasks[0].id === "same-id"));
+  assert.deepEqual(new Set(reports.map((data) => data.batch)), new Set([1, 2]));
+  assert.ok(reports.every((data) => data.tasks.length === 1 && data.tasks[0].id === "same-id"));
 });
 
 test("wiki_finish rejects terminal delegated receipts that were not collected", async (t) => {
@@ -307,7 +330,7 @@ test("wiki_finish rejects terminal delegated receipts that were not collected", 
     })(options),
   });
   const input = request(root, candidateWikiRoot);
-  input.report = async (_message, data) => { if (data?.receipt?.id === "research") terminalReported(); };
+  input.record = async (observation) => { if (observation.kind === "batch" && observation.phase === "completed" && observation.taskId === "research") terminalReported(); };
   await assert.rejects(runtime.run(input), /terminal delegated receipt to be collected/);
 });
 
@@ -398,8 +421,9 @@ test("failed Lead persistence releases its write lease without advancing the rev
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /without wiki_finish/);
   assert.match(finishError.message, /lacks passing independent review/);
   assert.doesNotMatch(finishError.message, /writes are active/);
-  const state = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "workflow-state.json"), "utf8"));
-  assert.equal(state.writeRevision, 0);
+  const state = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json"), "utf8"));
+  assert.equal(state.specRevision, 1);
+  assert.equal(state.candidateRevision, 1, "failed page replacement must not advance the global Candidate Revision");
 });
 
 test("wiki tools use json_schema constrained sampling and reject write tasks without writePaths", async (t) => {
@@ -443,6 +467,7 @@ test("wiki tools use json_schema constrained sampling and reject write tasks wit
   let reviewTools;
   const artifacts = artifactStore();
   const leaf = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
     createSession: async (options) => {
       reviewTools = options.customTools;
       return sessionFactory(async (tools) => {
@@ -451,7 +476,7 @@ test("wiki tools use json_schema constrained sampling and reject write tasks wit
         });
       })(options);
     },
-  });
+  }, transactionalWriter);
   await leaf.run(
     { id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
     leafContext(root, candidateWikiRoot),
@@ -474,6 +499,7 @@ test("leaf sessions expose one explicit Pi role skill and keep writer-only promp
     ["reviewer", { id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] }],
   ]) {
     const agent = new PiWikiLeafAgent({
+      sourcePlan: pinnedPlan(root),
       skillRoot,
       createSession: async (options) => ({
         session: {
@@ -497,7 +523,7 @@ test("leaf sessions expose one explicit Pi role skill and keep writer-only promp
           getLastAssistantText() { return "# complete"; },
         },
       }),
-    }, undefined, generationWithSections);
+    }, transactionalWriter, generationWithSections);
     await agent.run(task, leafContext(root, candidateWikiRoot));
   }
 
@@ -566,6 +592,7 @@ test("Pi leaf reopens its exact persisted session without overriding the saved m
   let prompt;
   const telemetry = [];
   const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
     skillRoot,
     sessionDir: runSessionDirectory,
     model: { provider: "test", id: "changed-model" },
@@ -576,7 +603,7 @@ test("Pi leaf reopens its exact persisted session without overriding the saved m
       created.session.sessionFile = options.sessionManager.getSessionFile();
       return created;
     },
-  });
+  }, transactionalWriter);
   const context = { ...leafContext(root, candidateWikiRoot), attempt: 3, sessionFile, onTelemetry: async (value) => telemetry.push(value) };
 
   await agent.run(writeTask("resumed-leaf"), context);
@@ -652,6 +679,7 @@ test("Pi tool budget rejects the first over-limit call before tool execution", a
   const { root, candidateWikiRoot } = await workspace(t);
   let secondError;
   const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
     budgets: { maxDelegatedTasks: 10, maxDelegateBatches: 10, maxTurnsPerSession: 10, maxToolCallsPerSession: 1 },
     createSession: async (options) => ({ session: {
       state: {},
@@ -670,7 +698,7 @@ test("Pi tool budget rejects the first over-limit call before tool execution", a
         return { assistantMessages: 0, toolCalls: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 };
       },
     } }),
-  });
+  }, transactionalWriter);
   await assert.rejects(agent.run(writeTask("budget"), leafContext(root, candidateWikiRoot)), (error) => error?.code === "session_tool_calls_exhausted");
   assert.equal(secondError?.code, "session_tool_calls_exhausted");
   assert.deepEqual(secondError?.details, { limit: 1, toolCalls: 1 });
@@ -686,6 +714,7 @@ test("context artifacts are listed by exact path and read on demand without prom
   let prompt;
   let readResult;
   const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
     skillRoot,
     createSession: async (options) => ({ session: {
       state: {},
@@ -697,7 +726,7 @@ test("context artifacts are listed by exact path and read on demand without prom
       async waitForIdle() {}, async abort() {}, dispose() {},
       getLastAssistantText() { return "# complete"; },
     } }),
-  });
+  }, transactionalWriter);
   const context = leafContext(root, candidateWikiRoot);
   context.contextArtifacts = {
     findings: { version: 1, runId: "run-1", nodeId: "research", attempt: 1, kind: "research", relativePath, sha256, sizeBytes: Buffer.byteLength(secret), mediaType: "text/markdown" },
@@ -811,11 +840,11 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
   const runtime = createPiLeadRuntime({ createSession, runSessionDirectory, model, thinkingLevel: "high", now: () => 1_000 });
   const initial = request(root, candidateWikiRoot, skillRoot);
   initial.runSessionDirectory = runSessionDirectory;
-  initial.persistTaskRuntimeState = async (state) => { runtimeState = structuredClone(state); };
 
   assert.deepEqual(await runtime.run(initial), {
     kind: "pause", reason: "quota", summary: "quota exceeded", retryAt: new Date(1_100).toISOString(),
   });
+  runtimeState = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json"), "utf8")).delegates;
   const paused = runtimeState.batches[0].tasks[0];
   assert.equal(paused.phase, "paused");
   assert.equal(paused.attempt, 1);
@@ -825,13 +854,12 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
   const resumed = request(root, candidateWikiRoot, skillRoot);
   resumed.preparation = "resume";
   resumed.runSessionDirectory = runSessionDirectory;
-  resumed.taskRuntimeState = runtimeState;
-  resumed.persistTaskRuntimeState = async (state) => { runtimeState = structuredClone(state); };
   assert.deepEqual(await runtime.run(resumed), { kind: "complete", summary: "resumed and reviewed" });
 
   assert.equal(resumedLeafOptions.sessionManager.getSessionFile(), firstLeafSessionFile);
   assert.equal(Object.hasOwn(resumedLeafOptions, "model"), false);
   assert.equal(Object.hasOwn(resumedLeafOptions, "thinkingLevel"), false);
+  runtimeState = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json"), "utf8")).delegates;
   const recovered = runtimeState.batches[0].tasks[0];
   assert.equal(recovered.phase, "terminal");
   assert.equal(recovered.attempt, 1);
@@ -879,13 +907,14 @@ test("Lead uses configured transient retry count", async (t) => {
 
   const input = request(root, candidateWikiRoot);
   input.attempt = 7;
+  await writeFile(path.join(root, ".okf-wiki", "runs", "run-1", "run-state.json"), JSON.stringify({ version: 2, id: "run-1", status: "running", attempt: 7, executionToken: input.executionToken }));
   input.leadSessionAttempt = 9;
-  input.report = async (_message, data) => { reports.push(data); };
+  input.record = async (observation) => { reports.push(observation); };
   await assert.rejects(runtime.run(input), /without wiki_finish/);
   assert.equal(sessions, 3);
   assert.deepEqual(sleeps, [50, 100]);
-  const retries = reports.filter((data) => data?.phase === "agent_update" && data.telemetry?.activity === "retry_wait");
-  assert.deepEqual(retries.map((data) => data.telemetry.attempt), [9, 10]);
+  const retries = reports.filter((observation) => observation.kind === "telemetry" && observation.telemetry.activity === "retry_wait");
+  assert.deepEqual(retries.map((observation) => observation.telemetry.attempt), [9, 10]);
 });
 
 test("Lead rejects invalid retry configuration", () => {
@@ -954,7 +983,7 @@ test("Pi leaf retries have one owner and cap 5xx at two sessions and requests", 
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
     runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
-    agent: new PiWikiLeafAgent({ createSession }), sleep: async () => {}, random: () => 0,
+    agent: new PiWikiLeafAgent({ createSession, sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(), sleep: async () => {}, random: () => 0,
   });
   const result = await runtimeDelegate(runtime, [writeTask("server")]);
   assert.equal(result.status, "failed");
@@ -989,7 +1018,7 @@ test("Pi leaf reports session context stats on task end", async (t) => {
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
     runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
-    agent: new PiWikiLeafAgent({ createSession }),
+    agent: new PiWikiLeafAgent({ createSession, sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(),
     onTask: (event) => { events.push(event); },
   });
   await runtimeDelegate(runtime, [writeTask("stats")]);
@@ -1040,7 +1069,7 @@ test("Pi leaf emits tool, compaction, and exact turn telemetry through Lead repo
     },
   } });
   const input = request(root, candidateWikiRoot);
-  input.report = async (_message, data) => { reports.push(data); };
+  input.record = async (observation) => { reports.push(observation); };
 
   // The first session is Lead, the delegated Leaf is created by wiki_delegate_start.
   let sessionNumber = 0;
@@ -1057,7 +1086,7 @@ test("Pi leaf emits tool, compaction, and exact turn telemetry through Lead repo
   });
   await assert.rejects(orchestrated.run(input), /without wiki_finish/);
 
-  const telemetry = reports.filter((data) => data?.phase === "update").map((data) => data.telemetry);
+  const telemetry = reports.filter((observation) => observation.kind === "telemetry" && observation.target.kind === "task").map((observation) => observation.telemetry);
   assert.ok(telemetry.some((value) => value.activity === "using_tool" && value.activeTools.some((tool) => tool.name === "read")));
   assert.ok(telemetry.some((value) => value.activity === "compacting"));
   const turn = telemetry.find((value) => value.usage?.turns === 1);
@@ -1098,7 +1127,7 @@ test("Lead telemetry covers delegation, synthesis, finish, and settled lifecycle
     },
   });
   const input = request(root, candidateWikiRoot);
-  input.report = async (_message, data) => { if (data?.phase === "agent_update") reports.push(data.telemetry); };
+  input.record = async (observation) => { if (observation.kind === "telemetry" && observation.target.kind === "lead") reports.push(observation.telemetry); };
 
   await assert.rejects(runtime.run(input), /without wiki_finish/);
 
@@ -1241,7 +1270,7 @@ test("Pi leaf receives the configured Wiki language", async (t) => {
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
     runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
-    agent: new PiWikiLeafAgent({ createSession, language: "zh" }),
+    agent: new PiWikiLeafAgent({ createSession, language: "zh", sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(),
   });
 
   const result = await runtimeDelegate(runtime, [writeTask("localized")]);
@@ -1270,7 +1299,7 @@ test("Pi research leaf returns structured coverage without requiring the Wiki re
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
     runId: "run-1", cwd: root, sourceScopes: { source: "source" }, candidateWikiRoot, artifactStore: artifacts,
-    agent: new PiWikiLeafAgent({ createSession, language: "zh" }),
+    agent: new PiWikiLeafAgent({ createSession, language: "zh", sourcePlan: pinnedPlan(root) }), transitions: runtimeTransitions(),
   });
 
   const result = await runtimeDelegate(runtime, [{
@@ -1310,7 +1339,7 @@ test("Pi leaf 429 honors Retry-After through the shared runtime gate with three 
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
     runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
-    agent: new PiWikiLeafAgent({ createSession }), concurrency: 2,
+    agent: new PiWikiLeafAgent({ createSession, sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(), concurrency: 2,
     sleep: async (ms) => { sleeps.push(ms); }, random: () => 0, now: () => 0,
   });
   const result = await runtimeDelegate(runtime, [writeTask("limited"), writeTask("next")]);

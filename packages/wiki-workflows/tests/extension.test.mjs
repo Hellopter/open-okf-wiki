@@ -33,10 +33,15 @@ async function fixture(t, options = {}) {
     const handle = {
       id: view.id,
       async view() { return views.get(view.id); },
-      async *events(after = 0, signal) {
+      async *updates(after = 0, signal) {
         eventCalls.push([view.id, after, signal]);
-        yield { version: 1, runId: view.id, sequence: 1, at: view.createdAt, type: "telemetry", message: "usage update" };
-        yield { version: 1, runId: view.id, sequence: 1, at: view.createdAt, type: "progress", message: "Researching" };
+        const telemetry = {
+          version: 1, runId: view.id, sequence: 1, at: view.createdAt, type: "telemetry",
+          phase: "agent_update", target: { kind: "lead" }, message: "usage update",
+        };
+        yield { event: telemetry, view: { ...views.get(view.id), lastEventSequence: 1 } };
+        const progress = { version: 1, runId: view.id, sequence: 2, at: view.createdAt, type: "progress", message: "Researching" };
+        yield { event: progress, view: { ...views.get(view.id), lastEventSequence: 2 } };
         if (options.holdEvents) {
           await Promise.race([
             heldEvents,
@@ -44,7 +49,8 @@ async function fixture(t, options = {}) {
           ]);
           if (signal?.aborted) return;
         }
-        yield { version: 1, runId: view.id, sequence: 2, at: view.createdAt, type: "completed", message: "Wiki published" };
+        const completed = { version: 1, runId: view.id, sequence: 3, at: view.createdAt, type: "completed", message: "Wiki published" };
+        yield { event: completed, view: { ...views.get(view.id), status: "succeeded", lastEventSequence: 3 } };
       },
       async result() { return { runId: view.id, output: {}, validation: {}, publication: {} }; },
       async control(action) {
@@ -71,7 +77,6 @@ async function fixture(t, options = {}) {
       return createHandle({
         id,
         cwd,
-        operation: request.operation ?? "update",
         focus: request.focus,
         status: "running",
         createdAt: "2026-08-12T00:00:00.000Z",
@@ -124,12 +129,12 @@ test("maps run controls onto WikiProducer", async (t) => {
   await subject.run("auth flows");
   await flush();
   assert.equal(subject.calls[0][0], "start");
-  assert.equal(subject.calls[0][1].operation, "update");
+  assert.deepEqual(subject.calls[0][1], { cwd: subject.cwd, focus: "auth flows" });
   assert.equal(subject.calls[0][1].focus, "auth flows");
   assert.ok(subject.messages.some((message) => /Researching/.test(message)));
 
-  await subject.run("regenerate public API");
-  assert.equal(subject.calls.findLast((call) => call[0] === "start")[1].operation, "regenerate");
+  await subject.run("public API");
+  assert.equal(subject.calls.findLast((call) => call[0] === "start")[1].focus, "public API");
   await subject.run("status run-1");
   assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message)));
   await subject.run("runs");
@@ -169,7 +174,7 @@ test("workspace management commands produce plain output", async (t) => {
 
 test("completion exposes management and run commands", () => {
   assert.deepEqual(wikiArgumentCompletions("").map((item) => item.label), [
-    "init", "source", "regenerate", "status", "runs", "pause", "resume", "cancel",
+    "init", "source", "status", "runs", "pause", "resume", "cancel",
   ]);
   assert.equal(wikiArgumentCompletions("status "), null);
   assert.deepEqual(wikiArgumentCompletions("status run-1 task-9 "), [{
@@ -177,7 +182,7 @@ test("completion exposes management and run commands", () => {
     label: "--process",
     description: "Show compact process history",
   }]);
-  assert.deepEqual(wikiArgumentCompletions("re").map((item) => item.label), ["regenerate", "resume"]);
+  assert.deepEqual(wikiArgumentCompletions("re").map((item) => item.label), ["resume"]);
   assert.deepEqual(wikiArgumentCompletions("source ").map((item) => item.label), ["add"]);
   assert.deepEqual(wikiArgumentCompletions("source add ").map((item) => item.label), ["link", "clone"]);
 });
@@ -264,8 +269,9 @@ test("status reuses one live stream and shutdown aborts it", async (t) => {
 });
 
 test("hasUI refreshes footer and widget after a run", async (t) => {
-  const subject = await fixture(t, { hasUI: true });
+  const subject = await fixture(t, { hasUI: true, holdEvents: true });
   await subject.run("auth flows");
+  await flush();
   assert.ok(subject.widgets.some(([key, lines]) => key === "wiki" && Array.isArray(lines)));
   assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && text === undefined));
 

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { inspectWiki } from "../dist/inspect.js";
+import { inspectWiki, verifyPinnedSourcePlan } from "../dist/inspect.js";
 
 const temporaryDirectories = [];
 
@@ -69,7 +69,7 @@ test.after(async () => {
   await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-test("uses declared source Git changes and propagates source impact through inbound links", async () => {
+test("captures the complete declared source identity without exposing a second inspection projection", async () => {
   const { source, workspace } = await createRepository();
   await writeFile(path.join(source, "src", "service.ts"), "export const service = 2;\n");
   git(source, "add", "src/service.ts");
@@ -79,32 +79,19 @@ test("uses declared source Git changes and propagates source impact through inbo
 
   const inspection = await inspectWiki(path.join(workspace, "api", "src"));
 
-  assert.equal(inspection.root, workspace);
-  assert.deepEqual(inspection.sourcePaths, ["api"]);
-  assert.equal(inspection.mode, "refresh");
-  assert.equal(inspection.lastWikiCommit, null);
-  assert.equal(inspection.baseCommit, null);
-  assert.deepEqual(inspection.existingPages, ["concepts/consumer.md", "concepts/service.md"]);
-  assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
-  assert.deepEqual(inspection.changedPaths, [
-    "api/src/local.ts",
-    "api/src/service.ts",
-    "api/src/untracked.ts",
-    "api/src/utility-renamed.ts",
-    "api/src/utility.ts",
-  ]);
-  assert.ok(inspection.changed.some((change) => change.status.startsWith("R") && change.paths.includes("api/src/utility.ts") && change.paths.includes("api/src/utility-renamed.ts")));
-  assert.ok(inspection.changed.some((change) => change.status === "??" && change.paths[0] === "api/src/untracked.ts"));
-  assert.equal(inspection.wikiDrift, false);
+  assert.equal(inspection.workspaceRoot, workspace);
+  assert.deepEqual(inspection.sources.map((source) => source.scopeId), ["api"]);
+  assert.match(inspection.sources[0].dirtyFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal("changed" in inspection, false);
+  assert.equal("sourceFingerprint" in inspection, false);
 });
 
-test("uses full generation when there is no trustworthy incremental source range", async () => {
+test("published Wiki content does not affect inspection", async () => {
   const { workspace } = await createRepository();
-  const inspection = await inspectWiki(workspace);
-
-  assert.equal(inspection.mode, "generate");
-  assert.deepEqual(inspection.existingPages, ["concepts/consumer.md", "concepts/service.md"]);
-  assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
+  const first = await inspectWiki(workspace);
+  await writeFile(path.join(workspace, "wiki", "concepts", "service.md"), "completely unrelated old Wiki content\n");
+  const second = await inspectWiki(workspace);
+  assert.equal(second.fingerprint, first.fingerprint);
 });
 
 test("changes the source fingerprint when an already-modified path changes again", async () => {
@@ -115,54 +102,7 @@ test("changes the source fingerprint when an already-modified path changes again
   await writeFile(sourceFile, "export const service = 3;\n");
   const second = await inspectWiki(workspace);
 
-  assert.deepEqual(first.changedPaths, ["api/src/service.ts"]);
-  assert.deepEqual(second.changedPaths, ["api/src/service.ts"]);
-  assert.equal(first.changed[0].status, second.changed[0].status);
-  assert.notEqual(first.sourceFingerprint, second.sourceFingerprint);
-});
-
-test("uses full generation for source provenance without a declared project prefix or line range", async () => {
-  const { workspace } = await createRepository();
-  await writeFile(path.join(workspace, "wiki", "concepts", "service.md"), [
-    "---",
-    "type: concept",
-    "title: Service",
-    "description: Service implementation",
-    "sources:",
-    "  - src/service.ts",
-    "---",
-    "",
-  ].join("\n"));
-
-  const inspection = await inspectWiki(workspace);
-
-  assert.equal(inspection.mode, "generate");
-  assert.match(inspection.refreshRequiresGenerateReason, /legacy source citations/);
-  assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
-});
-
-test("uses full generation when a declared source link escapes its Git root", async () => {
-  const { source, workspace } = await createRepository();
-  const outside = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-inspect-outside-"));
-  temporaryDirectories.push(outside);
-  await writeFile(path.join(outside, "external.ts"), "export const external = true;\n");
-  await symlink(path.join(outside, "external.ts"), path.join(source, "src", "external.ts"), "file");
-  await writeFile(path.join(workspace, "wiki", "concepts", "service.md"), [
-    "---",
-    "type: concept",
-    "title: Service",
-    "description: Service implementation",
-    "sources:",
-    "  - api/src/external.ts#L1-L1",
-    "  - api/src/missing.ts#L1-L1",
-    "---",
-    "",
-  ].join("\n"));
-
-  const inspection = await inspectWiki(workspace);
-
-  assert.equal(inspection.mode, "generate");
-  assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
+  assert.notEqual(first.fingerprint, second.fingerprint);
 });
 
 test("inspects an implicit self repository with stable unprefixed paths and ignores Wiki state", async () => {
@@ -184,8 +124,23 @@ test("inspects an implicit self repository with stable unprefixed paths and igno
 
   const inspection = await inspectWiki(path.join(root, "src"));
 
-  assert.equal(inspection.root, root);
-  assert.deepEqual(inspection.sourcePaths, ["."]);
-  assert.deepEqual(inspection.changedPaths, ["src/index.ts"]);
-  assert.ok(!inspection.changedPaths.some((entry) => entry.startsWith(".okf-wiki/") || entry.startsWith("wiki/")));
+  assert.equal(inspection.workspaceRoot, root);
+  assert.deepEqual(inspection.sources.map((source) => source.scopeId), ["."]);
+});
+
+test("pinned source verification ignores later presentation settings but rejects repository replacement", async () => {
+  const { source, workspace } = await createRepository();
+  const inspection = await inspectWiki(workspace);
+  const config = path.join(workspace, "workspace.yaml");
+  const original = await import("node:fs/promises").then(({ readFile }) => readFile(config, "utf8"));
+  await writeFile(config, original.replace("language: zh", "language: en"));
+  await verifyPinnedSourcePlan(inspection);
+
+  await rm(path.join(source, ".git"), { recursive: true, force: true });
+  git(source, "init", "--quiet");
+  git(source, "config", "user.email", "wiki@example.test");
+  git(source, "config", "user.name", "Wiki Test");
+  git(source, "add", ".");
+  git(source, "commit", "--quiet", "-m", "Replacement at same commit content");
+  await assert.rejects(verifyPinnedSourcePlan(inspection), /repository identity changed/);
 });

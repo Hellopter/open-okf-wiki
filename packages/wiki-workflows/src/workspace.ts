@@ -276,7 +276,7 @@ export function sourceIsIgnored(source: ResolvedWikiSource, relativePath: string
   const basename = parts.at(-1) ?? "";
   const declaredPath = `${source.path}/${normalized}`;
   if (workspaceExcludes.some((pattern) => matchesPathGlob(normalized, pattern) || matchesPathGlob(declaredPath, pattern))) return true;
-  if (source.path === "." && (parts[0] === ".okf-wiki" || parts[0] === "wiki")) return true;
+  if (source.path === "." && (parts[0] === ".okf-wiki" || parts[0] === "wiki" || normalized === WORKSPACE_FILE)) return true;
   if (!defaultsEnabled) return false;
   return DEFAULT_SOURCE_IGNORES.some((ignored) => parts.includes(ignored))
     || DEFAULT_SOURCE_IGNORE_FILES.some((pattern) => matchesSimpleGlob(basename, pattern));

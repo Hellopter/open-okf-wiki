@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { formatLocalTime } from "../dist/time-format.js";
-import { frameWikiOverlay, initialWikiOverlayState, openWikiStatusOverlay, reduceWikiOverlay, wikiOverlayMaxHeight } from "../dist/ui/status-overlay.js";
+import { openWikiStatusOverlay } from "../dist/ui/status-overlay.js";
 
 const lead = {
   target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "synthesizing",
@@ -12,7 +12,7 @@ const lead = {
   usage: { turns: 8, contextPercent: 24 },
 };
 const view = {
-  id: "run-1", cwd: "/repo", operation: "update", status: "running",
+  id: "run-1", cwd: "/repo", status: "running",
   createdAt: "2026-08-12T00:00:00Z", updatedAt: "2026-08-12T00:00:03Z", lastEventSequence: 2,
   progress: { stage: "lead", language: "en", lead, currentBatch: { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: "write-auth", role: "write", status: "running" }] } },
 };
@@ -26,7 +26,7 @@ function handle(overrides = {}) {
     async view() { return view; },
     async inspectAgent(target) { return inspection(target); },
     async activity() { return { entries: [], nextBefore: undefined }; },
-    async *events(_after, signal) { if (signal) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true })); },
+    async *updates(_after, signal) { if (signal) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true })); },
     ...overrides,
   };
 }
@@ -72,32 +72,9 @@ function callFor(calls, token, pattern) {
   return calls.some((call) => call.token === token && pattern.test(call.text));
 }
 
-test("state reducer only models run, agent, and activity concerns", () => {
-  let state = initialWikiOverlayState({ runId: "run-1" });
-  assert.equal(state.kind, "run");
-  state = reduceWikiOverlay(state, { type: "down" }, 3);
-  assert.equal(state.cursor, 1);
-  state = { ...state, kind: "agent", target: { kind: "lead" } };
-  state = reduceWikiOverlay(state, { type: "forward" }, 3);
-  assert.equal(state.tab, "process");
-  state = reduceWikiOverlay(state, { type: "back" }, 3);
-  assert.equal(state.kind, "agent");
-  assert.equal(state.tab, "overview");
-  state = reduceWikiOverlay(state, { type: "back" }, 3);
-  assert.equal(state.kind, "run");
-  state = { ...state, kind: "agent", target: { kind: "lead" }, fromBottom: 0 };
-  state = reduceWikiOverlay(state, { type: "up" }, 3);
-  assert.equal(state.fromBottom, 1);
-  state = reduceWikiOverlay(state, { type: "down" }, 3);
-  assert.equal(state.fromBottom, 0);
-  state = reduceWikiOverlay(state, { type: "down" }, 3);
-  assert.equal(state.fromBottom, 0);
-  state = reduceWikiOverlay({ ...state, tab: "overview" }, { type: "forward" }, 3);
-  assert.equal(state.tab, "process");
-  state = reduceWikiOverlay(state, { type: "back" }, 3);
-  assert.equal(state.kind, "agent");
-  assert.equal(state.tab, "overview");
-});
+function wikiOverlayMaxHeight(rows) {
+  return Math.max(1, Math.min(Math.floor(rows * 0.88), rows - 2));
+}
 
 test("up arrow leaves the bottom after overscrolling or tailing", async () => {
   const process = Array.from({ length: 40 }, (_, index) => ({
@@ -148,37 +125,6 @@ test("left and right arrows enter, switch pages, and exit without tab", async ()
   component.dispose();
 });
 
-test("overlay frame is bounded by Pi viewport", () => {
-  const framed = frameWikiOverlay({ width: 40, title: "wiki run-1", body: ["◆ Leader"], stats: "8 turns", footer: "esc", viewport: 8 });
-  assert.match(framed.lines[0], /^╭.*╮$/);
-  assert.match(framed.lines.at(-1), /^╰.*╯$/);
-  assert.match(framed.lines.join("\n"), /^├.*context.*┤$/m);
-  assert.ok(framed.lines.every((line) => visibleWidth(line) <= 40));
-  for (const rows of [10, 20, 24]) assert.ok(wikiOverlayMaxHeight(rows) <= rows - 2);
-});
-
-test("title status reset re-enters the border color before the top rule", () => {
-  const codes = { border: 90, error: 31 };
-  const theme = { fg: (token, text) => `\u001b[${codes[token]}m${text}\u001b[39m` };
-  const status = theme.fg("error", "failed");
-  const [top] = frameWikiOverlay({ width: 40, title: `wiki run-1  ${status}`, body: [], footer: "esc", theme, viewport: 8 }).lines;
-
-  assert.match(top, /\u001b\[31mfailed\u001b\[39m/, "status keeps its semantic color");
-  assert.match(top, /failed\u001b\[39m\u001b\[90m \u001b\[39m\u001b\[90m─/, "rule explicitly re-enters border after the status reset");
-  assert.doesNotMatch(top, /\u001b\[90mwiki/, "title prefix is not wrapped in border color");
-  assert.equal(visibleWidth(top), 40);
-});
-
-test("frame renders with no theme, fg-only theme, and a full theme", () => {
-  for (const capabilities of ["none", "fg", "full"]) {
-    const { theme, calls } = recordingTheme(capabilities);
-    const framed = frameWikiOverlay({ width: 40, title: "wiki run-1", body: ["◆ Leader"], stats: "8 turns", footer: "esc", viewport: 8, theme });
-    assert.equal(plain(framed.lines[0]).at(0), "╭");
-    assert.ok(framed.lines.every((line) => visibleWidth(line) === 40));
-    if (capabilities !== "none") assert.ok(callFor(calls, "border", /[╭╮╰╯│]/));
-    if (capabilities === "full") assert.ok(callFor(calls, "borderMuted", /[├┤─]/));
-  }
-});
 
 test("terminal row changes invalidate same-width frame geometry", async () => {
   const terminal = { rows: 24 };
@@ -723,4 +669,22 @@ test("collapsed history tasks never create invisible cursor targets", async () =
 
 test("missing custom UI returns without reading the handle", async () => {
   await openWikiStatusOverlay({ ui: {}, handle: handle({ async view() { throw new Error("must not run"); } }) });
+});
+
+test("overlay ignores stale updates and renders the terminal transaction view", async () => {
+  const stale = { ...view, status: "failed", lastEventSequence: 1 };
+  const terminal = { ...view, status: "succeeded", completedAt: "2026-08-12T00:00:04Z", lastEventSequence: 3 };
+  const subject = handle({
+    async *updates() {
+      yield { event: { version: 1, runId: view.id, sequence: 1, at: view.updatedAt, type: "failed", message: "stale" }, view: stale };
+      yield { event: { version: 1, runId: view.id, sequence: 3, at: terminal.completedAt, type: "completed", message: "published" }, view: terminal };
+    },
+  });
+  const { component } = await componentFor(subject);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const rendered = plain(component.render(80).join("\n"));
+  assert.match(rendered, /wiki run-1  succeeded/);
+  assert.doesNotMatch(rendered, /wiki run-1  failed/);
+  component.dispose();
 });

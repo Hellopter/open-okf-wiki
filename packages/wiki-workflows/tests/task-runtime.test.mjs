@@ -4,10 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
-import { WikiTaskExecutionError, WikiTaskPauseError } from "../dist/delegate-contracts.js";
+import { createWikiDelegateContract, WikiTaskExecutionError, WikiTaskPauseError } from "../dist/delegate-contracts.js";
 import { WikiBudgetExhaustedError } from "../dist/failures.js";
-import { WIKI_MANUAL_PAUSE } from "../dist/producer-types.js";
-import { classifyTaskFailure, WikiTaskRuntime, WikiWritePathLease } from "../dist/task-runtime.js";
+import { WIKI_MANUAL_PAUSE } from "../dist/runtime-types.js";
+import { classifyWikiAttemptFailure } from "../dist/agent-attempt-policy.js";
+import { WikiTaskRuntime, WikiWritePathLease } from "../dist/task-runtime.js";
 
 function store() {
   const writes = [];
@@ -25,15 +26,55 @@ function task(id, values = {}) {
 }
 
 function runtime(agent, values = {}) {
-  return new WikiTaskRuntime({
+  const { onStateChanged, restoredState, ...options } = values;
+  const durable = normalizeState(restoredState ?? { batches: [] });
+  const subject = new WikiTaskRuntime({
     runId: "run-1", cwd: "/workspace", sourceScopes: { api: "api" }, contextArtifacts: {},
-    artifactStore: store(), agent, sleep: async () => {}, random: () => 0, ...values,
+    artifactStore: store(), agent, sleep: async () => {}, random: () => 0,
+    restoredState: durable,
+    transitions: memoryTransitions(durable, onStateChanged),
+    ...options,
   });
+  nextBatches.set(subject, durable.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1));
+  return subject;
 }
 
 async function runBatch(subject, tasks, signal = new AbortController().signal) {
-  const { batchId } = await subject.start(tasks, signal);
+  const { batchId } = await startBatch(subject, tasks, signal);
   return await subject.collect(batchId, { until: "all", timeoutSeconds: 60 });
+}
+
+const nextBatches = new WeakMap();
+async function startBatch(subject, tasks, signal = new AbortController().signal) {
+  const batchId = nextBatches.get(subject) ?? 1;
+  const contracts = tasks.map((task) => contract(batchId, task));
+  const result = await subject.start(contracts, signal);
+  nextBatches.set(subject, batchId + 1);
+  return result;
+}
+
+function contract(batchId, task) {
+  const basis = task.role === "review" ? { version: 1, candidateRevision: 1, treeDigest: "a".repeat(64), policyDigest: "b".repeat(64), paths: task.reviewPaths } : undefined;
+  return createWikiDelegateContract(batchId, task, basis);
+}
+
+function normalizeState(state) {
+  return { batches: state.batches.map((batch) => ({ ...batch, tasks: batch.tasks.map((saved) => ({ ...saved, task: "contractVersion" in saved.task ? saved.task : contract(batch.batchId, saved.task) })) })) };
+}
+
+function memoryTransitions(state, notify) {
+  const publish = async () => await notify?.(structuredClone(state));
+  const saved = (batchId, taskId) => state.batches.find((batch) => batch.batchId === batchId)?.tasks.find((task) => task.task.id === taskId);
+  return {
+    async batchQueued(contracts) {
+      if (!state.batches.some((batch) => batch.batchId === contracts[0].batchId)) state.batches.push({ batchId: contracts[0].batchId, tasks: contracts.map((task) => ({ task, phase: "queued", attempt: 0, collected: false })) });
+      await publish();
+    },
+    async taskStarted(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "running", attempt: input.attempt, collected: false, sessionFile: input.sessionFile, partial: input.partial, pause: undefined, receipt: undefined }); await publish(); },
+    async taskPaused(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "paused", attempt: input.attempt, pause: input.pause, sessionFile: input.sessionFile, partial: input.partial }); await publish(); },
+    async taskSettled(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "terminal", attempt: input.attempt, receipt: input.receipt, sessionFile: input.sessionFile, pause: undefined, partial: undefined }); await publish(); },
+    async tasksCollected(batchId, taskIds) { for (const taskId of taskIds) saved(batchId, taskId).collected = true; await publish(); },
+  };
 }
 
 async function waitFor(predicate) {
@@ -54,6 +95,36 @@ test("preflights source scopes, context refs, and overlapping write paths", asyn
   ]), /overlap/);
 });
 
+test("durable queued contract commit completes before an Agent can launch", async () => {
+  let releaseQueue;
+  let launched = false;
+  const queued = new Promise((resolve) => { releaseQueue = resolve; });
+  const transitions = memoryTransitions({ batches: [] });
+  const subject = new WikiTaskRuntime({
+    runId: "run-1", cwd: "/workspace", sourceScopes: { api: "api" }, artifactStore: store(),
+    agent: { async run() { launched = true; return { summary: "ok", markdown: "ok" }; } },
+    transitions: { ...transitions, async batchQueued(contracts) { await queued; await transitions.batchQueued(contracts); } },
+  });
+  const starting = subject.start([contract(1, task("ordered"))], new AbortController().signal);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(launched, false);
+  releaseQueue();
+  const { batchId } = await starting;
+  assert.equal((await subject.collect(batchId, { until: "all", timeoutSeconds: 1 })).status, "complete");
+  assert.equal(launched, true);
+});
+
+test("durable transition failure is consumed and surfaced by collect", async () => {
+  const transitions = memoryTransitions({ batches: [] });
+  const subject = new WikiTaskRuntime({
+    runId: "run-1", cwd: "/workspace", sourceScopes: { api: "api" }, artifactStore: store(),
+    agent: { async run() { return { summary: "ok", markdown: "ok" }; } },
+    transitions: { ...transitions, async taskSettled() { throw new Error("durable settle failed"); } },
+  });
+  const { batchId } = await subject.start([contract(1, task("persist-failure"))], new AbortController().signal);
+  await assert.rejects(subject.collect(batchId, { until: "all", timeoutSeconds: 1 }), /durable settle failed/);
+});
+
 test("preflights delegated writes with the publication path contract", async () => {
   const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) });
   for (const writePath of [
@@ -66,7 +137,7 @@ test("preflights delegated writes with the publication path contract", async () 
   ]) {
     await assert.rejects(
       runBatch(r, [task("writer", { role: "write", writePaths: [writePath] })]),
-      /Unsafe Wiki write path/,
+      /Unsafe Wiki write path|Invalid Wiki writePaths/,
       writePath,
     );
   }
@@ -137,7 +208,7 @@ test("provider HTTP 400 is a transient server error and gets one fresh session",
       throw error;
     } });
     const result = await runBatch(r, [task("http-400")]);
-    const classified = classifyTaskFailure(error);
+const classified = classifyWikiAttemptFailure(error);
     assert.equal(classified.retryable, true, error.message);
     assert.equal(result.receipts[0].attempts, 2, error.message);
     assert.equal(calls, 2, error.message);
@@ -157,20 +228,20 @@ test("local schema and validation failures still do not retry", async () => {
   assert.equal(result.receipts[0].error?.retryable, false);
 });
 
-test("classifyTaskFailure treats provider 400 before the invalid-request trap", () => {
-  const invalid = classifyTaskFailure(Object.assign(new Error("400 Invalid Request"), { status: 400 }));
+test("shared attempt classification treats provider 400 before the invalid-request trap", () => {
+const invalid = classifyWikiAttemptFailure(Object.assign(new Error("400 Invalid Request"), { status: 400 }));
   assert.equal(invalid.code, "server_error");
   assert.equal(invalid.retryable, true);
 
-  const overflow = classifyTaskFailure(new Error("400 status code (no body)"));
+const overflow = classifyWikiAttemptFailure(new Error("400 status code (no body)"));
   assert.equal(overflow.code, "context_exhausted");
   assert.equal(overflow.retryable, true);
 
-  const qwen = classifyTaskFailure(new Error("Range of input length should be [1, 131072]"));
+const qwen = classifyWikiAttemptFailure(new Error("Range of input length should be [1, 131072]"));
   assert.equal(qwen.code, "context_exhausted");
   assert.equal(qwen.retryable, true);
 
-  const local = classifyTaskFailure(new Error("invalid request: missing model"));
+const local = classifyWikiAttemptFailure(new Error("invalid request: missing model"));
   assert.equal(local.code, "invalid_request");
   assert.equal(local.retryable, false);
 });
@@ -402,7 +473,7 @@ test("start returns before background tasks finish and collect exposes an immedi
     return { summary: "ok", markdown: "ok" };
   } });
 
-  const started = await r.start([task("background")], new AbortController().signal);
+  const started = await startBatch(r, [task("background")], new AbortController().signal);
   assert.deepEqual(started, { batchId: 1 });
   assert.throws(() => r.assertFinishable(), /terminal state/);
   const live = await r.collect(started.batchId, { until: "all", timeoutSeconds: 0 });
@@ -421,7 +492,7 @@ test("collect any returns partial progress while all waits for every task", asyn
     await new Promise((resolve) => { finishes.set(value.id, resolve); });
     return { summary: value.id, markdown: value.id };
   } }, { concurrency: 2 });
-  const { batchId } = await r.start([task("first"), task("second")], new AbortController().signal);
+  const { batchId } = await startBatch(r, [task("first"), task("second")], new AbortController().signal);
   while (finishes.size < 2) await new Promise((resolve) => setImmediate(resolve));
 
   finishes.get("second")();
@@ -443,7 +514,7 @@ test("collect timeout is bounded and does not cancel background work", async () 
     await new Promise((resolve) => { finish = resolve; });
     return { summary: "ok", markdown: "ok" };
   } });
-  const { batchId } = await r.start([task("slow")], new AbortController().signal);
+  const { batchId } = await startBatch(r, [task("slow")], new AbortController().signal);
   const timedOut = await r.collect(batchId, { until: "any", timeoutSeconds: 0.01 });
   assert.equal(timedOut.status, "running");
   assert.throws(() => r.assertFinishable(), /terminal state/);
@@ -460,7 +531,7 @@ test("cancel supports selected tasks and the remaining batch", async () => {
     });
     return { summary: "unreachable", markdown: "unreachable" };
   } }, { concurrency: 2 });
-  const { batchId } = await r.start([task("keep"), task("stop")], new AbortController().signal);
+  const { batchId } = await startBatch(r, [task("keep"), task("stop")], new AbortController().signal);
 
   const partial = await r.cancel(batchId, ["stop"], "no longer needed");
   assert.equal(partial.status, "running");
@@ -482,7 +553,7 @@ test("the run-level signal cancels every task in a batch", async () => {
     return { summary: "unreachable", markdown: "unreachable" };
   } }, { concurrency: 2 });
   const run = new AbortController();
-  const { batchId } = await r.start([task("one"), task("two")], run.signal);
+  const { batchId } = await startBatch(r, [task("one"), task("two")], run.signal);
   run.abort();
 
   const result = await r.collect(batchId, { until: "all", timeoutSeconds: 1 });
@@ -504,8 +575,8 @@ test("write path leases serialize overlapping writes across batches", async () =
     return { summary: "ok", markdown: "ok" };
   } }, { concurrency: 2 });
   const write = (id) => task(id, { role: "write", writePaths: ["wiki/core/shared.md"] });
-  const first = await r.start([write("first-write")], new AbortController().signal);
-  const second = await r.start([write("second-write")], new AbortController().signal);
+  const first = await startBatch(r, [write("first-write")], new AbortController().signal);
+  const second = await startBatch(r, [write("second-write")], new AbortController().signal);
   while (!finishes.has("first-write")) await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(started, ["first-write"]);
@@ -521,14 +592,14 @@ test("write path leases serialize overlapping writes across batches", async () =
 test("task and batch limits reject new starts with budget errors", async () => {
   const byTasks = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, { maxDelegatedTasks: 1 });
   await assert.rejects(
-    byTasks.start([task("one"), task("two")], new AbortController().signal),
+    startBatch(byTasks, [task("one"), task("two")], new AbortController().signal),
     (error) => error?.name === "WikiBudgetExhaustedError" && error.code === "delegated_tasks_exhausted",
   );
 
   const byBatches = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, { maxDelegateBatches: 1 });
-  await byBatches.start([task("allowed")], new AbortController().signal);
+  await startBatch(byBatches, [task("allowed")], new AbortController().signal);
   await assert.rejects(
-    byBatches.start([task("blocked")], new AbortController().signal),
+    startBatch(byBatches, [task("blocked")], new AbortController().signal),
     (error) => error?.name === "WikiBudgetExhaustedError" && error.code === "delegate_batches_exhausted",
   );
 });
@@ -539,7 +610,7 @@ test("background task failures are consumed without an unhandled rejection", asy
   process.on("unhandledRejection", listener);
   try {
     const r = runtime({ async run() { throw new Error("background failure"); } });
-    const { batchId } = await r.start([task("detached")], new AbortController().signal);
+    const { batchId } = await startBatch(r, [task("detached")], new AbortController().signal);
     await r.collect(batchId, { until: "all", timeoutSeconds: 1 });
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(unhandled, []);
@@ -582,7 +653,7 @@ test("terminal uncollected receipts survive reconstruction and block finish", as
   const first = runtime({ run: async () => ({ summary: "done", markdown: "done" }) }, {
     onStateChanged(state) { latestState = structuredClone(state); },
   });
-  const { batchId } = await first.start([task("durable")], new AbortController().signal);
+  const { batchId } = await startBatch(first, [task("durable")], new AbortController().signal);
   await waitFor(() => latestState?.batches[0]?.tasks[0]?.phase === "terminal");
   assert.throws(() => first.assertFinishable(), /receipt to be collected/);
 
@@ -609,21 +680,21 @@ test("restored counters preserve budgets and next batch identity", async () => {
     maxDelegatedTasks: 1,
     maxDelegateBatches: 1,
   });
-  await assert.rejects(exhausted.start([task("new")], new AbortController().signal), (error) => error.code === "delegate_batches_exhausted");
+  await assert.rejects(startBatch(exhausted, [task("new")], new AbortController().signal), (error) => error.code === "delegate_batches_exhausted");
 
   const taskExhausted = runtime({ run: async () => ({ summary: "unused", markdown: "unused" }) }, {
     restoredState: latestState,
     maxDelegatedTasks: 1,
     maxDelegateBatches: 2,
   });
-  await assert.rejects(taskExhausted.start([task("new")], new AbortController().signal), (error) => error.code === "delegated_tasks_exhausted");
+  await assert.rejects(startBatch(taskExhausted, [task("new")], new AbortController().signal), (error) => error.code === "delegated_tasks_exhausted");
 
   const continued = runtime({ run: async () => ({ summary: "continued", markdown: "continued" }) }, {
     restoredState: latestState,
     maxDelegatedTasks: 2,
     maxDelegateBatches: 2,
   });
-  const started = await continued.start([task("same-id")], new AbortController().signal);
+  const started = await startBatch(continued, [task("same-id")], new AbortController().signal);
   assert.equal(started.batchId, 2);
   assert.equal((await continued.collect(2, { until: "all", timeoutSeconds: 1 })).status, "complete");
 });
@@ -641,7 +712,7 @@ test("provider quota resumes the same attempt and session before succeeding", as
     });
     throw new WikiTaskExecutionError("quota exhausted", "quota", { retryAfterMs: 500 });
   } }, { onStateChanged(state) { latestState = structuredClone(state); } });
-  await first.start([task("quota-state")], new AbortController().signal);
+  await startBatch(first, [task("quota-state")], new AbortController().signal);
   await waitFor(() => latestState?.batches[0]?.tasks[0]?.phase === "paused");
   assert.throws(() => first.assertFinishable(), (error) => error instanceof WikiTaskPauseError && error.reason === "quota");
   await assert.rejects(first.collect(1, { until: "all", timeoutSeconds: 0 }), (error) => error instanceof WikiTaskPauseError);
@@ -676,7 +747,7 @@ test("manual pause preserves a running task for exact resume without a cancelled
     await new Promise((resolve, reject) => context.signal.addEventListener("abort", () => reject(context.signal.reason), { once: true }));
     return { summary: "unreachable", markdown: "unreachable" };
   } }, { onStateChanged(state) { latestState = structuredClone(state); } });
-  await first.start([task("manual")], run.signal);
+  await startBatch(first, [task("manual")], run.signal);
   await waitFor(() => latestState?.batches[0]?.tasks[0]?.sessionFile === "/sessions/manual.jsonl");
   run.abort(WIKI_MANUAL_PAUSE);
   await waitFor(() => latestState?.batches[0]?.tasks[0]?.phase === "paused");
@@ -697,12 +768,14 @@ test("duplicate task ids produce independent batch-qualified artifact handles", 
   const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-task-artifacts-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
   const artifactStore = createWikiArtifactStore({ workspace });
+  const durable = { batches: [] };
   let consumedHandles;
   const r = new WikiTaskRuntime({
     runId: "run-1",
     cwd: workspace,
     sourceScopes: { api: "api" },
     artifactStore,
+    transitions: memoryTransitions(durable),
     agent: { async run(value, context) {
       if (value.id === "consumer") consumedHandles = Object.keys(context.contextArtifacts).sort();
       return { summary: value.id, markdown: `${value.id}:${context.batch}` };
@@ -737,15 +810,15 @@ test("review admission observes the shared run write lease", async () => {
   const release = await lease.acquire(["wiki/core/page.md"], new AbortController().signal);
   const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, { writeLease: lease });
   await assert.rejects(
-    r.start([task("review", { role: "review", reviewPaths: ["wiki/core/page.md"] })], new AbortController().signal),
+    startBatch(r, [task("review", { role: "review", reviewPaths: ["wiki/core/page.md"] })], new AbortController().signal),
     /review is blocked.*writes are active/i,
   );
   release();
 });
 
-test("classifyTaskFailure preserves session budget codes", () => {
+test("shared attempt classification preserves session budget codes", () => {
   for (const code of ["session_turns_exhausted", "session_tool_calls_exhausted"]) {
-    const failure = classifyTaskFailure(new WikiBudgetExhaustedError("session budget exhausted", code));
+const failure = classifyWikiAttemptFailure(new WikiBudgetExhaustedError("session budget exhausted", code));
     assert.equal(failure.code, code);
     assert.equal(failure.retryable, false);
   }

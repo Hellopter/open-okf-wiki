@@ -1,6 +1,7 @@
 import type { WikiArtifactRef, WikiArtifactStore } from "./artifact-store.js";
 import {
   boundedDelegateSummary,
+  parseWikiDelegateContract,
   WikiTaskExecutionError,
   WikiTaskPauseError,
   type WikiDelegateBatchSnapshot,
@@ -8,19 +9,20 @@ import {
   type WikiDelegateGap,
   type WikiDelegateReceipt,
   type WikiDelegateRole,
-  type WikiDelegateTask,
+  type WikiDelegateContract,
   type WikiTaskFailureCode,
 } from "./delegate-contracts.js";
+import { classifyWikiAttemptFailure, decideWikiAgentAttempt } from "./agent-attempt-policy.js";
 import { budgetExhaustedCode, isWikiBudgetExhaustedError, WikiBudgetExhaustedError } from "./failures.js";
-import { WIKI_MANUAL_PAUSE } from "./producer-types.js";
+import { WIKI_MANUAL_PAUSE } from "./runtime-types.js";
 import type {
   WikiAgentTarget,
   WikiAgentTelemetry,
   WikiContextStats,
-  WikiTaskRuntimeState,
-  WikiTaskRuntimeTaskState,
 } from "./producer-types.js";
-import type { WikiReviewResult } from "./workflow-state.js";
+import type { WikiTaskRuntimeState, WikiTaskRuntimeTaskState } from "./runtime-types.js";
+import type { WikiReviewResult } from "./delegate-contracts.js";
+import type { WikiTaskRuntimeTransitions } from "./wiki-lead-run.js";
 
 type WikiObservabilityHealth = { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
 import { isSafeWikiPagePath } from "./wiki-path.js";
@@ -30,7 +32,7 @@ export type WikiTaskProgressPhase = "queued" | "start" | "update" | "end";
 export interface WikiTaskProgressEvent {
   readonly batchId: number;
   phase: WikiTaskProgressPhase;
-  task: WikiDelegateTask;
+  task: WikiDelegateContract;
   receipt?: WikiDelegateReceipt; // required on end
   usage?: WikiContextStats;
   telemetry?: WikiAgentTelemetry;
@@ -61,7 +63,7 @@ export interface WikiLeafResult {
 }
 
 export interface WikiLeafAgent {
-  run(task: WikiDelegateTask, context: WikiLeafTaskContext): Promise<WikiLeafResult>;
+  run(task: WikiDelegateContract, context: WikiLeafTaskContext): Promise<WikiLeafResult>;
 }
 
 export interface WikiTaskRuntimeOptions {
@@ -76,7 +78,7 @@ export interface WikiTaskRuntimeOptions {
   maxDelegatedTasks?: number;
   maxDelegateBatches?: number;
   restoredState?: WikiTaskRuntimeState;
-  onStateChanged?: (state: WikiTaskRuntimeState) => void | Promise<void>;
+  transitions: WikiTaskRuntimeTransitions;
   writeLease?: WikiWritePathLease;
   transientRetries?: number;
   baseRetryDelayMs?: number;
@@ -96,14 +98,12 @@ export class WikiTaskRuntime {
   private readonly baseRetryDelayMs: number;
   private readonly transientRetries: number;
   private readonly onTask?: (event: WikiTaskProgressEvent) => void | Promise<void>;
-  private readonly onStateChanged?: (state: WikiTaskRuntimeState) => void | Promise<void>;
   private readonly batches = new Map<number, AsyncBatch>();
   private readonly maxDelegatedTasks: number;
   private readonly maxDelegateBatches: number;
   private delegatedTasks = 0;
   private delegateBatches = 0;
   private nextBatchId = 1;
-  private stateChain = Promise.resolve();
   private stateFailure: unknown;
 
   constructor(private readonly options: WikiTaskRuntimeOptions) {
@@ -121,24 +121,24 @@ export class WikiTaskRuntime {
     validateLimit(this.maxDelegateBatches, "maxDelegateBatches");
     this.contextArtifacts = Object.fromEntries(Object.values(options.contextArtifacts ?? {}).map((ref) => [ref.nodeId, ref]));
     this.onTask = options.onTask;
-    this.onStateChanged = options.onStateChanged;
     if (options.restoredState) this.restore(options.restoredState);
   }
 
-  async start(tasks: readonly WikiDelegateTask[], signal: AbortSignal): Promise<{ batchId: number }> {
+  async start(tasks: readonly WikiDelegateContract[], signal: AbortSignal): Promise<{ batchId: number }> {
     this.assertStateHealthy();
-    validateBatch(tasks, this.options);
-    for (const task of tasks) {
+    const requests = tasks.map(parseWikiDelegateContract);
+    validateBatch(requests, this.options);
+    for (const task of requests) {
       for (const ref of task.contextRefs) {
         if (!Object.hasOwn(this.contextArtifacts, ref)) throw new Error(`Delegate task ${task.id} requests undeclared context artifact: ${ref}`);
       }
     }
-    if (tasks.some((task) => task.role === "review")) {
+    if (requests.some((task) => task.role === "review")) {
       this.writePaths.assertReviewAllowed();
       const pendingWrite = [...this.batches.values()].some((batch) => [...batch.records.values()].some(
         (record) => record.state.task.role === "write" && record.state.phase !== "terminal",
       ));
-      if (pendingWrite || tasks.some((task) => task.role === "write")) throw new Error("Wiki review is blocked while delegated Wiki writes are pending");
+      if (pendingWrite || requests.some((task) => task.role === "write")) throw new Error("Wiki review is blocked while delegated Wiki writes are pending");
     }
     if (this.delegateBatches >= this.maxDelegateBatches) {
       throw new WikiBudgetExhaustedError(
@@ -147,18 +147,20 @@ export class WikiTaskRuntime {
         { limit: this.maxDelegateBatches },
       );
     }
-    if (this.delegatedTasks + tasks.length > this.maxDelegatedTasks) {
+    if (this.delegatedTasks + requests.length > this.maxDelegatedTasks) {
       throw new WikiBudgetExhaustedError(
         `Delegated task limit exhausted (${this.maxDelegatedTasks})`,
         "delegated_tasks_exhausted",
-        { limit: this.maxDelegatedTasks, delegatedTasks: this.delegatedTasks, requestedTasks: tasks.length },
+        { limit: this.maxDelegatedTasks, delegatedTasks: this.delegatedTasks, requestedTasks: requests.length },
       );
     }
 
-    if (!Number.isSafeInteger(this.nextBatchId)) throw new Error("Delegate batch identity is exhausted");
-    for (const task of tasks) artifactNodeId(this.nextBatchId, task.id);
-    const batchId = this.nextBatchId++;
-    const records = new Map(tasks.map((task) => [task.id, createAsyncTask({
+    const batchId = requests[0]?.batchId;
+    if (batchId !== this.nextBatchId || requests.some((task) => task.batchId !== batchId)) throw new Error("Wiki delegate contracts must use the next durable batch identity");
+    for (const task of requests) artifactNodeId(batchId, task.id);
+    await this.options.transitions.batchQueued(requests);
+    this.nextBatchId += 1;
+    const records = new Map(requests.map((task) => [task.id, createAsyncTask({
       task,
       phase: "queued",
       attempt: 0,
@@ -168,28 +170,29 @@ export class WikiTaskRuntime {
     this.batches.set(batchId, batch);
     this.delegatedTasks += records.size;
     this.delegateBatches += 1;
-    await this.stateChanged();
-    void this.launchBatch(batch, signal);
+    void this.launchBatch(batch, signal).catch((error) => { this.stateFailure ??= error; });
     return { batchId };
   }
 
   async resume(signal: AbortSignal): Promise<void> {
     this.assertStateHealthy();
-    let changed = false;
     for (const batch of this.batches.values()) {
       for (const record of batch.records.values()) {
         if (record.state.phase === "paused") {
+          await this.transition(() => this.options.transitions.taskStarted(batch.id, record.state.task.id, {
+            attempt: record.state.attempt,
+            ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
+            ...(record.state.partial ? { partial: record.state.partial } : {}),
+          }));
           record.state.phase = "running";
           delete record.state.pause;
-          changed = true;
         }
         if (record.state.phase !== "terminal" && !record.launched && record.settled) resetAsyncTask(record);
       }
     }
-    if (changed) await this.stateChanged();
     for (const batch of this.batches.values()) {
       if ([...batch.records.values()].some((record) => record.state.phase !== "terminal" && !record.launched)) {
-        void this.launchBatch(batch, signal);
+        void this.launchBatch(batch, signal).catch((error) => { this.stateFailure ??= error; });
       }
     }
   }
@@ -205,16 +208,19 @@ export class WikiTaskRuntime {
     if (!this.collectSatisfied(batch, options.until) && options.timeoutSeconds > 0) {
       await waitWithTimeout(this.waitForCollect(batch, options.until), options.timeoutSeconds * 1_000, signal);
     }
+    this.assertStateHealthy();
     const result = this.snapshot(batch);
     this.throwForPause(batch);
-    let changed = false;
+    const collected: string[] = [];
     for (const record of batch.records.values()) {
       if (record.state.phase === "terminal" && !record.state.collected) {
-        record.state.collected = true;
-        changed = true;
+        collected.push(record.state.task.id);
       }
     }
-    if (changed) await this.stateChanged();
+    if (collected.length) {
+      await this.transition(() => this.options.transitions.tasksCollected(batchId, collected));
+      for (const id of collected) batch.records.get(id)!.state.collected = true;
+    }
     return result;
   }
 
@@ -232,9 +238,14 @@ export class WikiTaskRuntime {
       if (record.state.phase === "terminal") continue;
       if (record.launched) record.controller.abort(cancellation);
       else {
-        const failure = classifyTaskFailure(cancellation);
+        const failure = classifyWikiAttemptFailure(cancellation);
+        await this.transition(() => this.options.transitions.taskStarted(batchId, id, { attempt: 1 }));
+        record.state.phase = "running";
+        record.state.attempt = 1;
+        const terminal = receiptFromState(record.state, failure);
+        await this.transition(() => this.options.transitions.taskSettled(batchId, id, { attempt: 1, receipt: terminal }));
         record.state.phase = "terminal";
-        record.state.receipt = receiptFromState(record.state, failure);
+        record.state.receipt = terminal;
         delete record.state.pause;
         delete record.state.partial;
         record.launched = true;
@@ -243,22 +254,24 @@ export class WikiTaskRuntime {
       }
     }
     if (directlyCancelled.length) {
-      await this.stateChanged();
       for (const record of directlyCancelled) {
         await this.fireProgress({ batchId, phase: "end", task: record.state.task, receipt: terminalReceipt(record.state) });
       }
     }
     await Promise.all(ids.map((id) => batch.records.get(id)!.done));
+    this.assertStateHealthy();
     const result = this.snapshot(batch);
     this.throwForPause(batch);
-    let changed = false;
+    const collected: string[] = [];
     for (const record of batch.records.values()) {
       if (record.state.phase === "terminal" && !record.state.collected) {
-        record.state.collected = true;
-        changed = true;
+        collected.push(record.state.task.id);
       }
     }
-    if (changed) await this.stateChanged();
+    if (collected.length) {
+      await this.transition(() => this.options.transitions.tasksCollected(batchId, collected));
+      for (const id of collected) batch.records.get(id)!.state.collected = true;
+    }
     return result;
   }
 
@@ -286,7 +299,10 @@ export class WikiTaskRuntime {
       if (record.launched || record.state.phase === "terminal") continue;
       record.launched = true;
       await this.fireProgress({ batchId: batch.id, phase: "queued", task: record.state.task });
-      void this.launchTask(batch, record, signal);
+      void this.launchTask(batch, record, signal).catch((error) => {
+        this.stateFailure ??= error;
+        settleAsyncTask(record);
+      });
     }
   }
 
@@ -305,39 +321,43 @@ export class WikiTaskRuntime {
       releaseWrites = await this.writePaths.acquire(record.state.task.writePaths ?? [], signal);
       outcome = await this.execute(record, batch.id, signal);
     } catch (error) {
+      this.assertStateHealthy();
       const interruption = pauseInterruption(signal);
       if (interruption !== undefined) outcome = { kind: "paused", pause: interruption.pause };
       else {
-        const failure = classifyTaskFailure(signal.aborted ? signal.reason ?? error : error, signal.aborted);
+        const failure = classifyWikiAttemptFailure(signal.aborted ? signal.reason ?? error : error, signal.aborted);
         outcome = { kind: "terminal", receipt: receiptFromState(record.state, failure) };
       }
     } finally {
       releaseWrites?.();
     }
     if (outcome!.kind === "paused") {
+      if (record.state.attempt > 0) {
+        await this.transition(() => this.options.transitions.taskPaused(batch.id, record.state.task.id, {
+          attempt: record.state.attempt,
+          ...(outcome!.pause ? { pause: outcome!.pause } : {}),
+          ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
+          ...(record.state.partial ? { partial: record.state.partial } : {}),
+        }));
+      }
       record.state.phase = record.state.attempt > 0 ? "paused" : "queued";
       if (outcome!.pause) record.state.pause = outcome!.pause;
       else delete record.state.pause;
       delete record.state.receipt;
       record.state.collected = false;
       record.launched = false;
-      try {
-        await this.stateChanged();
-      } catch {
-        /* collect/assertFinishable surface durable state failures */
-      }
       settleAsyncTask(record);
       return;
     }
+    await this.transition(() => this.options.transitions.taskSettled(batch.id, record.state.task.id, {
+      attempt: record.state.attempt,
+      receipt: outcome!.receipt,
+      ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
+    }));
     record.state.phase = "terminal";
     record.state.receipt = outcome!.receipt;
     delete record.state.pause;
     delete record.state.partial;
-    try {
-      await this.stateChanged();
-    } catch {
-      /* collect/assertFinishable surface durable state failures */
-    }
     const output = outcome!.receipt.outputs.at(-1);
     if (output) this.contextArtifacts[output.nodeId] = output;
     await this.fireProgress({
@@ -417,24 +437,10 @@ export class WikiTaskRuntime {
     }
   }
 
-  private async stateChanged(): Promise<void> {
+  private async transition(operation: () => Promise<void>): Promise<void> {
     this.assertStateHealthy();
-    if (!this.onStateChanged) return;
-    const state = this.runtimeState();
-    const operation = this.stateChain.then(async () => await this.onStateChanged!(state));
-    this.stateChain = operation.catch((error) => {
-      this.stateFailure ??= error;
-    });
-    await operation;
-  }
-
-  private runtimeState(): WikiTaskRuntimeState {
-    return cloneRuntimeState({
-      batches: [...this.batches.values()].map((batch) => ({
-        batchId: batch.id,
-        tasks: [...batch.records.values()].map((record) => record.state),
-      })),
-    });
+    try { await operation(); }
+    catch (error) { this.stateFailure ??= error; throw error; }
   }
 
   private assertStateHealthy(): void {
@@ -452,10 +458,13 @@ export class WikiTaskRuntime {
     let resumeCurrentAttempt = record.state.phase === "running";
     for (; attempt <= maxAttempts; attempt += 1) {
       if (!resumeCurrentAttempt) {
+        await this.transition(() => this.options.transitions.taskStarted(batch, task.id, {
+          attempt,
+          ...(record.state.partial ? { partial: record.state.partial } : {}),
+        }));
         record.state.phase = "running";
         record.state.attempt = attempt;
         record.state.sessionFile = undefined;
-        await this.stateChanged();
       }
       resumeCurrentAttempt = false;
       let release: (() => void) | undefined;
@@ -463,8 +472,12 @@ export class WikiTaskRuntime {
       const onTelemetry = async (checkpoint: WikiAgentTelemetry): Promise<void> => {
         latestTelemetry = checkpoint;
         if (checkpoint.sessionFile && checkpoint.sessionFile !== record.state.sessionFile) {
+          await this.transition(() => this.options.transitions.taskStarted(batch, task.id, {
+            attempt,
+            sessionFile: checkpoint.sessionFile,
+            ...(record.state.partial ? { partial: record.state.partial } : {}),
+          }));
           record.state.sessionFile = checkpoint.sessionFile;
-          await this.stateChanged();
         }
         await this.fireProgress({
           batchId: batch,
@@ -489,7 +502,15 @@ export class WikiTaskRuntime {
         return { kind: "terminal", receipt: successReceipt, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry };
       } catch (error) {
         if (pauseInterruption(signal) !== undefined) throw error;
-        let failure = classifyTaskFailure(error, signal.aborted);
+        let decision = decideWikiAgentAttempt({
+          error,
+          attempt,
+          maxAttempts,
+          aborted: signal.aborted,
+          baseRetryDelayMs: this.baseRetryDelayMs,
+          random: this.random,
+        });
+        let failure = decision.failure;
         lastFailure = failure;
         const partial = partialResult(error);
         if (partial.markdown) {
@@ -497,19 +518,30 @@ export class WikiTaskRuntime {
             acceptedOutputs.push(await this.persist(task, batch, attempt, partial.markdown));
             for (const value of partial.coverage ?? []) acceptedCoverage.add(value);
             acceptedGaps.push(...(partial.gaps ?? []));
-            record.state.partial = { outputs: [...acceptedOutputs], coverage: [...acceptedCoverage], gaps: [...acceptedGaps] };
-            await this.stateChanged();
+            const partialState = { outputs: [...acceptedOutputs], coverage: [...acceptedCoverage], gaps: [...acceptedGaps] };
+            await this.transition(() => this.options.transitions.taskStarted(batch, task.id, {
+              attempt,
+              ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
+              partial: partialState,
+            }));
+            record.state.partial = partialState;
           } catch (artifactError) {
-            failure = classifyTaskFailure(artifactError);
-            lastFailure = failure;
+            decision = decideWikiAgentAttempt({
+              error: artifactError,
+              attempt,
+              maxAttempts,
+              baseRetryDelayMs: this.baseRetryDelayMs,
+              random: this.random,
+            });
+            failure = decision.failure;
           }
         }
+        lastFailure = failure;
         if (failure.code === "quota" || failure.code === "usage_limit") {
           record.state.partial = { outputs: [...acceptedOutputs], coverage: [...acceptedCoverage], gaps: [...acceptedGaps] };
           return { kind: "paused", pause: failure };
         }
-        const mayRetry = failure.retryable && attempt < maxAttempts;
-        if (!mayRetry) {
+        if (decision.action !== "retry") {
           const status = acceptedOutputs.length > 0 || failure.code === "timeout" || failure.code === "context_exhausted"
             ? "incomplete"
             : "failed";
@@ -519,13 +551,7 @@ export class WikiTaskRuntime {
         if (failure.code === "rate_limit") this.gate.reportPressure(failure.retryAfterMs ?? this.baseRetryDelayMs);
         release?.();
         release = undefined;
-        const delay = failure.code === "rate_limit" && failure.retryAfterMs !== undefined
-          ? failure.retryAfterMs
-          : Math.floor(this.random() * this.baseRetryDelayMs * (2 ** Math.max(0, attempt - 1)));
-        record.state.phase = "queued";
-        record.state.attempt = attempt;
-        record.state.sessionFile = undefined;
-        await this.stateChanged();
+        const delay = decision.delayMs!;
         await this.sleep(delay, signal);
       } finally {
         release?.();
@@ -536,7 +562,7 @@ export class WikiTaskRuntime {
   }
 
   private contextFor(
-    task: WikiDelegateTask,
+    task: WikiDelegateContract,
     batch: number,
     attempt: number,
     signal: AbortSignal,
@@ -558,7 +584,7 @@ export class WikiTaskRuntime {
     };
   }
 
-  private async persist(task: WikiDelegateTask, batch: number, attempt: number, markdown: string): Promise<WikiArtifactRef> {
+  private async persist(task: WikiDelegateContract, batch: number, attempt: number, markdown: string): Promise<WikiArtifactRef> {
     try {
       return await this.options.artifactStore.write({
         runId: this.options.runId,
@@ -730,7 +756,7 @@ async function waitWithTimeout(completion: Promise<void>, timeoutMs: number, sig
   }
 }
 
-function validateBatch(tasks: readonly WikiDelegateTask[], options: WikiTaskRuntimeOptions): void {
+function validateBatch(tasks: readonly WikiDelegateContract[], options: WikiTaskRuntimeOptions): void {
   if (tasks.length === 0) throw new Error("Delegation requires at least one task");
   const ids = new Set<string>();
   const writes = new Set<string>();
@@ -742,9 +768,7 @@ function validateBatch(tasks: readonly WikiDelegateTask[], options: WikiTaskRunt
       if (!Object.hasOwn(options.sourceScopes, scope)) throw new Error(`Delegate task ${task.id} requests undeclared source scope: ${scope}`);
     }
     if (task.role === "write" && !task.writePaths?.length) throw new Error(`Write task ${task.id} requires writePaths`);
-    if (task.role !== "write" && task.writePaths?.length) throw new Error(`Only write tasks may declare writePaths: ${task.id}`);
     if (task.role === "review" && !task.reviewPaths?.length) throw new Error(`Review task ${task.id} requires reviewPaths`);
-    if (task.role !== "review" && task.reviewPaths?.length) throw new Error(`Only review tasks may declare reviewPaths: ${task.id}`);
     for (const value of task.writePaths ?? []) {
       const relative = typeof value === "string" && value.startsWith("wiki/") ? value.slice("wiki/".length) : undefined;
       if (!isSafeWikiPagePath(relative)) throw new Error(`Unsafe Wiki write path: ${value}`);
@@ -759,7 +783,7 @@ function validateBatch(tasks: readonly WikiDelegateTask[], options: WikiTaskRunt
 }
 
 function receipt(
-  task: WikiDelegateTask,
+  task: WikiDelegateContract,
   status: WikiDelegateReceipt["status"],
   summary: string,
   outputs: WikiArtifactRef[],
@@ -779,59 +803,13 @@ function receipt(
     gaps,
     error: failure && { code: failure.code, message: failure.message, retryable: failure.retryable, retryAfterMs: failure.retryAfterMs },
     attempts,
+    contractId: task.contractId,
+    contractDigest: task.contractDigest,
     ...(review ? { review } : {}),
   };
 }
 
 interface ClassifiedFailure extends WikiDelegateError {}
-
-export function classifyTaskFailure(error: unknown, aborted = false): ClassifiedFailure {
-  if (aborted) return classified("cancelled", messageOf(error), false);
-  if (isWikiBudgetExhaustedError(error)) return classified(budgetExhaustedCode(error), messageOf(error), false);
-  if (error instanceof WikiTaskExecutionError && error.code) {
-    return classified(error.code, error.message, retryableCode(error.code), error.options.retryAfterMs);
-  }
-  const value = error && typeof error === "object" ? error as { code?: unknown; status?: unknown; statusCode?: unknown; retryAfterMs?: unknown } : {};
-  const status = numberValue(value.status) ?? numberValue(value.statusCode);
-  const code = typeof value.code === "string" ? value.code.toLowerCase() : "";
-  const retryAfterMs = numberValue(value.retryAfterMs);
-  if (status === 429) return classified("rate_limit", messageOf(error), true, retryAfterMs);
-  if (status === 401) return classified("unauthorized", messageOf(error), false);
-  if (status === 403) return classified("forbidden", messageOf(error), false);
-  if (status !== undefined && status >= 500 && status <= 504) return classified("server_error", messageOf(error), true);
-  if (["econnreset", "etimedout", "eai_again"].includes(code)) return classified("network_reset", messageOf(error), true);
-  const message = messageOf(error);
-  if (/usage limit|quota exceeded|insufficient[_ -]?quota|billing|credit balance/i.test(message)) {
-    const failureCode: WikiTaskFailureCode = /billing|credit balance/i.test(message)
-      ? "billing"
-      : /usage limit/i.test(message) ? "usage_limit" : "quota";
-    return classified(failureCode, message, false, retryAfterMs);
-  }
-  if (/\b429\b|too many requests|rate limit/i.test(message)) return classified("rate_limit", message, true, retryAfterMs);
-  if (/\b50[0-4]\b|internal server error|service unavailable|bad gateway|gateway timeout/i.test(message)) return classified("server_error", message, true);
-  if (/econnreset|socket hang up|connection reset/i.test(message)) return classified("network_reset", message, true);
-  if (isContextOverflowMessage(message)) return classified("context_exhausted", message, true);
-  if (/timed? out|timeout/i.test(message)) return classified("timeout", message, true);
-  if (/\b401\b|unauthorized|invalid api key/i.test(message)) return classified("unauthorized", message, false);
-  if (/\b403\b|forbidden/i.test(message)) return classified("forbidden", message, false);
-  // Provider HTTP 400 is often a transient gateway fault (empty body, "Invalid Request",
-  // DashScope/Qwen parameter wrapping). Retry it. Local schema/validation still fail closed.
-  if (status === 400 || /\b400\b|bad request/i.test(message)) return classified("server_error", message, true, retryAfterMs);
-  if (/invalid request|schema|validation/i.test(message)) return classified(/schema|validation/i.test(message) ? "schema" : "invalid_request", message, false);
-  return classified("unknown", message, false);
-}
-
-function isContextOverflowMessage(message: string): boolean {
-  return /context (?:window|length)|context.*exhaust|overflow|compaction failed|range of input length should be|4(?:00|13)\s*(?:status code)?\s*\(no body\)/i.test(message);
-}
-
-function classified(code: WikiTaskFailureCode, message: string, retryable: boolean, retryAfterMs?: number): ClassifiedFailure {
-  return { code, message, retryable, retryAfterMs };
-}
-
-function retryableCode(code: WikiTaskFailureCode): boolean {
-  return ["rate_limit", "server_error", "network_reset", "timeout", "context_exhausted"].includes(code);
-}
 
 function partialResult(error: unknown): { markdown?: string; coverage?: string[]; gaps?: WikiDelegateGap[] } {
   return error instanceof WikiTaskExecutionError ? {
@@ -839,10 +817,6 @@ function partialResult(error: unknown): { markdown?: string; coverage?: string[]
     coverage: error.options.coverage,
     gaps: error.options.gaps,
   } : {};
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function messageOf(error: unknown): string {

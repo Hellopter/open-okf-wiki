@@ -5,7 +5,7 @@ import { formatLocalDateTime } from "../dist/time-format.js";
 
 const now = Date.parse("2026-08-12T00:01:00.000Z");
 function view(overrides = {}) {
-  return { id: "run-1", cwd: "/repo", operation: "update", status: "running", createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z", lastEventSequence: 1, ...overrides };
+  return { id: "run-1", cwd: "/repo", status: "running", createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z", lastEventSequence: 1, ...overrides };
 }
 function lead(overrides = {}) {
   return { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "synthesizing", activeTools: [], health: "healthy", lastActivityAt: "2026-08-12T00:00:57.000Z", lastHeartbeatAt: "2026-08-12T00:00:59.000Z", usage: { turns: 8, contextPercent: 24 }, ...overrides };
@@ -13,10 +13,10 @@ function lead(overrides = {}) {
 
 test("footer accepts terminal, quota, and quiet running states", () => {
   assert.equal(wikiFooterStatus(view({ progress: { stage: "lead", lead: lead() } }), now), "wiki ◆ lead · synthesizing · activity 3s · ctx 24%");
-  assert.equal(wikiFooterStatus(view({ progress: { stage: "lead" } }), now), "wiki ◆ lead");
+  assert.equal(wikiFooterStatus(view({ progress: { stage: "lead" } }), now), "wiki ◆ generate");
   assert.equal(wikiFooterStatus(view({ status: "succeeded" })), "wiki ✓ published");
   assert.equal(wikiFooterStatus(view({ status: "failed", progress: { language: "zh" } })), "wiki ✗ 失败");
-  assert.equal(wikiFooterStatus(view({ status: "cancelled", progress: { language: "zh" } })), "wiki · 已取消");
+  assert.equal(wikiFooterStatus(view({ status: "cancelled", progress: { language: "zh" } })), "wiki ○ 已取消");
   assert.equal(wikiFooterStatus(view({ status: "paused", pause: { reason: "quota", summary: "limited", retryAt: "2026-08-12T14:20:00.000Z" } })), `wiki ⏸ quota · retry ${formatLocalDateTime("2026-08-12T14:20:00.000Z")}`);
 });
 

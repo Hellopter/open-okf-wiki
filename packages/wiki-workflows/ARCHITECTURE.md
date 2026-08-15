@@ -1,134 +1,61 @@
 # Wiki Producer architecture
 
+Canonical language lives in [CONTEXT.md](../../CONTEXT.md). Run isolation and persistence decisions are recorded in [ADR-0001](../../docs/adr/0001-isolated-full-generation-runs.md) and [ADR-0002](../../docs/adr/0002-recoverable-snapshot-transactions.md).
+
 ## External seam
 
-The producer returned by `createProductionWikiProducer()` is the deep module.
-Its interface is the complete caller surface:
+`createProductionWikiProducer()` returns the deep production module. Callers start one independent Run and consume transaction-aligned updates:
 
 ```ts
-const run = await producer.start({ cwd, operation: "update", focus });
-for await (const event of run.events()) renderWikiEvent(event);
+const run = await producer.start({ cwd, focus });
+for await (const { event, view } of run.updates()) render(event, view);
 await run.control("pause");
 await run.control("resume");
 const result = await run.result();
 ```
 
-Callers do not know node kinds, graph dependencies, research rounds, page
-writers, retry attempts, candidate paths, or publication journals. Pi extension
-commands and tests use the same interface.
+`view()` is a point query. `updates()` is the replay/live interface: every update contains the event and `WikiRunView` committed by the same transaction. The root package export contains only this caller surface; CLI and Pi adapters use explicit subpaths.
 
-Workspace mutation is a separate small module used only by `/wiki init` and
-`/wiki source add`. It validates Git roots, source names and destinations, then
-atomically updates `workspace.yaml`; it is not part of the production run seam.
+## Run isolation
 
-## Implementation
+Every Run reads Workspace settings once, pins the resolved Sources, model choices, generation profile, language, and budgets, then prepares a fresh empty Candidate. The Published Wiki and final WikiSpec are provenance only. They never seed pages, topology, or model context.
 
-The producer hides four deterministic gates around one dynamic Lead loop:
+One Workspace admits one non-terminal Run. A durable Workspace claim enforces that rule across producer instances and processes; a separate attempt lease fences execution of the active Run and permits stale-owner recovery. Different Workspaces may run concurrently. Pause preserves the Candidate, artifacts, exact Pi sessions, and pinned settings. The complete materialized production-skill tree is durably copied and digested into the Run plan; resume verifies that exact digest before reopening the pinned sessions and re-inspects Sources. Source or skill drift fails the Run. A new Run is always a full generation.
+
+## Production module
+
+The implementation owns fixed deterministic gates around one dynamic Lead loop:
 
 ```text
-workspace ownership
-  -> inspect pinned source state
-  -> Lead research/write loop
-  -> deterministic Wiki validation
-  -> atomic publication and recovery
+claim Workspace -> pin settings and Sources -> create empty Candidate
+  -> Lead research/write/review -> deterministic validation
+  -> recoverable publication -> terminal cleanup
 ```
 
-The Lead owns the evolving research strategy. It may use one Agent for a small
-repository, fan out independent packages, continue targeted gaps, verify
-conflicts, and group related pages under one writer. Completion is based on
-coverage and accepted evidence, not completion of a predefined DAG.
+Inspection, Candidate preparation, validation, publication, lifecycle persistence, and cleanup are fixed Wiki implementation, not adapters. `WikiLeadRuntime` is a real seam with a Pi adapter and deterministic test adapter. The Lead chooses research scope, fan-out, follow-up questions, and page grouping without exposing a workflow language.
 
-There is deliberately no workflow scripting interface, generic task graph,
-plugin system, saved workflow, arbitrary nested Agent recursion, or public
-node retry. This keeps policy, recovery, and tests local to the Wiki domain.
+## Candidate and review
 
-## Internal seams
+Candidate page replacement, Page Revision advancement, Review Assignment capture, and review acceptance belong to one deep module. A write is canonicalized and validated before replacement and review invalidation commit together. Reviewers receive exact read-only paths and durable revision identity. A receipt is accepted only while its assignment matches the current WikiSpec and Page Revisions. Publication fails closed on missing, stale, or `changes_requested` coverage.
 
-Only dependencies that genuinely vary receive adapters:
+Indexes are deterministic projections. Final governance issues an opaque Publication Seal bound to the Run, current execution authority, canonical Candidate root, complete tree digest, page set, and final WikiSpec. The publication store re-verifies that seal immediately before the Candidate rename; callers cannot supply page or Spec metadata independently. A Workspace publication lease serializes publish, reconcile, candidate preparation, and provenance reads across store instances and processes, waits for a live owner, and reclaims a dead owner. Publication retains its rename journal because installing `wiki/` has a filesystem lifetime separate from Run state. On recovery, the store reconciles that journal before Candidate preparation and projects a committed publication directly into the Run terminal transition, closing the crash window between install and Run commit. After that terminal transition is durable, acknowledgement moves the active journal into an immutable per-Run audit archive so historical journals never participate in recovery of a later Published Wiki.
 
-- `WikiLeadRuntime`: an internal production Pi Lead loop and deterministic test fake.
-- Filesystem-backed stores: production directories and temporary test roots.
-- Clock/ID injection for deterministic run tests.
+## Durable Run state
 
-Inspection, evidence acceptance, path authorization, Wiki validation, workspace
-ownership, and publication are Wiki implementation, not interchangeable public
-adapters. Pi supplies Agent sessions plus the standard read/grep/find/ls and
-write/edit implementations. The Wiki layer only applies readable roots,
-attempt-local path remapping, exact write sets, symlink defense, and output
-bounds.
+Each lifecycle change is one snapshot transaction containing the event, Run view, affected Agent records, task runtime state, and activity projection. A write-ahead transaction is persisted first and replayed idempotently after interruption. It owns lifecycle legality and active-Run release; callers never sequence state edits, event appends, and release themselves.
 
-## Artifact handoff
-
-Model-authored prose is data, not workflow control state:
-
-- Content-addressed Markdown blob: concise narrative for downstream Agents.
-- Artifact reference: hash, media type, and bounded size.
-- Task receipt: small status envelope with gaps, failures, and artifact refs.
-
-The host validates size and integrity, then content-addresses accepted handoff
-artifacts. Run state retains receipts and references, never large research prose.
-Missing/failed branches are recorded as missing coverage rather than negative
-findings.
+Version-1 Run persistence is incompatible and never migrated. Opening it reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable.
 
 ## Observability
 
-Progress is a projection of run events, not a control plane. It does not
-admit work, retry tasks, or publish the Wiki.
+Observability is a projection, never a control plane. One pure semantic module interprets the strict event variants plus status, stage, health, liveness, activity, tone, marker, context pressure, and batch progress. Events have typed variant fields rather than an extensible data bag. CLI, live footer/widget, and overlay are media adapters over those semantics; the overlay does not depend on CLI rendering. They never reduce events into independent state.
 
-Delegated receipts and compact process history live in a sidecar at
-`.okf-wiki/runs/<id>/tasks/<taskId>.json`. `inspect()` reads that sidecar and
-the content-addressed Markdown blob. The `/wiki status` card, TUI
-footer/widget, and status overlay subscribe to `view()` and `inspect()`.
+The overlay and Pi stream consume `updates()`, so an event is never rendered with a separately queried stale view. The overlay ignores non-advancing sequences and accepts the terminal update before its stream ends. Agent inspection and activity remain point queries.
 
-Do not restore the former DAG, TUI renderer, or public node retry. The overlay
-is a Wiki-specific subscriber of `WikiProducer`.
+## Failure ownership
 
-## Context policy
+Pi owns one Agent model loop, persistent session, compaction, cancellation, usage observation, and tool execution. The Wiki task runtime owns bounded fresh-session retry and task receipts. Throttling reduces shared admission and honors retry metadata; authentication, billing, schema, validation, hard quota, and usage-limit failures fail or durably pause without consuming transient retry budget.
 
-Every Lead and delegated Agent runs in a fresh in-memory Pi session with
-auto-compaction enabled and a per-session wall-clock deadline configured by
-`wiki.sessionTimeoutSeconds` (default 1200). Pi triggers compaction as the
-session approaches its context limit, summarizes older messages, and keeps
-recent work. The Wiki runtime currently uses Pi's defaults of `reserveTokens: 16384` and
-`keepRecentTokens: 20000`. Pi itself makes the enable flag and both thresholds
-configurable, but the Wiki runtime neither exposes them in `workspace.yaml` nor
-inherits project or user Pi settings.
+Publication metadata readers accept durable provenance versions 1 and 2; every new publication writes version 2 with the source fingerprint, summary, sealed WikiSpec, page set, and final tree digest. The journal binds that complete canonical metadata with its own digest, and reconciliation requires exact equality with current provenance. Publication journals, audit acknowledgement, run events, active markers, artifact blobs and manifests, production-skill snapshots, and cleanup use fsynced file and directory transitions so recovery knowledge or a returned receipt is durable before the next lifecycle step.
 
-Those isolated sessions disable Pi skills, extensions, and prompt templates.
-Prepare copies the packaged production skill into
-`.okf-wiki/runs/<id>/skill/`, injects the assigned role brief into the prompt,
-and adds that directory as a read-only tool root so Agents can load page
-templates on demand. The host `/wiki` skill is a separate package resource and
-is not loaded into production sessions.
-
-Compaction is an intra-session context mechanism. It does not replace the
-content-addressed artifact handoff between independent Agent sessions.
-
-## Failure policy
-
-Retry has one owner. Pi turn auto-retry and provider retry are explicitly
-disabled. The Wiki task runtime owns the configured fresh-session retry budget
-for recoverable Agent failures through `wiki.transientRetries` and
-`wiki.baseRetryDelayMs`.
-
-500-class transient failures, provider HTTP 400, and timeouts use exponential
-backoff with full jitter. Many gateways wrap flakes as `400 Invalid Request` or
-return `400 status code (no body)`; those consume the same retry budget as 5xx.
-429 reduces shared admission, honors reset metadata, and receives at most
-`wiki.transientRetries` fresh-session retries. Exhaustion remains an explicit
-failed task receipt. 401/403, billing, local schema/validation, and hard quota
-errors are non-retryable; quota and usage-limit outcomes durably pause the run.
-
-Pause aborts in-flight Agent sessions after persisting accepted artifacts.
-Resume preserves the candidate and accepted content-addressed artifacts, then
-re-inspects source before publication. Source drift rejects the run. Publication
-has its own rename journal because
-generic run persistence cannot guarantee an atomic Wiki swap.
-
-## Deleted design
-
-The former engine/application/DAG/transition/join modules, fixed phases,
-research catalog queries, staged JSON submission tools, node/phase retry UI,
-TUI renderer, and version-2 snapshot protocol are not part of this design and
-have no compatibility path. Tests are replaced at the `WikiProducer` interface;
-they do not assert internal graph transitions.
+Successful publication removes transient Candidate, transaction, session, finalization preimage, and materialized skill data. Content-addressed artifact blobs, their per-Run manifest, task receipts, Run state, published provenance, and acknowledged publication audit remain as durable evidence. Failed, paused, and cancelled Runs retain their recovery material. Cleanup failure is explicit and does not rewrite a successful publication as failed.

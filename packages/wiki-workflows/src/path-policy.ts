@@ -2,6 +2,7 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { loadWikiWorkspace } from "./workspace.js";
+import type { WikiPinnedSourcePlan } from "./runtime-types.js";
 
 export interface WorkspaceToolPolicy {
   workspaceRoot: string;
@@ -42,6 +43,33 @@ export async function workspaceToolPolicy(cwd: string, candidateWikiRoot?: strin
     wikiRoot: path.join(workspace.root, "wiki"),
     candidateWikiRoot: resolvedCandidateRoot,
     skillRoot: resolvedSkillRoot,
+  };
+}
+
+/** Build the Agent filesystem policy only from the production plan pinned at run start. */
+export function pinnedWorkspaceToolPolicy(
+  plan: WikiPinnedSourcePlan,
+  candidateWikiRoot?: string,
+  skillRoot?: string,
+): WorkspaceToolPolicy {
+  const workspaceRoot = path.resolve(plan.workspaceRoot);
+  const sourceRoots = new Map(plan.sources.map((source) => [
+    source.scopeId,
+    {
+      logicalRoot: insideWorkspace(workspaceRoot, source.absolutePath),
+      physicalRoot: path.resolve(source.realPath),
+    } satisfies PermittedToolRoot,
+  ]));
+  const resolvedCandidateRoot = candidateWikiRoot === undefined ? undefined : insideWorkspace(workspaceRoot, candidateWikiRoot);
+  const resolvedSkillRoot = skillRoot === undefined ? undefined : insideWorkspace(workspaceRoot, skillRoot);
+  if (resolvedCandidateRoot === workspaceRoot) throw new Error("Workflow configuration error: candidate Wiki root must be a workspace subdirectory");
+  if (resolvedSkillRoot === workspaceRoot) throw new Error("Workflow configuration error: production skill root must be a workspace subdirectory");
+  return {
+    workspaceRoot,
+    sourceRoots,
+    wikiRoot: path.join(workspaceRoot, "wiki"),
+    ...(resolvedCandidateRoot ? { candidateWikiRoot: resolvedCandidateRoot } : {}),
+    ...(resolvedSkillRoot ? { skillRoot: resolvedSkillRoot } : {}),
   };
 }
 

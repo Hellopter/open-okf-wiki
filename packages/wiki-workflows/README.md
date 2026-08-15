@@ -1,6 +1,6 @@
 # Repository Wiki Producer
 
-`@okf-wiki/wiki-workflows` is a Pi extension that builds and refreshes a
+`@okf-wiki/wiki-workflows` is a Pi extension that fully generates a
 source-grounded repository Wiki. There is no generic workflow platform. The
 status overlay is a subscriber of `WikiProducer`, not a workflow TUI.
 
@@ -20,7 +20,6 @@ Run Pi in the repository and use:
 /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]
 /wiki source add link <local-path> [--name <name>] [--workspace <dir>]
 /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
-/wiki regenerate [focus]
 /wiki status [run-id] [lead|batch-N/task-id] [--process]
 /wiki runs
 /wiki pause
@@ -28,8 +27,9 @@ Run Pi in the repository and use:
 /wiki cancel [run-id]
 ```
 
-`/wiki` updates the Wiki and may focus research on the supplied text.
-`regenerate` discards the prior page topology and rebuilds it. A Git repository
+Every `/wiki` invocation starts an isolated full generation in a fresh empty
+Candidate. Optional focus prioritizes research without dropping essential
+coverage. A Git repository
 without `workspace.yaml` is used directly as an implicit single source.
 
 For multiple repositories, run `init` to create an explicit workspace. It
@@ -140,9 +140,9 @@ wiki/
 ```
 
 Each populated category contains its own generated `index.md` and topic pages.
-Indexes are deterministic host-owned projections, not model-authored pages. An
-update receives the previously published WikiSpec so it can revise the existing
-topology; `regenerate` deliberately plans a new one.
+Indexes are deterministic host-owned projections, not model-authored pages. The
+Published Wiki and final WikiSpec are provenance only; neither seeds a new Run's
+topology or content.
 
 ## Watching a run
 
@@ -152,18 +152,19 @@ current activity, liveness, context pressure, and current delegation batch visib
 an unambiguous Agent.
 The overlay uses a two-column navigator and inspector at 100 columns or wider,
 and layered single-column navigation on smaller terminals. Overview, Process,
-and Output tabs share the same durable snapshot. Esc leaves it. The overlay is not
+and Output tabs share the same durable transaction view. Esc leaves it. The overlay is not
 teammate chat.
 
 ## Execution model
 
 The public module is intentionally small: `createProductionWikiProducer()`
 returns a producer whose `start()` method returns a `WikiRunHandle`; the handle
-exposes `view()`, `events()`, `result()`, `control()`, `inspectAgent()`, and
+exposes `view()`, `updates()`, `result()`, `control()`, `inspectAgent()`, and
 `activity()`. Pi
 commands are a thin adapter over this interface.
 
-The internal lifecycle is fixed only where determinism matters:
+Each Workspace admits one non-terminal Run; different Workspaces may run in
+parallel. The internal lifecycle is fixed where determinism matters:
 
 ```text
 Inspect -> Spec plan -> Lead/Writer loop -> Review -> Validate -> Publish
@@ -172,9 +173,11 @@ Inspect -> Spec plan -> Lead/Writer loop -> Review -> Validate -> Publish
 The Lead loop dynamically chooses research scope, fan-out, follow-up questions,
 page groups, and verification. It is a Wiki-specific runtime, not a reusable
 workflow DSL. Shared admission bounds concurrent Agents, and every session has
-a wall-clock deadline. Lead and delegated attempts use persistent Pi sessions
+a wall-clock deadline. Run settings and Source identities are pinned on the
+first attempt. Lead and delegated attempts use persistent Pi sessions
 with auto-compaction; pause/resume reopens the exact session with its saved
 model, thinking level, messages, tool results, and compaction history.
+Resume preserves the Candidate and pinned settings; Source drift fails the Run.
 Compaction summarizes older context when the session approaches its context
 limit and preserves recent work.
 
@@ -196,7 +199,10 @@ Markdown blobs referenced by compact task receipts:
 
 The blob contains model-readable analysis. The durable receipt contains only
 status, gaps, failure metadata, and the artifact reference. Downstream Agents
-receive accepted references and retrieve only the context they need.
+receive accepted references and retrieve only the context they need. Blob bytes
+and the per-Run manifest are fsynced before a receipt can commit. They remain
+after successful publication as durable handoff and audit evidence; identical
+content may share a content-addressed blob.
 
 ## Reliability
 
@@ -218,11 +224,32 @@ receive accepted references and retrieve only the context they need.
   block immediately instead of consuming retry budget.
 - A timeout or cancellation aborts and disposes the Agent. Finalized Markdown
   artifacts remain eligible for later context handoff.
-- Candidate pages are deterministically validated before replacement and again
-  before the recoverable, atomic publication swap.
+- Candidate pages are deterministically validated before replacement. Final
+  governance issues an opaque seal over the Run, Candidate root, complete tree
+  digest, page set, and WikiSpec; publication verifies it again immediately
+  before the recoverable, atomic swap.
 - Publication requires complete, current independent review coverage. Missing,
   stale, or `changes_requested` results fail closed.
+- Workspace and attempt leases prevent concurrent execution of one Workspace
+  across processes. Publication has a distinct Workspace lease so recovery
+  waits for a live publisher and only reclaims a dead owner.
+- The materialized production skill is a complete, fsynced Run snapshot. Its
+  exact tree digest is pinned in the Run plan and verified on resume.
 
-No compatibility path is retained for the previous DAG snapshots or submission
-artifacts. Remove stale `.okf-wiki/` run state before using this version; the
-published `wiki/` directory is independent of that run state.
+Published provenance readers accept metadata versions 1 and 2. New
+publications write version 2, including the source fingerprint, summary, sealed
+WikiSpec, tree digest, and page set. The active publication journal binds that
+canonical metadata with a digest. Once the matching Run terminal transition is
+durable, acknowledgement archives the journal under
+`.okf-wiki/publications/<run-id>.json`; archived journals remain auditable but
+are excluded from later recovery. Run and publication filesystem transitions
+fsync both file contents and changed directory entries before advancing their
+durable state.
+
+Version-1 Run persistence is not migrated. Preserve needed evidence and remove
+stale `.okf-wiki/` Run state manually; the Published Wiki is independent of that
+state. A successful current-version Run removes its transient Candidate,
+session, transaction, publication preimage, and materialized skill after
+publication. It retains content-addressed artifacts, the per-Run artifact
+manifest and receipts, Run state, published provenance, and the acknowledged
+publication audit.

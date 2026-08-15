@@ -1,6 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
+import { ensureDirectory, writeText } from "./files.js";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
 
 export const MAX_WIKI_RESEARCH_ARTIFACT_BYTES = 256 * 1024;
@@ -83,14 +84,14 @@ export function createWikiArtifactStore(options: { workspace: string }): WikiArt
           if (digest(existing) !== sha256 || existing.byteLength !== bytes.byteLength) throw new Error(`Wiki handoff blob is corrupt: ${relativePath}`);
         } catch (error) {
           if (!isMissing(error)) throw error;
-          await writeAtomic(blob, bytes);
+          await writeText(blob, input.content);
         }
         const manifestFile = path.join(runsRoot, input.runId, "manifest.json");
         const manifest = await readManifest(okfRoot, manifestFile);
         const artifacts = [...manifest.artifacts.filter((entry) => !sameLocation(entry, ref)), ref]
           .sort((left, right) => `${left.nodeId}:${left.attempt}`.localeCompare(`${right.nodeId}:${right.attempt}`));
         await ensureSafeDirectory(okfRoot, path.dirname(manifestFile));
-        await writeAtomic(manifestFile, Buffer.from(`${JSON.stringify({ version: 1, artifacts })}\n`, "utf8"));
+        await writeText(manifestFile, `${JSON.stringify({ version: 1, artifacts })}\n`);
         return ref;
       });
     },
@@ -165,7 +166,7 @@ function decode(bytes: Uint8Array): string {
 
 async function ensureSafeDirectory(root: string, directory: string): Promise<void> {
   await assertNoSymlinks(root, directory);
-  await mkdir(directory, { recursive: true });
+  await ensureDirectory(directory);
   await assertNoSymlinks(root, directory);
 }
 
@@ -182,13 +183,6 @@ async function assertNoSymlinks(root: string, location: string): Promise<void> {
       return;
     }
   }
-}
-
-async function writeAtomic(location: string, bytes: Uint8Array): Promise<void> {
-  await mkdir(path.dirname(location), { recursive: true });
-  const temporary = `${location}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, bytes);
-  await rename(temporary, location);
 }
 
 function isMissing(error: unknown): error is NodeJS.ErrnoException {

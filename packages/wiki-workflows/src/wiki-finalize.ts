@@ -19,7 +19,20 @@ import {
   scanWikiTree,
   specPagePaths,
   validateWikiCandidate,
+  type ResolvedWikiRoots,
 } from "./wiki-validate.js";
+
+export type WikiFinalizeFaultPoint =
+  | "afterValidation"
+  | "afterObsoleteRemoval"
+  | "afterStamp"
+  | "afterIndexes"
+  | "afterCleanup";
+
+export interface WikiFinalizeOptions {
+  fault?: (point: WikiFinalizeFaultPoint) => void | Promise<void>;
+  pinnedRoots?: ResolvedWikiRoots;
+}
 
 /**
  * Apply the deterministic Wiki lifecycle after semantic review has passed.
@@ -31,9 +44,10 @@ export async function finalizeWiki(
   wikiDirectory = "wiki",
   publicationAt = new Date().toISOString(),
   requiredSections: readonly string[] = [],
+  options: WikiFinalizeOptions = {},
 ): Promise<WikiFinalization> {
   assertPublicationTimestamp(publicationAt);
-  const validation = await validateWikiCandidate(root, spec, wikiDirectory, false, undefined, requiredSections);
+  const validation = await validateWikiCandidate(root, spec, wikiDirectory, false, undefined, requiredSections, options.pinnedRoots);
   if (!validation.ok) {
     throw new Error(`Wiki finalization requires a valid target Wiki: ${validation.issues.map(formatIssue).join("; ")}`);
   }
@@ -42,8 +56,9 @@ export async function finalizeWiki(
   if (!sameStrings(validation.pages, targetPages)) {
     throw new Error("Wiki finalization requires every target page to exist");
   }
+  await options.fault?.("afterValidation");
 
-  const roots = await resolveWikiRoots(root, wikiDirectory);
+  const roots = options.pinnedRoots ?? await resolveWikiRoots(root, wikiDirectory);
   const before = await scanWikiTree(roots.wiki);
   if (before.issues.length) throw new Error(`Unsafe Wiki tree: ${before.issues.map(formatIssue).join("; ")}`);
   const obsoletePages = [...validation.obsoletePages];
@@ -53,10 +68,14 @@ export async function finalizeWiki(
     const removed = await removeRegularWikiFile(roots.wiki, page);
     if (removed) removedPages.push(page);
   }
+  await options.fault?.("afterObsoleteRemoval");
 
   await stampWikiPages(roots.wiki, targetPages, publicationAt);
-  const rebuiltIndexes = await materializeWikiIndexes(root, spec, wikiDirectory);
+  await options.fault?.("afterStamp");
+  const rebuiltIndexes = await materializeWikiIndexes(root, spec, wikiDirectory, roots);
+  await options.fault?.("afterIndexes");
   await removeEmptyWikiDirectories(roots.wiki);
+  await options.fault?.("afterCleanup");
 
   const after = await scanWikiTree(roots.wiki);
   if (after.issues.length) throw new Error(`Unsafe Wiki tree after finalization: ${after.issues.map(formatIssue).join("; ")}`);
@@ -80,8 +99,9 @@ export async function materializeValidatedWikiIndexes(
   wikiDirectory = "wiki",
   excludedPaths?: readonly string[],
   requiredSections: readonly string[] = [],
+  pinnedRoots?: ResolvedWikiRoots,
 ): Promise<string[]> {
-  const validation = await validateWikiCandidate(root, spec, wikiDirectory, false, excludedPaths, requiredSections);
+  const validation = await validateWikiCandidate(root, spec, wikiDirectory, false, excludedPaths, requiredSections, pinnedRoots);
   if (!validation.ok) {
     throw new Error(`Wiki indexes require valid target pages: ${validation.issues.map(formatIssue).join("; ")}`);
   }
@@ -89,7 +109,7 @@ export async function materializeValidatedWikiIndexes(
   if (!sameStrings(validation.pages, targetPages)) {
     throw new Error("Wiki indexes require every target page to exist");
   }
-  return materializeWikiIndexes(root, spec, wikiDirectory);
+  return materializeWikiIndexes(root, spec, wikiDirectory, pinnedRoots);
 }
 
 async function stampWikiPages(wikiRoot: string, targetPages: readonly string[], publicationAt: string): Promise<void> {

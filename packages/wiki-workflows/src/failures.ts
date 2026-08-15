@@ -1,64 +1,17 @@
-/**
- * Wiki workflow failure vocabulary and classification helpers.
- *
- * Pure module: no @earendil-works/* imports. Single source of truth for
- * durable node error codes used by engine, node-retry, and snapshots.
- */
-
-/** Stable failure codes recorded on nodes and used by retry / terminal policy. */
-export type WikiNodeErrorCode =
-  | "missing_submission"
-  | "invalid_submission"
-  | "submission_too_large"
-  | "validator_infrastructure"
-  | "context_budget_exceeded"
-  | "execution_failed"
-  | "cancelled"
-  | "research_rounds_exhausted"
+/** Current durable budget vocabulary; former DAG/node/snapshot codes have no compatibility path. */
+export type WikiBudgetExhaustedCode =
   | "delegated_tasks_exhausted"
   | "delegate_batches_exhausted"
   | "session_turns_exhausted"
-  | "session_tool_calls_exhausted"
-  | "same_defects_twice"
-  | "same_validation_twice"
-  | "unroutable_validation"
-  | "repair_no_progress"
-  | "source_drift_blocked"
-  | "structural_resynthesis_budget"
-  | "local_repair_budget"
-  | "missing_handoff_artifacts"
-  | "snapshot_incompatible";
-
-/** Alias kept for callers that prefer the failures-domain name. */
-export type WikiFailureCode = WikiNodeErrorCode;
-
-/** Coarse class for routing / metrics; not persisted as a separate field today. */
-export type WikiFailureClass =
-  | "transient"
-  | "protocol"
-  | "semantic"
-  | "budget"
-  | "policy"
-  | "cancelled";
-
-export interface WikiFailure {
-  message: string;
-  code: WikiNodeErrorCode;
-  class: WikiFailureClass;
-  details?: Record<string, unknown>;
-  retryable: boolean;
-}
+  | "session_tool_calls_exhausted";
 
 /** Budget codes that block the run (not retryable agent attempts). */
 export const WIKI_BUDGET_EXHAUSTED_CODES = [
-  "research_rounds_exhausted",
   "delegated_tasks_exhausted",
   "delegate_batches_exhausted",
   "session_turns_exhausted",
   "session_tool_calls_exhausted",
-] as const satisfies readonly WikiNodeErrorCode[];
-
-export type WikiBudgetExhaustedCode = (typeof WIKI_BUDGET_EXHAUSTED_CODES)[number];
+] as const satisfies readonly WikiBudgetExhaustedCode[];
 
 /**
  * Thrown when the research round ceiling is hit.
@@ -66,13 +19,12 @@ export type WikiBudgetExhaustedCode = (typeof WIKI_BUDGET_EXHAUSTED_CODES)[numbe
  */
 export class WikiBudgetExhaustedError extends Error {
   readonly code: WikiBudgetExhaustedCode;
-  readonly class = "budget" as const;
   readonly retryable = false;
   readonly details?: Record<string, unknown>;
 
   constructor(
     message: string,
-    code: WikiBudgetExhaustedCode = "research_rounds_exhausted",
+    code: WikiBudgetExhaustedCode,
     details?: Record<string, unknown>,
   ) {
     super(message);
@@ -81,15 +33,6 @@ export class WikiBudgetExhaustedError extends Error {
     this.details = details;
   }
 
-  toFailure(): WikiFailure {
-    return {
-      message: this.message,
-      code: this.code,
-      class: this.class,
-      details: this.details,
-      retryable: this.retryable,
-    };
-  }
 }
 
 export function errorMessage(error: unknown): string {
@@ -112,7 +55,7 @@ export function budgetExhaustedCode(error: unknown): WikiBudgetExhaustedCode {
   if (error && typeof error === "object" && isWikiBudgetExhaustedCode((error as { code?: unknown }).code)) {
     return (error as { code: WikiBudgetExhaustedCode }).code;
   }
-  return "research_rounds_exhausted";
+  throw new Error("Wiki budget error has no recognized code");
 }
 
 /**

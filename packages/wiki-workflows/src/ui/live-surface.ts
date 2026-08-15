@@ -6,17 +6,14 @@ import type {
   WikiRunView,
   WikiTaskSnapshot,
 } from "../producer-types.js";
+import { activitySemantics, agentStatusSemantics, projectWikiRunObservability } from "../observability.js";
 import { formatLocalDateTime } from "../time-format.js";
 
-const TASK_ICONS = { queued: "·", running: "◆", complete: "✓", incomplete: "◐", failed: "✗" } as const;
-
 export function wikiFooterStatus(view: WikiRunView, now = Date.now()): string | undefined {
-  const language = view.progress?.language ?? "en";
-  if (view.status === "succeeded") return language === "zh" ? "wiki ✓ 已发布" : "wiki ✓ published";
-  if (view.status === "failed") return language === "zh" ? "wiki ✗ 失败" : "wiki ✗ failed";
-  if (view.status === "cancelled") return language === "zh" ? "wiki · 已取消" : "wiki · cancelled";
+  const semantics = projectWikiRunObservability(view, now);
+  if (semantics.status.terminal) return `wiki ${semantics.status.marker} ${semantics.status.label}`;
   if (view.status === "paused") return pausedFooter(view);
-  return runningFooter(view, now);
+  return runningFooter(view, semantics);
 }
 
 export function wikiWidgetLines(view: WikiRunView): string[] | undefined {
@@ -48,24 +45,22 @@ export function themeWikiLiveText(theme: unknown, text: string): string {
   try { return String(value.fg(liveTextColor(text), text)); } catch { return text; }
 }
 
-function runningFooter(view: WikiRunView, now: number): string {
+function runningFooter(view: WikiRunView, semantics: ReturnType<typeof projectWikiRunObservability>): string {
   const progress = view.progress;
   if (!progress) return "wiki ◆ lead";
   const lead = progress.lead;
-  if (!lead) return `wiki ◆ ${progress.stage}`;
-  if (lead.health === "degraded") {
-    return `wiki ! lead · ${progress.language === "zh" ? "观测降级" : "observability degraded"}`;
+  if (!lead) return `wiki ◆ ${semantics.stage?.label ?? progress.stage}`;
+  if (semantics.health === "degraded") {
+    return `wiki ! lead · ${semantics.language === "zh" ? "观测降级" : "observability degraded"}`;
   }
-  const activityAge = age(lead.lastActivityAt, now);
-  const heartbeatAge = age(lead.lastHeartbeatAt, now);
-  if (isLongWait(lead, now)) {
-    return `wiki ! lead · ${progress.language === "zh" ? "无 Pi 活动" : "no Pi activity"} ${activityAge ?? "?"}${heartbeatAge ? ` · ${progress.language === "zh" ? "会话存活" : "session alive"} ${heartbeatAge}` : ""}`;
+  if (semantics.liveness === "alive_without_activity") {
+    return `wiki ! lead · ${semantics.language === "zh" ? "无 Pi 活动" : "no Pi activity"} ${semantics.activityAge ?? "?"}${semantics.heartbeatAge ? ` · ${semantics.language === "zh" ? "会话存活" : "session alive"} ${semantics.heartbeatAge}` : ""}`;
   }
   const batch = progress.currentBatch;
   const current = lead.activeTools[0]?.name ?? quietActivity(lead.activity, progress.language ?? "en");
   const batchText = batch && lead.activity === "delegating" ? `batch ${batch.batch} · ${batch.completed}/${batch.total}` : current;
   const context = lead.usage?.contextPercent === undefined ? undefined : `ctx ${Math.round(lead.usage.contextPercent)}%`;
-  return ["wiki ◆ lead", batchText, activityAge ? `activity ${activityAge}` : undefined, context].filter(Boolean).join(" · ");
+  return ["wiki ◆ lead", batchText, semantics.activityAge ? `activity ${semantics.activityAge}` : undefined, context].filter(Boolean).join(" · ");
 }
 
 function pausedFooter(view: WikiRunView): string {
@@ -88,7 +83,7 @@ function taskLine(task: WikiTaskSnapshot, language: "zh" | "en"): string {
   const degraded = task.health === "degraded";
   const detail = task.status === "running" ? liveDetail(task.activeTool, undefined, language) : task.summary;
   const health = degraded ? language === "zh" ? "观测降级" : "observability degraded" : undefined;
-  return `  ${degraded ? "!" : TASK_ICONS[task.status]} ${task.role}  ${task.id}${detail ? `  ${detail}` : ""}${health ? `  ${health}` : ""}`;
+  return `  ${degraded ? "!" : agentStatusSemantics(task.status).marker} ${task.role}  ${task.id}${detail ? `  ${detail}` : ""}${health ? `  ${health}` : ""}`;
 }
 
 function leadLabel(language: "zh" | "en"): string {
@@ -113,9 +108,10 @@ function recentToolOutcomes(activity: WikiActivityEntry[] | undefined): WikiActi
 }
 
 function toolOutcomeLine(entry: WikiActivityEntry): string {
-  const failed = entry.severity === "error";
+  const semantics = activitySemantics(entry);
+  const failed = semantics.tone === "error";
   const detail = failed ? entry.message : entry.summary;
-  return `  ${failed ? "✗" : "✓"} ${entry.toolName ?? "tool"}${detail ? `  ${detail}` : ""}`;
+  return `  ${semantics.marker} ${entry.toolName ?? "tool"}${detail ? `  ${detail}` : ""}`;
 }
 
 function compareTasks(a: WikiTaskSnapshot, b: WikiTaskSnapshot): number {
@@ -124,11 +120,7 @@ function compareTasks(a: WikiTaskSnapshot, b: WikiTaskSnapshot): number {
 }
 
 function agentIcon(agent: WikiAgentSnapshot): string {
-  if (agent.status === "failed") return "✗";
-  if (agent.status === "incomplete") return "◐";
-  if (agent.status === "complete") return "✓";
-  if (agent.status === "retrying") return "!";
-  return agent.status === "queued" ? "·" : "◆";
+  return agent.status === "retrying" ? "!" : agentStatusSemantics(agent.status).marker;
 }
 
 function quietActivity(activity: WikiAgentSnapshot["activity"] | undefined, language: "zh" | "en"): string | undefined {
@@ -141,17 +133,4 @@ function quietActivity(activity: WikiAgentSnapshot["activity"] | undefined, lang
   };
   if (language === "zh") return zh[activity] ?? activity;
   return activity.replaceAll("_", " ");
-}
-
-function age(value: string | undefined, now: number): string | undefined {
-  if (!value) return undefined;
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) return undefined;
-  const seconds = Math.max(0, Math.floor((now - parsed) / 1000));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
-}
-
-function isLongWait(agent: WikiAgentSnapshot, now: number): boolean {
-  if (!agent.lastActivityAt || !agent.lastHeartbeatAt) return false;
-  return now - Date.parse(agent.lastActivityAt) >= 120_000 && now - Date.parse(agent.lastHeartbeatAt) < 15_000;
 }

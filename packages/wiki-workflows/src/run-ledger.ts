@@ -1,16 +1,15 @@
-import { appendFile, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import type { WikiDelegateError, WikiDelegateReceipt, WikiDelegateTask, WikiTaskFailureCode } from "./delegate-contracts.js";
+import { claimText, removePath, syncDirectory, writeText } from "./files.js";
+import { parseWikiDelegateContract, parseWikiDelegateReceipt, type WikiDelegateContract, type WikiDelegateError, type WikiDelegateReceipt, type WikiTaskFailureCode } from "./delegate-contracts.js";
 import { WIKI_BUDGET_EXHAUSTED_CODES } from "./failures.js";
 import type {
   WikiContextStats,
   WikiActivityEntry,
   WikiActivityPage,
-  WikiAgentRecord,
   WikiAgentSnapshot,
   WikiAgentTarget,
   WikiActiveTool,
-  WikiProducerOperation,
   WikiProducerResult,
   WikiRunEvent,
   WikiRunPause,
@@ -21,20 +20,34 @@ import type {
   WikiTaskSnapshot,
   WikiAgentTelemetry,
   WikiExecutionBudgets,
+  WikiRunWarning,
+} from "./producer-types.js";
+import type {
   WikiAgentExecution,
+  WikiAgentRecord,
+  WikiLeadObservation,
+  WikiProductionPlan,
   WikiTaskRuntimePartial,
   WikiTaskRuntimeState,
   WikiTaskRuntimeTaskState,
-} from "./producer-types.js";
+} from "./runtime-types.js";
 
-export const WIKI_RUN_LEDGER_VERSION = 1 as const;
+export const WIKI_RUN_LEDGER_VERSION = 2 as const;
+
+export class UnsupportedWikiRunVersionError extends Error {
+  constructor(readonly location: string, readonly found: unknown) {
+    super(`Unsupported Wiki run version at ${location}: expected ${WIKI_RUN_LEDGER_VERSION}, found ${String(found)}`);
+    this.name = "UnsupportedWikiRunVersionError";
+  }
+}
 
 export interface WikiRunState extends WikiRunView {
   version: typeof WIKI_RUN_LEDGER_VERSION;
   attempt: number;
-  sourceFingerprint?: string;
-  output?: unknown;
-  publication?: unknown;
+  executionToken?: string;
+  productionPlan?: WikiProductionPlan;
+  leadSummary?: string;
+  publication?: { pages: string[]; sourceFingerprint: string; finalTreeDigest: string };
   pause?: WikiRunPause;
   /** Latest cumulative usage for each target+attempt; used to derive progress.usage idempotently. */
   usageByAttempt?: Record<string, WikiContextStats>;
@@ -43,12 +56,11 @@ export interface WikiRunState extends WikiRunView {
 export interface CreateWikiRunState {
   id: string;
   cwd: string;
-  operation: WikiProducerOperation;
   focus?: string;
   at: string;
 }
 
-export type WikiLedgerFaultPoint = "afterJournal" | "afterAgent" | "afterState" | "afterEvent" | "afterActivity";
+export type WikiLedgerFaultPoint = "afterJournal" | "afterExecution" | "afterAgent" | "afterState" | "afterEvent" | "afterActivity" | "afterActive";
 
 export interface WikiRunLedgerOptions {
   /** @internal Deterministic crash injection for persistence tests. */
@@ -56,12 +68,40 @@ export interface WikiRunLedgerOptions {
 }
 
 interface WikiLedgerTransaction {
-  version: 1;
+  version: 2;
   state: WikiRunState;
   event: WikiRunEvent;
   agent?: { target: WikiAgentTarget; record: WikiAgentRecord };
   agents?: Array<{ target: WikiAgentTarget; record: WikiAgentRecord }>;
   activity?: WikiActivityEntry[];
+  active?: "retain" | "release";
+  execution?: { action: "claim"; lease: WikiExecutionLease } | { action: "release" };
+}
+
+interface WikiExecutionLease {
+  version: 1;
+  runId: string;
+  attempt: number;
+  executionToken: string;
+  ownerToken: string;
+  pid: number;
+  acquiredAt: string;
+}
+
+export interface WikiExecutionAuthority {
+  attempt: number;
+  executionToken: string;
+}
+
+export interface WikiExecutionOwner {
+  ownerToken: string;
+  pid: number;
+}
+
+interface WikiDurableUpdate {
+  version: 2;
+  event: WikiRunEvent;
+  state: WikiRunState;
 }
 
 interface AgentPatch {
@@ -73,21 +113,46 @@ interface AgentPatch {
   execution?: WikiAgentRecord["execution"];
 }
 
+export type WikiProductionTransition =
+  | { kind: "started"; at: string }
+  | { kind: "attempt_started"; at: string; executionToken: string; owner: WikiExecutionOwner }
+  | { kind: "plan_pinned"; at: string; plan: WikiProductionPlan }
+  | { kind: "stage_entered"; at: string; stage: WikiRunStage; budgets?: WikiExecutionBudgets }
+  | { kind: "lead_completed"; at: string; summary: string }
+  | { kind: "paused"; at: string; pause: WikiRunPause }
+  | { kind: "interrupted" | "manual_paused"; at: string }
+  | { kind: "resumed"; at: string; executionToken: string; owner: WikiExecutionOwner }
+  | { kind: "cancelled"; at: string }
+  | { kind: "failed"; at: string; error: string }
+  | { kind: "warning"; at: string; warning: WikiRunWarning }
+  | { kind: "published"; at: string; pages: string[]; sourceFingerprint: string; finalTreeDigest: string };
+
+type WikiRunEventInput = WikiRunEvent extends infer Event
+  ? Event extends WikiRunEvent ? Omit<Event, "version" | "runId" | "sequence"> : never
+  : never;
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TERMINAL = new Set<WikiRunStatus>(["succeeded", "failed", "cancelled"]);
+const LOCK_STALE_MS = 5_000;
+const LOCK_POLL_MS = 10;
+
+interface ProcessQueue { chain: Promise<void> }
+const PROCESS_QUEUES = new Map<string, ProcessQueue>();
 
 export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedgerOptions = {}) {
   const root = path.resolve(rootDirectory);
   const runsRoot = path.join(root, "runs");
   const activeFile = path.join(root, "active-run");
-  let chain = Promise.resolve();
+  const lockDirectory = path.join(root, ".ledger.lock");
+  const queue = PROCESS_QUEUES.get(root) ?? { chain: Promise.resolve() };
+  PROCESS_QUEUES.set(root, queue);
 
   const serialize = async <T>(operation: () => Promise<T>): Promise<T> => {
     let value!: T;
-    const next = chain.catch(() => undefined).then(async () => {
-      value = await operation();
+    const next = queue.chain.catch(() => undefined).then(async () => {
+      value = await withFilesystemLock(root, lockDirectory, operation);
     });
-    chain = next.then(() => undefined, () => undefined);
+    queue.chain = next.then(() => undefined, () => undefined);
     await next;
     return value;
   };
@@ -98,9 +163,10 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     return {
       directory,
       state: path.join(directory, "run-state.json"),
-      events: path.join(directory, "events.jsonl"),
+      events: path.join(directory, "events"),
       activity: path.join(directory, "activity.jsonl"),
       journal: path.join(directory, "pending-transaction.json"),
+      execution: path.join(directory, "execution-owner.json"),
       agent: (target: WikiAgentTarget) => target.kind === "lead"
         ? path.join(directory, "agents", "lead.json")
         : path.join(directory, "agents", "batches", String(target.batch), `${safeTaskId(target.taskId)}.json`),
@@ -120,8 +186,8 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
 
   const writeState = async (state: WikiRunState): Promise<void> => {
     const target = paths(state.id).state;
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeAtomic(target, `${JSON.stringify(state, null, 2)}\n`);
+    await ensureDirectoryDurable(path.dirname(target));
+    await writeText(target, `${JSON.stringify(state, null, 2)}\n`);
   };
 
   const recover = async (runId: string): Promise<void> => {
@@ -138,19 +204,24 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
 
   const applyTransaction = async (transaction: WikiLedgerTransaction, injectFaults: boolean): Promise<void> => {
     const runPaths = paths(transaction.state.id);
+    if (transaction.execution?.action === "claim") {
+      await writeText(runPaths.execution, `${JSON.stringify(transaction.execution.lease, null, 2)}\n`);
+    }
+    if (injectFaults) await options.fault?.("afterExecution");
     const agentWrites = [...(transaction.agents ?? []), ...(transaction.agent ? [transaction.agent] : [])];
     for (const agent of agentWrites) {
       const target = runPaths.agent(agent.target);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeAtomic(target, `${JSON.stringify(agent.record, null, 2)}\n`);
+      await ensureDirectoryDurable(path.dirname(target));
+      await writeText(target, `${JSON.stringify(agent.record, null, 2)}\n`);
     }
     if (injectFaults) await options.fault?.("afterAgent");
     await writeState(transaction.state);
     if (injectFaults) await options.fault?.("afterState");
-    const existing = await readEventsFile(runPaths.events, transaction.state.id);
-    if (!existing.some((event) => event.sequence === transaction.event.sequence)) {
-      await mkdir(path.dirname(runPaths.events), { recursive: true });
-      await appendFile(runPaths.events, `${JSON.stringify(transaction.event)}\n`, "utf8");
+    const existing = await readUpdatesFile(runPaths.events, transaction.state.id);
+    if (!existing.some((update) => update.event.sequence === transaction.event.sequence)) {
+      await ensureDirectoryDurable(runPaths.events);
+      const update: WikiDurableUpdate = { version: 2, event: transaction.event, state: transaction.state };
+      await writeText(eventRecordPath(runPaths.events, transaction.event.sequence), `${JSON.stringify(update)}\n`);
     }
     if (injectFaults) await options.fault?.("afterEvent");
     if (transaction.activity?.length) {
@@ -159,19 +230,26 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       const combined = [...existingActivity, ...transaction.activity.filter((entry) => !known.has(activityIdentity(entry)))];
       const tools = combined.filter((entry) => entry.kind === "tool").slice(-1000);
       const retained = [...combined.filter((entry) => entry.kind !== "tool"), ...tools].sort((left, right) => left.sequence - right.sequence);
-      await writeAtomic(runPaths.activity, retained.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      await writeText(runPaths.activity, retained.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
     }
     if (injectFaults) await options.fault?.("afterActivity");
-    await rm(runPaths.journal, { force: true });
+    if (transaction.active === "release" && await activeRunId(activeFile) === transaction.state.id) {
+      await removePath(activeFile, { force: true });
+    }
+    if (transaction.execution?.action === "release") await removePath(runPaths.execution, { force: true });
+    if (injectFaults) await options.fault?.("afterActive");
+    await removePath(runPaths.journal, { force: true });
   };
 
   const commitEvent = async (
     runId: string,
-    input: Omit<WikiRunEvent, "version" | "runId" | "sequence">,
+    input: WikiRunEventInput,
     mutateState?: (state: WikiRunState) => WikiRunState,
     allowTerminalTransition = false,
     agentPatch?: AgentPatch,
     activity?: WikiActivityEntry[],
+    active: WikiLedgerTransaction["active"] = "retain",
+    execution?: WikiLedgerTransaction["execution"],
   ): Promise<WikiRunEvent> => {
     await recover(runId);
     const current = await readState(runId);
@@ -181,18 +259,16 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     if (!allowTerminalTransition && TERMINAL.has(next.status)) {
       throw new Error("Terminal Wiki state transitions require commitTerminal");
     }
-    const event: WikiRunEvent = {
+    const event = {
       version: 1,
       runId,
       sequence: current.lastEventSequence + 1,
       ...input,
-    };
+    } as WikiRunEvent;
     next.lastEventSequence = event.sequence;
     next.updatedAt = event.at;
-    if (event.type === "progress" || event.type === "telemetry" || hasProgressFields(event.data)) {
-      const progress = mergeProgress(next.progress, event.data ?? {}, event.message, event.at);
-      if (progress) next.progress = progress;
-    }
+    const projectedProgress = progressFromEvent(next.progress, event);
+    if (projectedProgress) next.progress = projectedProgress;
     const activityInput = activity ?? agentPatch?.process ?? [];
     const durableActivity = await readActivityFile(paths(runId).activity);
     const transactionActivity = normalizeActivity(durableActivity, activityInput);
@@ -228,9 +304,9 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
         }),
       };
     }
-    const transaction: WikiLedgerTransaction = { version: 1, state: parseState(next, runId), event, ...(agent ? { agent } : {}), ...(transactionActivity.length ? { activity: transactionActivity } : {}) };
+    const transaction: WikiLedgerTransaction = { version: 2, state: parseState(next, runId), event, active, ...(execution ? { execution } : {}), ...(agent ? { agent } : {}), ...(transactionActivity.length ? { activity: transactionActivity } : {}) };
     const journal = paths(runId).journal;
-    await writeAtomic(journal, `${JSON.stringify(transaction, null, 2)}\n`);
+    await writeText(journal, `${JSON.stringify(transaction, null, 2)}\n`);
     await options.fault?.("afterJournal");
     await applyTransaction(transaction, true);
     return event;
@@ -240,26 +316,21 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     async create(input: CreateWikiRunState) {
       return await serialize(async () => {
         assertSafeId(input.id, "Wiki run ID");
-        await mkdir(root, { recursive: true });
+        await ensureDirectoryDurable(root);
+        if (await readState(input.id)) throw new Error(`Wiki run ${input.id} already exists`);
         const existing = await activeRunId(activeFile);
         if (existing) {
           const active = await readState(existing);
           if (active && !TERMINAL.has(active.status)) {
             throw new Error(`Wiki run ${existing} is already active in this workspace`);
           }
-          await rm(activeFile, { force: true });
+          await removePath(activeFile, { force: true });
         }
-        const lock = await open(activeFile, "wx");
-        try {
-          await lock.writeFile(`${input.id}\n`, "utf8");
-        } finally {
-          await lock.close();
-        }
+        await claimText(activeFile, `${JSON.stringify({ version: 2, runId: input.id })}\n`);
         const state: WikiRunState = {
-          version: 1,
+          version: 2,
           id: input.id,
           cwd: path.resolve(input.cwd),
-          operation: input.operation,
           ...(input.focus ? { focus: input.focus } : {}),
           status: "running",
           createdAt: input.at,
@@ -271,7 +342,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
           await writeState(state);
           return state;
         } catch (error) {
-          await rm(activeFile, { force: true });
+          await removePath(activeFile, { force: true });
           throw error;
         }
       });
@@ -301,62 +372,176 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       });
     },
 
-    async update(runId: string, mutate: (state: WikiRunState) => WikiRunState) {
+    async transition(runId: string, transition: WikiProductionTransition, authority?: WikiExecutionAuthority) {
       return await serialize(async () => {
         await recover(runId);
         const current = await readState(runId);
         if (!current) throw new Error(`Unknown Wiki run: ${runId}`);
         if (TERMINAL.has(current.status)) throw new Error(`Terminal Wiki run ${runId} is immutable`);
-        const next = parseState(mutate(structuredClone(current)), runId);
-        if (next.id !== current.id || next.cwd !== current.cwd || next.createdAt !== current.createdAt) {
-          throw new Error("Wiki run identity is immutable");
+        if (authority && (current.attempt !== authority.attempt || current.executionToken !== authority.executionToken || current.status !== "running")) {
+          throw new Error("Wiki execution authority is no longer current");
         }
-        await writeState(next);
-        return next;
+        const commit = async (
+          event: WikiRunEventInput,
+          mutate?: (state: WikiRunState) => WikiRunState,
+          terminal = false,
+          execution?: WikiLedgerTransaction["execution"],
+        ) => await commitEvent(runId, event, mutate, terminal, undefined,
+          domainActivity(event), terminal ? "release" : "retain", execution);
+        switch (transition.kind) {
+          case "started":
+            if (current.lastEventSequence !== 0 || current.attempt !== 0) throw new Error("Wiki run may be started only once");
+            return await commit({ at: transition.at, type: "started", message: "Started Wiki production" });
+          case "attempt_started":
+            if (current.status !== "running" || current.attempt !== 0 || current.executionToken) throw new Error("The initial Wiki attempt may start only once");
+            return await commit({ at: transition.at, type: "stage", stage: "prepare", message: "Preparing candidate Wiki" },
+              (state) => ({ ...state, attempt: 1, executionToken: transition.executionToken }), false,
+              { action: "claim", lease: executionLease(runId, 1, transition.executionToken, transition.owner, transition.at) });
+          case "plan_pinned": {
+            const plan = parseProductionPlan(transition.plan, runId);
+            if (current.productionPlan) throw new Error("Wiki production plan is already pinned");
+            return await commit({ at: transition.at, type: "progress", message: "Pinned Wiki production plan" }, (state) => ({ ...state, productionPlan: plan }));
+          }
+          case "stage_entered":
+            if (current.status !== "running" || !current.productionPlan) throw new Error("Wiki stage requires a pinned running production plan");
+            return await commit({ at: transition.at, type: "stage", stage: transition.stage, message: stageMessage(transition.stage), ...(transition.budgets ? { budgets: transition.budgets } : {}) });
+          case "lead_completed":
+            return await commit({ at: transition.at, type: "progress", message: "Wiki Lead finished" }, (state) => ({ ...state, leadSummary: transition.summary }));
+          case "paused":
+            if (current.status !== "running") throw new Error("Only a running Wiki run may pause");
+            return await commit({ at: transition.at, type: "paused", message: transition.pause.summary, reason: transition.pause.reason,
+              ...(transition.pause.retryAt ? { retryAt: transition.pause.retryAt } : {}) }, (state) => {
+                const next = { ...state, status: "paused" as const, pause: transition.pause };
+                delete next.executionToken;
+                return next;
+              }, false, { action: "release" });
+          case "interrupted":
+          case "manual_paused":
+            if (current.status !== "running") throw new Error("Only a running Wiki run may pause");
+            return await commit({ at: transition.at, type: "paused", message: transition.kind === "interrupted" ? "Recovered interrupted Wiki run" : "Wiki run paused" },
+              (state) => {
+                const next = { ...state, status: "paused" as const, pause: undefined };
+                delete next.executionToken;
+                return next;
+              }, false, { action: "release" });
+          case "resumed":
+            if (current.status !== "paused") throw new Error("Only a paused Wiki run may resume");
+            return await commit({ at: transition.at, type: "resumed", message: "Wiki run resumed" }, (state) => ({
+              ...state, status: "running", attempt: state.attempt + 1, executionToken: transition.executionToken, error: undefined, pause: undefined,
+            }), false, { action: "claim", lease: executionLease(runId, current.attempt + 1, transition.executionToken, transition.owner, transition.at) });
+          case "cancelled":
+            if (current.status !== "running" && current.status !== "paused") throw new Error("Only an active Wiki run may be cancelled");
+            return await commit({ at: transition.at, type: "cancelled", message: "Wiki run cancelled" }, (state) => {
+              const next = { ...state, status: "cancelled" as const, completedAt: transition.at };
+              delete next.executionToken;
+              return next;
+            }, true, { action: "release" });
+          case "failed":
+            if (current.status !== "running") throw new Error("Only a running Wiki run may fail");
+            return await commit({ at: transition.at, type: "failed", message: transition.error }, (state) => {
+              const next = { ...state, status: "failed" as const, error: transition.error, completedAt: transition.at };
+              delete next.executionToken;
+              return next;
+            }, true, { action: "release" });
+          case "warning":
+            return await commit({ at: transition.at, type: "warning", message: transition.warning.message, code: transition.warning.code, detail: transition.warning.message },
+              (state) => ({ ...state, warnings: [...(state.warnings ?? []), transition.warning] }));
+          case "published":
+            if (current.status !== "running" || current.leadSummary === undefined) {
+              throw new Error("Wiki publication requires a completed Lead on a running run");
+            }
+            return await commit({ at: transition.at, type: "completed", message: "Wiki published" }, (state) => ({
+              ...state, status: "succeeded", publication: { pages: transition.pages, sourceFingerprint: transition.sourceFingerprint, finalTreeDigest: transition.finalTreeDigest }, completedAt: transition.at,
+              executionToken: undefined,
+            }), true, { action: "release" });
+        }
       });
     },
 
-    async append(
-      runId: string,
-      input: Omit<WikiRunEvent, "version" | "runId" | "sequence">,
-    ) {
-      return await serialize(async () => {
-        return await commitEvent(runId, input);
-      });
-    },
-
-    async commitEvent(
-      runId: string,
-      input: Omit<WikiRunEvent, "version" | "runId" | "sequence">,
-      activity?: WikiActivityEntry[],
-    ) {
-      return await serialize(async () => await commitEvent(runId, input, undefined, false, undefined, activity));
-    },
-
-    async commitTerminal(
-      runId: string,
-      input: Omit<WikiRunEvent, "version" | "runId" | "sequence">,
-      mutateState: (state: WikiRunState) => WikiRunState,
-      activity?: WikiActivityEntry[],
-    ) {
-      return await serialize(async () => await commitEvent(runId, input, mutateState, true, undefined, activity));
-    },
-
-    async events(runId: string, after = 0) {
+    async updates(runId: string, after = 0) {
       return await serialize(async () => {
         await recover(runId);
         if (!(await readState(runId))) throw new Error(`Unknown Wiki run: ${runId}`);
-        return (await readEventsFile(paths(runId).events, runId))
-          .filter((event) => event.sequence > after);
+        return (await readUpdatesFile(paths(runId).events, runId))
+          .filter((update) => update.event.sequence > after);
       });
     },
 
-    async releaseActive(runId: string) {
-      await serialize(async () => {
+    async recordObservation(runId: string, observation: WikiLeadObservation, authority: WikiExecutionAuthority) {
+      return await serialize(async () => {
         await recover(runId);
-        if (await activeRunId(activeFile) === runId) await rm(activeFile, { force: true });
+        const state = await readState(runId);
+        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
+        if (state.status !== "running" || state.attempt !== authority.attempt || state.executionToken !== authority.executionToken) return undefined;
+        if (observation.kind === "progress") {
+          return await commitEvent(runId, { at: state.updatedAt, type: "progress", message: observation.message });
+        }
+        if (observation.kind === "batch") {
+          const at = observation.tasks.reduce((latest, task) => task.updatedAt && task.updatedAt > latest ? task.updatedAt : latest, state.updatedAt);
+          const completed = observation.tasks.filter((task) => ["complete", "incomplete", "failed"].includes(task.status)).length;
+          return await commitEvent(runId, {
+            at, type: "delegate", message: `Wiki delegate batch ${observation.batch} ${observation.phase}`,
+            phase: observation.phase, batch: observation.batch, tasks: observation.tasks, completed, total: observation.tasks.length,
+            ...(observation.taskId ? { taskId: observation.taskId } : {}),
+          });
+        }
+        if (observation.kind === "task_settled") {
+          const saved = observation.state;
+          if (saved.phase !== "terminal" || !saved.receipt || saved.task.id !== observation.taskId) {
+            throw new Error("Wiki task_settled observation requires its matching durable terminal state");
+          }
+          const target = { kind: "task" as const, batch: observation.batch, taskId: observation.taskId };
+          if (observation.telemetry && (!sameTarget(observation.telemetry.target, target) || observation.telemetry.attempt !== saved.attempt)) {
+            throw new Error("Wiki task_settled telemetry does not match its durable task state");
+          }
+          let existing = await readAgentRecordFile(paths(runId).agent(target));
+          if ((existing?.agent.attempt ?? 0) > saved.attempt) return undefined;
+          if (observation.telemetry) {
+            existing = {
+              agent: mergeAgentCheckpoint(observation.telemetry, existing?.agent, { role: saved.task.role }),
+              process: observation.telemetry.process ?? existing?.process ?? [],
+              ...(existing?.receipt ? { receipt: existing.receipt } : {}),
+              ...(observation.telemetry.sessionFile ?? existing?.sessionFile ? { sessionFile: observation.telemetry.sessionFile ?? existing?.sessionFile } : {}),
+            };
+          }
+          const record = runtimeAgentRecord(target, saved, existing, observation.telemetry?.sampledAt ?? state.updatedAt);
+          return await commitEvent(runId, {
+            at: observation.telemetry?.sampledAt ?? state.updatedAt,
+            type: "delegate",
+            message: saved.receipt.summary,
+            phase: "settled", batch: observation.batch, taskId: observation.taskId, completed: 1, total: 1,
+          }, observation.telemetry?.usage ? (current) => projectUsage(current, observation.telemetry!) : undefined, false, {
+            target, agent: record.agent, process: record.process, receipt: record.receipt, sessionFile: record.sessionFile, execution: record.execution,
+          }, record.process);
+        }
+        if (observation.kind === "telemetry") {
+          if (!sameTarget(observation.target, observation.telemetry.target)) throw new Error("Wiki telemetry target does not match its observation target");
+          const telemetry = observation.telemetry;
+          const existing = await readAgentRecordFile(paths(runId).agent(telemetry.target));
+          if ((existing?.agent.attempt ?? 0) > telemetry.attempt) return undefined;
+          const agent = mergeAgentCheckpoint(telemetry, existing?.agent, {});
+          return await commitEvent(runId, {
+            at: telemetry.sampledAt, type: "telemetry", message: "Wiki Agent telemetry", phase: "agent_update", target: telemetry.target,
+          }, telemetry.usage ? (current) => projectUsage(current, telemetry) : undefined, false, {
+            target: telemetry.target, agent, process: telemetry.process ?? existing?.process, sessionFile: telemetry.sessionFile,
+          }, telemetry.process);
+        }
+        const existing = await readAgentRecordFile(paths(runId).agent(observation.target)) ?? projectQueuedAgent(state, observation.target);
+        const projected = observation.target.kind === "lead" ? state.progress?.lead ?? {
+          target: observation.target, role: "lead" as const, status: "running" as const, attempt: state.attempt || 1,
+          activity: "starting" as const, activeTools: [], health: observation.status, updatedAt: observation.at,
+        } : undefined;
+        const agent = existing?.agent ?? projected;
+        if (!agent) return undefined;
+        const message = observation.message ?? `Observability ${observation.status}`;
+        return await commitEvent(runId, {
+          at: observation.at, type: "telemetry", message, phase: "observability_health", target: observation.target, status: observation.status,
+        }, undefined, false, {
+          target: observation.target, agent: { ...agent, health: observation.status, updatedAt: observation.at }, process: existing?.process, receipt: existing?.receipt,
+        }, [{ sequence: 0, at: observation.at, kind: "warning", severity: observation.status === "degraded" ? "warning" : "info", target: observation.target, message }]);
       });
     },
+
 
     async readAgent(runId: string, target: WikiAgentTarget) {
       return await serialize(async () => {
@@ -366,132 +551,6 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
         const state = await readState(runId);
         if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
         return projectQueuedAgent(state, target);
-      });
-    },
-
-    async readTaskRuntimeState(runId: string): Promise<WikiTaskRuntimeState> {
-      return await serialize(async () => {
-        await recover(runId);
-        const state = await readState(runId);
-        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
-        return await taskRuntimeStateFromLedger(paths(runId).agentBatches, readAgentRecordFile);
-      });
-    },
-
-    async commitTaskRuntimeState(runId: string, input: WikiTaskRuntimeState, at: string) {
-      return await serialize(async () => {
-        await recover(runId);
-        const current = await readState(runId);
-        if (!current) throw new Error(`Unknown Wiki run: ${runId}`);
-        if (TERMINAL.has(current.status)) throw new Error(`Terminal Wiki run ${runId} is immutable`);
-        const runtime = parseTaskRuntimeState(input);
-        let next: WikiRunState = { ...current, updatedAt: at };
-        const agents: NonNullable<WikiLedgerTransaction["agents"]> = [];
-        for (const batch of runtime.batches) {
-          for (const task of batch.tasks) {
-            const target: WikiAgentTarget = { kind: "task", batch: batch.batchId, taskId: task.task.id };
-            const existing = await readAgentRecordFile(paths(runId).agent(target));
-            const record = runtimeAgentRecord(target, task, existing, at);
-            agents.push({ target, record });
-            next = projectAgent(next, record.agent);
-          }
-        }
-        const event: WikiRunEvent = {
-          version: 1,
-          runId,
-          sequence: current.lastEventSequence + 1,
-          at,
-          type: "telemetry",
-          message: "Wiki task runtime checkpoint",
-          data: { phase: "runtime_checkpoint" },
-        };
-        next.lastEventSequence = event.sequence;
-        const transaction: WikiLedgerTransaction = { version: 1, state: parseState(next, runId), event, agents };
-        await writeAtomic(paths(runId).journal, `${JSON.stringify(transaction, null, 2)}\n`);
-        await options.fault?.("afterJournal");
-        await applyTransaction(transaction, true);
-        return event;
-      });
-    },
-
-    async commitAgent(
-      runId: string,
-      telemetry: WikiAgentTelemetry,
-      message: string,
-      details?: {
-        role?: WikiTaskSnapshot["role"];
-        status?: WikiAgentSnapshot["status"];
-        receipt?: WikiDelegateReceipt;
-        execution?: WikiAgentRecord["execution"];
-      },
-    ) {
-      return await serialize(async () => {
-        await recover(runId);
-        const state = await readState(runId);
-        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
-        if (TERMINAL.has(state.status)) {
-          if (details?.receipt) throw new Error(`Terminal Wiki run ${runId} is immutable`);
-          return undefined;
-        }
-        const existing = await readAgentRecordFile(paths(runId).agent(telemetry.target));
-        if ((existing?.agent.attempt ?? 0) > telemetry.attempt) return undefined;
-        const taskTarget = telemetry.target.kind === "task" ? telemetry.target : undefined;
-        const projectedRole = taskTarget
-          ? state.progress?.batches?.find((batch) => batch.batch === taskTarget.batch)?.tasks.find((task) => task.id === taskTarget.taskId)?.role
-          : undefined;
-        const agent = mergeAgentCheckpoint(telemetry, existing?.agent, { ...details, role: details?.role ?? projectedRole });
-        return await commitEvent(runId, {
-          at: telemetry.sampledAt,
-          type: "telemetry",
-          message,
-          data: { phase: "agent_update", target: telemetry.target },
-        }, telemetry.usage ? (current) => projectUsage(current, telemetry) : undefined, false, {
-          target: telemetry.target,
-          agent,
-          process: telemetry.process ?? existing?.process,
-          receipt: details?.receipt,
-          sessionFile: telemetry.sessionFile,
-          execution: details?.execution,
-        }, telemetry.process);
-      });
-    },
-
-    async commitHealth(
-      runId: string,
-      input: { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string },
-    ) {
-      return await serialize(async () => {
-        await recover(runId);
-        const state = await readState(runId);
-        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
-        if (TERMINAL.has(state.status)) return undefined;
-        const existing = await readAgentRecordFile(paths(runId).agent(input.target)) ?? projectQueuedAgent(state, input.target);
-        const projected = input.target.kind === "lead"
-          ? state.progress?.lead ?? {
-              target: input.target,
-              role: "lead" as const,
-              status: "running" as const,
-              attempt: state.attempt || 1,
-              activity: "starting" as const,
-              activeTools: [],
-              health: input.status,
-              updatedAt: input.at,
-            }
-          : undefined;
-        const agent = existing?.agent ?? projected;
-        if (!agent) return undefined;
-        const message = input.message ?? `Observability ${input.status}`;
-        return await commitEvent(runId, {
-          at: input.at,
-          type: "telemetry",
-          message,
-          data: { phase: "observability_health", target: input.target, status: input.status },
-        }, undefined, false, {
-          target: input.target,
-          agent: { ...agent, health: input.status, updatedAt: input.at },
-          process: existing?.process,
-          receipt: existing?.receipt,
-        }, [{ sequence: 0, at: input.at, kind: "warning", severity: input.status === "degraded" ? "warning" : "info", target: input.target, message }]);
       });
     },
 
@@ -508,6 +567,27 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
           .sort((left, right) => right.sequence - left.sequence);
         const entries = filtered.slice(0, limit);
         return { entries, ...(filtered.length > limit ? { nextBefore: entries.at(-1)!.sequence } : {}) };
+      });
+    },
+
+    async executionOwner(runId: string): Promise<"live" | "stale" | "absent"> {
+      return await serialize(async () => {
+        await recover(runId);
+        const state = await readState(runId);
+        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
+        const file = paths(runId).execution;
+        let lease: WikiExecutionLease;
+        try { lease = parseExecutionLease(JSON.parse(await readFile(file, "utf8")), runId); }
+        catch (error) { if (isMissing(error)) return "absent"; throw error; }
+        if (state.status !== "running" || lease.attempt !== state.attempt || lease.executionToken !== state.executionToken) {
+          await removePath(file, { force: true });
+          return "stale";
+        }
+        if (!processIsAlive(lease.pid)) {
+          await removePath(file, { force: true });
+          return "stale";
+        }
+        return "live";
       });
     },
   };
@@ -527,10 +607,8 @@ export type WikiRunLedger = ReturnType<typeof createWikiRunLedger>;
 
 export function resultFromState(state: WikiRunState): WikiProducerResult {
   if (state.status !== "succeeded") throw new Error(`Wiki run ${state.id} has no successful result`);
-  const publication = state.publication as { pages?: unknown; sourceFingerprint?: unknown } | undefined;
-  const outcome = state.output as { kind?: unknown; summary?: unknown } | undefined;
-  if (!publication || !Array.isArray(publication.pages) || publication.pages.some((page) => typeof page !== "string")
-    || typeof publication.sourceFingerprint !== "string" || outcome?.kind !== "complete" || typeof outcome.summary !== "string") {
+  const publication = state.publication;
+  if (!publication || state.leadSummary === undefined) {
     throw new Error(`Wiki run ${state.id} has an invalid successful result`);
   }
   return {
@@ -538,45 +616,169 @@ export function resultFromState(state: WikiRunState): WikiProducerResult {
     status: "succeeded",
     pages: publication.pages,
     sourceFingerprint: publication.sourceFingerprint,
-    summary: outcome.summary,
+    summary: state.leadSummary,
   };
 }
 
+function stageMessage(stage: WikiRunStage): string {
+  switch (stage) {
+    case "prepare": return "Preparing candidate Wiki";
+    case "lead": return "Running Wiki Lead";
+    case "validate": return "Validating candidate Wiki";
+    case "publish": return "Publishing candidate Wiki";
+  }
+}
+
+function domainActivity(event: WikiRunEventInput): WikiActivityEntry[] {
+  return [{
+    sequence: 0, at: event.at,
+    kind: event.type === "failed" ? "failure" : event.type === "stage" ? "stage" : event.type === "delegate" ? "batch" : event.type === "warning" ? "warning" : "agent",
+    severity: event.type === "failed" ? "error" : event.type === "warning" ? "warning" : "info",
+    message: event.message,
+    completed: event.type === "completed" || event.type === "cancelled" || event.type === "failed",
+  }];
+}
+
 function parseState(value: unknown, expectedId: string): WikiRunState {
-  if (!value || typeof value !== "object") throw new Error(`Invalid Wiki run state: ${expectedId}`);
-  const state = value as Partial<WikiRunState>;
-  if (state.version !== 1 || state.id !== expectedId || typeof state.cwd !== "string"
-    || (state.operation !== "update" && state.operation !== "regenerate")
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki run state: ${expectedId}`);
+  const state = value as Partial<WikiRunState> & Record<string, unknown>;
+  assertExactKeys(state, ["version", "id", "cwd", "focus", "status", "createdAt", "updatedAt", "completedAt", "lastEventSequence",
+    "error", "pause", "warnings", "progress", "attempt", "executionToken", "productionPlan", "leadSummary", "publication", "usageByAttempt"], "Wiki run state");
+  if (state.version !== WIKI_RUN_LEDGER_VERSION) {
+    throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/run-state.json`, state.version);
+  }
+  if (state.id !== expectedId || typeof state.cwd !== "string"
     || !["running", "paused", "succeeded", "failed", "cancelled"].includes(state.status ?? "")
     || typeof state.createdAt !== "string" || typeof state.updatedAt !== "string"
     || !Number.isInteger(state.lastEventSequence) || (state.lastEventSequence ?? -1) < 0
     || !Number.isInteger(state.attempt) || (state.attempt ?? -1) < 0
-    || (state.sourceFingerprint !== undefined && typeof state.sourceFingerprint !== "string")
+    || (state.executionToken !== undefined && !isToken(state.executionToken))
+    || (state.leadSummary !== undefined && typeof state.leadSummary !== "string")
+    || (state.focus !== undefined && typeof state.focus !== "string")
+    || (state.completedAt !== undefined && typeof state.completedAt !== "string")
+    || (state.error !== undefined && typeof state.error !== "string")
     || !isPause(state.pause)) {
     throw new Error(`Invalid Wiki run state: ${expectedId}`);
   }
   const parsed = state as WikiRunState;
+  if (state.productionPlan !== undefined) parsed.productionPlan = parseProductionPlan(state.productionPlan, expectedId);
+  parsed.publication = parseRunPublication(state.publication, expectedId);
+  if (!parsed.publication) delete parsed.publication;
+  parsed.warnings = parseWarnings(state.warnings, expectedId);
+  if (!parsed.warnings?.length) delete parsed.warnings;
   parsed.usageByAttempt = parseUsageByAttempt(state.usageByAttempt);
   if (!parsed.usageByAttempt) delete parsed.usageByAttempt;
-  delete (parsed as WikiRunState & { taskRuntime?: unknown }).taskRuntime;
   const progress = parseProgress(state.progress);
   if (progress) parsed.progress = progress;
   else delete parsed.progress;
+  if (parsed.status === "running" && parsed.attempt > 0 && !parsed.executionToken
+    || parsed.status !== "running" && parsed.executionToken
+    || TERMINAL.has(parsed.status) !== Boolean(parsed.completedAt)
+    || parsed.status === "succeeded" && (!parsed.publication || parsed.leadSummary === undefined)
+    || parsed.status === "failed" && !parsed.error) throw new Error(`Invalid Wiki run state lifecycle: ${expectedId}`);
   return parsed;
+}
+
+function parseProductionPlan(value: unknown, runId: string): WikiProductionPlan {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki production plan: ${runId}`);
+  const plan = value as Partial<WikiProductionPlan> & Record<string, unknown>;
+  assertExactKeys(plan, ["sourcePlan", "candidateWikiRoot", "skillRoot", "skillTreeDigest", "language", "generation",
+    "maxConcurrentAgents", "budgets", "models", "runSessionDirectory", "leadSessionFile", "leadSessionAttempt", "transientRetries",
+    "sessionTimeoutMs", "baseRetryDelayMs", "prompt"], "Wiki production plan");
+  const sourcePlan = parsePinnedSourcePlan(plan.sourcePlan, runId);
+  if (!sourcePlan || typeof plan.candidateWikiRoot !== "string" || typeof plan.skillRoot !== "string" || !isDigest(plan.skillTreeDigest)
+    || (plan.language !== "zh" && plan.language !== "en")
+    || typeof plan.runSessionDirectory !== "string" || typeof plan.prompt !== "string"
+    || !parseExecutionBudgets(plan.budgets) || !isRoleModels(plan.models) || !isGenerationProfile(plan.generation)
+    || !Number.isInteger(plan.maxConcurrentAgents) || (plan.maxConcurrentAgents ?? 0) < 1
+    || !Number.isInteger(plan.transientRetries) || (plan.transientRetries ?? -1) < 0
+    || !Number.isFinite(plan.sessionTimeoutMs) || (plan.sessionTimeoutMs ?? 0) <= 0
+    || !Number.isFinite(plan.baseRetryDelayMs) || (plan.baseRetryDelayMs ?? -1) < 0) {
+    throw new Error(`Invalid Wiki production plan: ${runId}`);
+  }
+  const expectedRunRoot = path.join(sourcePlan.workspaceRoot, ".okf-wiki", "runs", runId);
+  if (path.resolve(sourcePlan.workspaceRoot) !== sourcePlan.workspaceRoot
+    || path.resolve(plan.candidateWikiRoot) !== path.join(expectedRunRoot, "candidate", "wiki")
+    || path.resolve(plan.skillRoot) !== path.join(expectedRunRoot, "skill")
+    || path.resolve(plan.runSessionDirectory) !== path.join(expectedRunRoot, "sessions")) {
+    throw new Error(`Invalid Wiki production plan identity: ${runId}`);
+  }
+  return structuredClone(plan as WikiProductionPlan);
+}
+
+function parsePinnedSourcePlan(value: unknown, runId: string): WikiProductionPlan["sourcePlan"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Partial<WikiProductionPlan["sourcePlan"]> & Record<string, unknown>;
+  assertExactKeys(raw, ["workspaceRoot", "workspaceRealPath", "configPath", "defaultSourceIgnores", "excludes", "sources", "fingerprint"], "Wiki pinned source plan");
+  if (typeof raw.workspaceRoot !== "string" || typeof raw.workspaceRealPath !== "string" || typeof raw.configPath !== "string"
+    || typeof raw.defaultSourceIgnores !== "boolean" || !isStringArray(raw.excludes) || !Array.isArray(raw.sources)
+    || typeof raw.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(raw.fingerprint)) return undefined;
+  const scopes = new Set<string>();
+  const sources = raw.sources.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki pinned source: ${runId}`);
+    const source = value as Partial<WikiProductionPlan["sourcePlan"]["sources"][number]>;
+    assertExactKeys(source as Record<string, unknown>, ["scopeId", "logicalPath", "absolutePath", "realPath", "repositoryRoot", "repositoryIdentity", "origin", "head", "dirtyFingerprint"], "Wiki pinned source");
+    if (typeof source.scopeId !== "string" || !source.scopeId || scopes.has(source.scopeId)
+      || typeof source.logicalPath !== "string" || typeof source.absolutePath !== "string" || typeof source.realPath !== "string"
+      || typeof source.repositoryRoot !== "string" || typeof source.repositoryIdentity !== "string"
+      || !isPinnedOrigin(source.origin)
+      || typeof source.head !== "string" || typeof source.dirtyFingerprint !== "string"
+      || !/^[a-f0-9]{64}$/.test(source.repositoryIdentity) || !/^[a-f0-9]{64}$/.test(source.dirtyFingerprint)) {
+      throw new Error(`Invalid Wiki pinned source: ${runId}`);
+    }
+    if (path.resolve(source.absolutePath) !== source.absolutePath || path.resolve(source.realPath) !== source.realPath
+      || path.resolve(source.repositoryRoot) !== source.repositoryRoot) throw new Error(`Invalid Wiki pinned source paths: ${runId}`);
+    scopes.add(source.scopeId);
+    return structuredClone(source as WikiProductionPlan["sourcePlan"]["sources"][number]);
+  });
+  if (path.resolve(raw.workspaceRoot) !== raw.workspaceRoot || path.resolve(raw.workspaceRealPath) !== raw.workspaceRealPath
+    || path.resolve(raw.configPath) !== raw.configPath) throw new Error(`Invalid Wiki pinned workspace paths: ${runId}`);
+  return { ...structuredClone(raw as WikiProductionPlan["sourcePlan"]), sources };
+}
+
+function isPinnedOrigin(value: unknown): value is WikiProductionPlan["sourcePlan"]["sources"][number]["origin"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  if (raw.type === "link") return Object.keys(raw).every((key) => ["type", "localPath"].includes(key)) && typeof raw.localPath === "string";
+  return raw.type === "clone" && Object.keys(raw).every((key) => ["type", "remoteUrl", "ref"].includes(key))
+    && typeof raw.remoteUrl === "string" && (raw.ref === undefined || typeof raw.ref === "string");
+}
+
+function parseRunPublication(value: unknown, runId: string): WikiRunState["publication"] | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object") throw new Error(`Invalid Wiki run publication: ${runId}`);
+  const raw = value as Partial<NonNullable<WikiRunState["publication"]>>;
+  assertExactKeys(raw as Record<string, unknown>, ["pages", "sourceFingerprint", "finalTreeDigest"], "Wiki run publication");
+  if (!isStringArray(raw.pages) || typeof raw.sourceFingerprint !== "string" || typeof raw.finalTreeDigest !== "string"
+    || !/^[a-f0-9]{64}$/.test(raw.finalTreeDigest)) throw new Error(`Invalid Wiki run publication: ${runId}`);
+  return { pages: [...raw.pages], sourceFingerprint: raw.sourceFingerprint, finalTreeDigest: raw.finalTreeDigest };
+}
+
+function parseWarnings(value: unknown, runId: string): WikiRunWarning[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`Invalid Wiki run warnings: ${runId}`);
+  return value.map((entry) => {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) assertExactKeys(entry as Record<string, unknown>, ["code", "message", "at"], "Wiki run warning");
+    if (!entry || typeof entry !== "object" || (entry as { code?: unknown }).code !== "cleanup_failed"
+      || typeof (entry as { message?: unknown }).message !== "string" || typeof (entry as { at?: unknown }).at !== "string") {
+      throw new Error(`Invalid Wiki run warning: ${runId}`);
+    }
+    return structuredClone(entry as WikiRunWarning);
+  });
 }
 
 const STAGES = new Set<WikiRunStage>(["prepare", "lead", "validate", "publish"]);
 const TASK_ROLES = new Set<WikiTaskSnapshot["role"]>(["research", "write", "review"]);
 const TASK_STATUSES = new Set<WikiTaskSnapshot["status"]>(["queued", "running", "complete", "incomplete", "failed"]);
 
-function hasProgressFields(data?: Record<string, unknown>): boolean {
-  if (!data) return false;
-  return typeof data.stage === "string"
-    || typeof data.batch === "number"
-    || typeof data.completed === "number"
-    || typeof data.total === "number"
-    || Array.isArray(data.tasks)
-    || eventTaskId(data) !== undefined;
+function progressFromEvent(current: WikiRunProgress | undefined, event: WikiRunEvent): WikiRunProgress | undefined {
+  if (event.type === "stage") return mergeProgress(current, { stage: event.stage, budgets: event.budgets }, event.message, event.at);
+  if (event.type === "delegate") return mergeProgress(current, {
+    stage: "lead", batch: event.batch, completed: event.completed, total: event.total,
+    ...(event.tasks ? { tasks: event.tasks } : {}), ...(event.taskId ? { taskId: event.taskId } : {}),
+  }, event.message, event.at);
+  if (event.type === "progress" && current) return { ...current, lastMessage: event.message };
+  return current;
 }
 
 function eventTaskId(data?: Record<string, unknown>): string | undefined {
@@ -728,17 +930,19 @@ function sameTarget(left: WikiAgentTarget | undefined, right: WikiAgentTarget): 
 }
 
 function parseAgentRecord(value: unknown): WikiAgentRecord {
-  if (!value || typeof value !== "object") throw new Error("Invalid Wiki agent record");
-  const raw = value as Partial<WikiAgentRecord>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Wiki agent record");
+  const raw = value as Partial<WikiAgentRecord> & Record<string, unknown>;
+  assertExactKeys(raw, ["agent", "process", "receipt", "sessionFile", "execution"], "Wiki agent record");
   const agent = parseAgentSnapshot(raw.agent);
   if (!agent || typeof agent.updatedAt !== "string" || !Array.isArray(raw.process)) throw new Error("Invalid Wiki agent record");
   const process = raw.process.map(parseActivityEntry);
   if (process.some((entry) => !entry)) throw new Error("Invalid Wiki agent record");
   const execution = parseAgentExecution(raw.execution);
+  const receipt = raw.receipt === undefined ? undefined : parseWikiDelegateReceipt(raw.receipt);
   return {
     agent,
     process: limitAgentProcess(process as WikiActivityEntry[]),
-    ...(raw.receipt && typeof raw.receipt === "object" ? { receipt: raw.receipt } : {}),
+    ...(receipt ? { receipt } : {}),
     ...(typeof raw.sessionFile === "string" && raw.sessionFile.trim() ? { sessionFile: raw.sessionFile } : {}),
     ...(execution ? { execution } : {}),
   };
@@ -907,9 +1111,10 @@ function parseUsageByAttempt(value: unknown): Record<string, WikiContextStats> |
 }
 
 function parseExecutionBudgets(value: unknown): WikiExecutionBudgets | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const raw = value as Partial<WikiExecutionBudgets>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Partial<WikiExecutionBudgets> & Record<string, unknown>;
   const fields = ["maxDelegatedTasks", "maxDelegateBatches", "maxTurnsPerSession", "maxToolCallsPerSession"] as const;
+  if (Object.keys(raw).some((key) => !fields.includes(key as typeof fields[number]))) return undefined;
   if (fields.some((field) => !Number.isInteger(raw[field]) || (raw[field] ?? 0) < 1)) return undefined;
   return raw as WikiExecutionBudgets;
 }
@@ -966,23 +1171,9 @@ function parseTaskRuntimeTaskState(value: unknown): WikiTaskRuntimeTaskState {
   };
 }
 
-function parseDelegateTask(value: unknown): WikiDelegateTask | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const raw = value as Partial<WikiDelegateTask>;
-  if (typeof raw.id !== "string" || !SAFE_ID.test(raw.id) || !isTaskRole(raw.role)
-    || typeof raw.instruction !== "string" || !raw.instruction.trim()
-    || !isStringArray(raw.sourceScopeIds) || !isStringArray(raw.contextRefs)
-    || raw.writePaths !== undefined && !isStringArray(raw.writePaths)
-    || raw.reviewPaths !== undefined && !isStringArray(raw.reviewPaths)) return undefined;
-  return {
-    id: raw.id,
-    role: raw.role,
-    instruction: raw.instruction,
-    sourceScopeIds: [...raw.sourceScopeIds],
-    contextRefs: [...raw.contextRefs],
-    ...(raw.writePaths ? { writePaths: [...raw.writePaths] } : {}),
-    ...(raw.reviewPaths ? { reviewPaths: [...raw.reviewPaths] } : {}),
-  };
+function parseDelegateTask(value: unknown): WikiDelegateContract | undefined {
+  try { return parseWikiDelegateContract(value); }
+  catch { return undefined; }
 }
 
 function parseTaskRuntimePartial(value: unknown): WikiTaskRuntimePartial | undefined {
@@ -996,13 +1187,7 @@ function parseTaskRuntimePartial(value: unknown): WikiTaskRuntimePartial | undef
 
 function parseDelegateReceipt(value: unknown): WikiDelegateReceipt | undefined {
   if (value === undefined) return undefined;
-  if (!value || typeof value !== "object") return undefined;
-  const raw = value as Partial<WikiDelegateReceipt>;
-  if (typeof raw.id !== "string" || !SAFE_ID.test(raw.id) || !isTaskRole(raw.role)
-    || !["complete", "incomplete", "failed"].includes(raw.status ?? "") || typeof raw.summary !== "string"
-    || !Array.isArray(raw.outputs) || !isStringArray(raw.coverage) || !Array.isArray(raw.gaps)
-    || !isPositiveInteger(raw.attempts)) return undefined;
-  return structuredClone(raw as WikiDelegateReceipt);
+  try { return parseWikiDelegateReceipt(value); } catch { return undefined; }
 }
 
 const TASK_FAILURE_CODES = new Set<WikiTaskFailureCode>([
@@ -1258,22 +1443,64 @@ function isPause(value: unknown): value is WikiRunPause | undefined {
 
 function parseEvent(value: unknown, expectedId: string): WikiRunEvent {
   if (!value || typeof value !== "object") throw new Error(`Invalid Wiki run event: ${expectedId}`);
-  const event = value as Partial<WikiRunEvent>;
+  const event = value as Partial<WikiRunEvent> & Record<string, unknown>;
   if (event.version !== 1 || event.runId !== expectedId || !Number.isInteger(event.sequence)
     || (event.sequence ?? 0) < 1 || typeof event.at !== "string" || typeof event.type !== "string"
     || typeof event.message !== "string") throw new Error(`Invalid Wiki run event: ${expectedId}`);
+  const common = ["version", "runId", "sequence", "at", "type", "message"];
+  switch (event.type) {
+    case "started": case "progress": case "resumed": case "cancelled": case "completed": case "failed":
+      assertExactKeys(event, common, "Wiki run event");
+      break;
+    case "stage":
+      assertExactKeys(event, [...common, "stage", "budgets"], "Wiki stage event");
+      if (!isStage(event.stage) || event.budgets !== undefined && !parseExecutionBudgets(event.budgets)) throw new Error(`Invalid Wiki run event: ${expectedId}`);
+      break;
+    case "delegate":
+      assertExactKeys(event, [...common, "phase", "batch", "completed", "total", "tasks", "taskId"], "Wiki delegate event");
+      if (!["queued", "started", "updated", "completed", "settled"].includes(String(event.phase)) || !isPositiveInteger(event.batch)
+        || !isProgressCount(event.completed) || !isProgressCount(event.total) || event.completed > event.total
+        || event.tasks !== undefined && (!Array.isArray(event.tasks) || event.tasks.some((task) => !parseTaskSnapshot(task)))
+        || event.taskId !== undefined && typeof event.taskId !== "string") throw new Error(`Invalid Wiki run event: ${expectedId}`);
+      break;
+    case "telemetry":
+      assertExactKeys(event, [...common, "phase", "target", "status"], "Wiki telemetry event");
+      if (!parseTarget(event.target)
+        || event.phase === "agent_update" && event.status !== undefined
+        || event.phase === "observability_health" && event.status !== "healthy" && event.status !== "degraded"
+        || event.phase !== "agent_update" && event.phase !== "observability_health") throw new Error(`Invalid Wiki run event: ${expectedId}`);
+      break;
+    case "paused":
+      assertExactKeys(event, [...common, "reason", "retryAt"], "Wiki paused event");
+      if (event.reason !== undefined && event.reason !== "quota" && event.reason !== "usage_limit"
+        || event.retryAt !== undefined && typeof event.retryAt !== "string") throw new Error(`Invalid Wiki run event: ${expectedId}`);
+      break;
+    case "warning":
+      assertExactKeys(event, [...common, "code", "detail"], "Wiki warning event");
+      if (event.code !== "cleanup_failed" || typeof event.detail !== "string") throw new Error(`Invalid Wiki run event: ${expectedId}`);
+      break;
+    default: throw new Error(`Invalid Wiki run event: ${expectedId}`);
+  }
   return event as WikiRunEvent;
 }
 
+function assertExactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const expected = new Set(allowed);
+  const unknown = Object.keys(value).filter((key) => !expected.has(key));
+  if (unknown.length) throw new Error(`${label} has unknown fields: ${unknown.join(", ")}`);
+}
+
 function parseTransaction(value: unknown, expectedId: string): WikiLedgerTransaction {
-  if (!value || typeof value !== "object") throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
-  const raw = value as Partial<WikiLedgerTransaction>;
-  if (raw.version !== 1) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+  const raw = value as Partial<WikiLedgerTransaction> & Record<string, unknown>;
+  assertExactKeys(raw, ["version", "state", "event", "agent", "agents", "activity", "active", "execution"], "Wiki ledger transaction");
+  if (raw.version !== 2) throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/pending-transaction.json`, raw.version);
   const state = parseState(raw.state, expectedId);
   const event = parseEvent(raw.event, expectedId);
   let agent: WikiLedgerTransaction["agent"];
   if (raw.agent !== undefined) {
-    if (!raw.agent || typeof raw.agent !== "object") throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+    if (!raw.agent || typeof raw.agent !== "object" || Array.isArray(raw.agent)) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+    assertExactKeys(raw.agent as unknown as Record<string, unknown>, ["target", "record"], "Wiki ledger agent transaction");
     const target = parseTarget(raw.agent.target);
     if (!target) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
     agent = { target, record: parseAgentRecord(raw.agent.record) };
@@ -1283,6 +1510,7 @@ function parseTransaction(value: unknown, expectedId: string): WikiLedgerTransac
     if (!Array.isArray(raw.agents)) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
     agents = raw.agents.map((entry) => {
       if (!entry || typeof entry !== "object") throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+      assertExactKeys(entry as Record<string, unknown>, ["target", "record"], "Wiki ledger agents transaction");
       const target = parseTarget(entry.target);
       if (!target) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
       return { target, record: parseAgentRecord(entry.record) };
@@ -1290,13 +1518,28 @@ function parseTransaction(value: unknown, expectedId: string): WikiLedgerTransac
   }
   const activity = raw.activity?.map(parseActivityEntry);
   if (activity?.some((entry) => !entry)) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
-  return { version: 1, state, event, ...(agent ? { agent } : {}), ...(agents ? { agents } : {}), ...(activity?.length ? { activity: activity as WikiActivityEntry[] } : {}) };
+  if (raw.active !== undefined && raw.active !== "retain" && raw.active !== "release") throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+  const execution = parseTransactionExecution(raw.execution, expectedId);
+  assertUpdateInvariant(event, state);
+  return { version: 2, state, event, ...(agent ? { agent } : {}), ...(agents ? { agents } : {}), ...(activity?.length ? { activity: activity as WikiActivityEntry[] } : {}), ...(raw.active ? { active: raw.active } : {}), ...(execution ? { execution } : {}) };
 }
 
-async function readEventsFile(file: string, runId: string): Promise<WikiRunEvent[]> {
+async function readUpdatesFile(directory: string, runId: string): Promise<WikiDurableUpdate[]> {
   try {
-    const content = await readFile(file, "utf8");
-    return content.split("\n").filter(Boolean).map((line) => parseEvent(JSON.parse(line), runId));
+    const entries = (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && /^\d{16}\.json$/.test(entry.name))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    return await Promise.all(entries.map(async (entry) => {
+      const file = path.join(directory, entry.name);
+      const value = JSON.parse(await readFile(file, "utf8")) as Partial<WikiDurableUpdate> & Record<string, unknown>;
+      assertExactKeys(value, ["version", "event", "state"], "Wiki durable update");
+      if (value.version !== 2) throw new UnsupportedWikiRunVersionError(file, value.version);
+      const event = parseEvent(value.event, runId);
+      const state = parseState(value.state, runId);
+      if (entry.name !== eventRecordName(event.sequence)) throw new Error(`Wiki event record name does not match sequence: ${entry.name}`);
+      assertUpdateInvariant(event, state);
+      return { version: 2, event, state };
+    }));
   } catch (error) {
     if (isMissing(error)) return [];
     throw error;
@@ -1319,30 +1562,152 @@ async function readActivityFile(file: string): Promise<WikiActivityEntry[]> {
 
 async function activeRunId(file: string): Promise<string | undefined> {
   try {
-    const value = (await readFile(file, "utf8")).trim();
-    assertSafeId(value, "Wiki run ID");
-    return value;
+    const text = (await readFile(file, "utf8")).trim();
+    let value: unknown;
+    try { value = JSON.parse(text); }
+    catch { throw new UnsupportedWikiRunVersionError(file, 1); }
+    if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) {
+      throw new UnsupportedWikiRunVersionError(file, (value as { version?: unknown } | undefined)?.version);
+    }
+    const runId = (value as { runId?: unknown }).runId;
+    if (typeof runId !== "string") throw new Error(`Invalid Wiki active run marker: ${file}`);
+    assertSafeId(runId, "Wiki run ID");
+    return runId;
   } catch (error) {
     if (isMissing(error)) return undefined;
     throw error;
   }
 }
 
-async function writeAtomic(target: string, content: string): Promise<void> {
-  const temporary = `${target}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
-  const file = await open(temporary, "wx");
-  try {
-    await file.writeFile(content, "utf8");
-    await file.sync();
-  } finally {
-    await file.close();
+async function ensureDirectoryDurable(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  await syncDirectory(directory);
+  const parent = path.dirname(directory);
+  if (parent !== directory) await syncDirectory(parent);
+}
+
+function eventRecordName(sequence: number): string {
+  return `${String(sequence).padStart(16, "0")}.json`;
+}
+
+function eventRecordPath(directory: string, sequence: number): string {
+  return path.join(directory, eventRecordName(sequence));
+}
+
+function executionLease(runId: string, attempt: number, executionToken: string, owner: WikiExecutionOwner, acquiredAt: string): WikiExecutionLease {
+  return parseExecutionLease({ version: 1, runId, attempt, executionToken, ownerToken: owner.ownerToken, pid: owner.pid, acquiredAt }, runId);
+}
+
+function parseExecutionLease(value: unknown, expectedId: string): WikiExecutionLease {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki execution lease: ${expectedId}`);
+  const raw = value as Partial<WikiExecutionLease> & Record<string, unknown>;
+  assertExactKeys(raw, ["version", "runId", "attempt", "executionToken", "ownerToken", "pid", "acquiredAt"], "Wiki execution lease");
+  if (raw.version !== 1 || raw.runId !== expectedId || !isPositiveInteger(raw.attempt) || !isToken(raw.executionToken)
+    || !isToken(raw.ownerToken) || !Number.isSafeInteger(raw.pid) || (raw.pid ?? 0) < 1 || typeof raw.acquiredAt !== "string") {
+    throw new Error(`Invalid Wiki execution lease: ${expectedId}`);
   }
-  try {
-    await rename(temporary, target);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
+  return raw as unknown as WikiExecutionLease;
+}
+
+function parseTransactionExecution(value: unknown, expectedId: string): WikiLedgerTransaction["execution"] | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki ledger execution transaction: ${expectedId}`);
+  const raw = value as Record<string, unknown>;
+  if (raw.action === "release") {
+    assertExactKeys(raw, ["action"], "Wiki ledger execution transaction");
+    return { action: "release" };
   }
+  assertExactKeys(raw, ["action", "lease"], "Wiki ledger execution transaction");
+  if (raw.action !== "claim") throw new Error(`Invalid Wiki ledger execution transaction: ${expectedId}`);
+  return { action: "claim", lease: parseExecutionLease(raw.lease, expectedId) };
+}
+
+function assertUpdateInvariant(event: WikiRunEvent, state: WikiRunState): void {
+  if (event.sequence !== state.lastEventSequence || event.at !== state.updatedAt) throw new Error("Wiki update event/state sequence mismatch");
+  const expected = event.type === "completed" ? "succeeded"
+    : event.type === "failed" ? "failed"
+      : event.type === "cancelled" ? "cancelled"
+        : event.type === "paused" ? "paused"
+          : event.type === "resumed" ? "running"
+            : undefined;
+  if (expected && state.status !== expected) throw new Error(`Wiki update event/state lifecycle mismatch: ${event.type}/${state.status}`);
+  if (!expected && event.type !== "warning" && state.status !== "running") throw new Error(`Wiki update event/state lifecycle mismatch: ${event.type}/${state.status}`);
+}
+
+function isDigest(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isToken(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 16 && value.length <= 128 && /^[A-Za-z0-9._-]+$/.test(value);
+}
+
+function isRoleModels(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const roles = new Set(["lead", "research", "write", "review"]);
+  const thinking = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  return Object.entries(value).every(([role, selected]) => {
+    if (!roles.has(role) || !selected || typeof selected !== "object" || Array.isArray(selected)) return false;
+    const raw = selected as Record<string, unknown>;
+    return Object.keys(raw).every((key) => ["provider", "id", "thinkingLevel"].includes(key))
+      && typeof raw.provider === "string" && raw.provider.length > 0 && typeof raw.id === "string" && raw.id.length > 0
+      && (raw.thinkingLevel === undefined || thinking.has(String(raw.thinkingLevel)));
+  });
+}
+
+function isGenerationProfile(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  if (!hasExactKeys(raw, ["audience", "purpose", "focus", "granularity", "templates", "review"])
+    || !isStringArray(raw.audience) || typeof raw.purpose !== "string") return false;
+  return stringArrayRecord(raw.focus, ["include", "exclude"])
+    && stringArrayRecord(raw.granularity, ["preferChildPagesFor"])
+    && stringArrayRecord(raw.templates, ["requiredSections"])
+    && stringArrayRecord(raw.review, ["mustCover"]);
+}
+
+function stringArrayRecord(value: unknown, fields: readonly string[]): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return hasExactKeys(raw, fields) && fields.every((field) => isStringArray(raw[field]));
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  return Object.keys(value).length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+async function withFilesystemLock<T>(root: string, lockDirectory: string, operation: () => Promise<T>): Promise<T> {
+  await ensureDirectoryDurable(root);
+  while (true) {
+    try {
+      await mkdir(lockDirectory);
+      await writeText(path.join(lockDirectory, "owner.json"), `${JSON.stringify({ version: 1, pid: process.pid })}\n`);
+      break;
+    } catch (error) {
+      if (!isExists(error)) throw error;
+      if (await lockIsStale(lockDirectory)) {
+        await removePath(lockDirectory, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+    }
+  }
+  try { return await operation(); }
+  finally { await removePath(lockDirectory, { recursive: true, force: true }); }
+}
+
+async function lockIsStale(lockDirectory: string): Promise<boolean> {
+  try {
+    const raw = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as Record<string, unknown>;
+    if (raw.version === 1 && Number.isSafeInteger(raw.pid)) return !processIsAlive(raw.pid as number);
+  } catch (error) { if (!isMissing(error)) return true; }
+  try { return Date.now() - (await stat(lockDirectory)).mtimeMs > LOCK_STALE_MS; }
+  catch { return true; }
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 function assertSafeId(value: string, label: string): void {
@@ -1351,4 +1716,8 @@ function assertSafeId(value: string, label: string): void {
 
 function isMissing(error: unknown): boolean {
   return !!error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function isExists(error: unknown): boolean {
+  return !!error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EEXIST";
 }

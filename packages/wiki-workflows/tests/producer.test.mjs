@@ -1,15 +1,62 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { WikiProducer } from "../dist/producer.js";
-import { createWikiRunLedger } from "../dist/run-ledger.js";
+import { createConfiguredWikiProducer } from "../dist/production-run.js";
+import { WikiLeadRun } from "../dist/wiki-lead-run.js";
 
-async function temporaryWorkspace(t) {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), "wiki-producer-"));
-  t.after(async () => await rm(cwd, { recursive: true, force: true }));
-  return cwd;
+async function workspace(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-producer-v2-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "src"));
+  await writeFile(path.join(root, "src", "index.ts"), "export const answer = 42;\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  return root;
+}
+
+function page(pageType, pagePath, title) {
+  return { pageType, path: pagePath, title, purpose: "Runtime behavior", readerQuestions: [], requiredFacets: [], findingIds: [] };
+}
+
+function spec() {
+  return {
+    version: 1,
+    overview: page("overview", "overview.md", "Overview"),
+    domains: [{ id: "runtime", title: "Runtime", purpose: "Runtime behavior", pages: [
+      page("domain", "runtime/domain.md", "Runtime domain"), page("concept", "runtime/concepts/runtime.md", "Runtime"),
+    ] }],
+    crossLinks: [], sharedTerms: [], omissions: [],
+  };
+}
+
+function content(type, title) {
+  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: runtime", "    resource: repo:src/index.ts#L1-L1", "---", "", "Runtime behavior.[^runtime]", "", "[^runtime]: [Source](repo:src/index.ts#L1-L1)", ""].join("\n");
+}
+
+async function completeCandidate(request) {
+  const lead = await WikiLeadRun.open({
+    workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
+    policy: request.generation, requiredSections: request.generation.templates.requiredSections,
+    executionFence: { runStateFile: path.join(request.cwd, ".okf-wiki", "runs", request.runId, "run-state.json"), attempt: request.attempt, executionToken: request.executionToken },
+  });
+  await lead.saveSpec(spec());
+  await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/runtime/domain.md", content: content("Domain", "Runtime domain"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/runtime/concepts/runtime.md", content: content("Concept", "Runtime"), actor: "lead" });
+  await acceptReview(lead, ["wiki/overview.md", "wiki/runtime/domain.md", "wiki/runtime/concepts/runtime.md"]);
+}
+
+async function acceptReview(lead, reviewPaths) {
+  const { batchId, contracts } = await lead.queueDelegateBatch([{ id: "review-all", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths }]);
+  const contract = contracts[0];
+  await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
+  await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+    id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: reviewPaths, gaps: [], attempts: 1,
+    contractId: contract.contractId, contractDigest: contract.contractDigest,
+    review: { verdict: "pass", reviewedPaths: reviewPaths, findings: [], profileCoverage: [] },
+  } });
 }
 
 function deferred() {
@@ -18,451 +65,226 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture(overrides = {}) {
-  let next = 0;
-  const calls = [];
-  const adapters = {
-    async prepare(input) {
-      calls.push(["prepare", input.operation, input.preparation]);
-      return { inspection: { fingerprint: "source-1" }, sourceFingerprint: "source-1", candidateWikiRoot: `${input.cwd}/.candidate`, sourceScopeIds: ["source"], prompt: "Produce Wiki" };
-    },
-    createLead() { return { async run(input) { calls.push(["lead", input.operation, input.attempt]); await input.report("Lead progress"); return { kind: "complete", summary: "done" }; } }; },
-    async validate(input) { calls.push(["validate", input.operation]); return { ok: true }; },
-    async publish(input) { calls.push(["publish", input.operation]); return { pages: ["a.md"], sourceFingerprint: "source-1" }; },
-    ...overrides,
-  };
-  return { producer: new WikiProducer({ adapters, createId: () => `run-${++next}` }), calls };
-}
-
-test("start runs the deep interface and streams durable events", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const subject = fixture();
-  const handle = await subject.producer.start({ cwd, focus: " auth " });
+test("updates replay every durable transition with its same-sequence view including terminal", async (t) => {
+  const root = await workspace(t);
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    await request.record({ kind: "progress", message: "Lead is working" });
+    await completeCandidate(request);
+    return { kind: "complete", summary: "done" };
+  } }) });
+  const handle = await producer.start({ cwd: root, focus: " runtime " });
   const result = await handle.result();
-  assert.deepEqual(result, {
-    runId: handle.id,
-    status: "succeeded",
-    pages: ["a.md"],
-    sourceFingerprint: "source-1",
-    summary: "done",
-  });
-  assert.equal((await handle.view()).status, "succeeded");
-  assert.equal((await handle.view()).focus, "auth");
-  const events = [];
-  for await (const event of handle.events()) events.push(event);
-  assert.deepEqual(events.map((event) => event.type), ["started", "progress", "progress", "progress", "progress", "progress", "completed"]);
-  assert.deepEqual(subject.calls.map((call) => call[0]), ["prepare", "lead", "validate", "publish"]);
+  assert.equal(result.summary, "done");
+  assert.equal((await handle.view()).focus, "runtime");
+  assert.equal((await handle.view()).operation, undefined);
+  const updates = [];
+  for await (const update of handle.updates()) updates.push(update);
+  assert.equal(updates.at(-1).event.type, "completed");
+  assert.equal(updates.at(-1).view.status, "succeeded");
+  assert.equal(updates.at(-1).view.lastEventSequence, updates.at(-1).event.sequence);
+  assert.deepEqual(updates.map(({ event }) => event.sequence), updates.map((_, index) => index + 1));
 });
 
-test("regenerate remains an explicit end-to-end operation", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const subject = fixture();
-  const handle = await subject.producer.start({ cwd, operation: "regenerate" });
-  await handle.result();
-  assert.equal((await handle.view()).operation, "regenerate");
-  assert.ok(subject.calls.every((call) => call[1] === "regenerate" || call[0] === "lead" && call[1] === "regenerate"));
-});
-
-test("workspace allows only one running or paused run", async (t) => {
-  const cwd = await temporaryWorkspace(t);
+test("paused run serializes its workspace and resume reuses the exact pinned plan", async (t) => {
+  const root = await workspace(t);
   const gate = deferred();
-  const subject = fixture({ createLead: () => ({ async run({ signal }) {
-    await Promise.race([gate.promise, new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))]);
-    return { kind: "complete", summary: "done" };
-  } }) });
-  const first = await subject.producer.start({ cwd });
-  await assert.rejects(subject.producer.start({ cwd }), /already active/);
-  await first.control("cancel");
-  const second = await subject.producer.start({ cwd });
-  assert.equal(second.id, "run-3");
-  gate.resolve();
-  await second.result();
-});
-
-test("resume preserves the candidate and cancel preserves terminal immutability", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  let invocations = 0;
-  let candidateGeneration = 0;
-  const gates = [deferred(), deferred()];
-  const subject = fixture({
-    async prepare(input) {
-      if (input.preparation === "fresh") candidateGeneration += 1;
-      assert.equal(candidateGeneration, 1, "resume must reuse the fresh candidate");
-      subject.calls.push(["prepare", input.operation, input.preparation]);
-      return { inspection: {}, sourceFingerprint: "source-1", candidateWikiRoot: `${input.cwd}/.candidate-${candidateGeneration}`, sourceScopeIds: ["source"], prompt: "Produce Wiki" };
-    },
-    createLead: () => ({ async run({ signal }) {
-      const gate = gates[invocations++];
-      await Promise.race([gate.promise, new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))]);
-      return { kind: "complete", summary: "done" };
-    } }),
-  });
-  const handle = await subject.producer.start({ cwd });
-  while (invocations === 0) await new Promise((resolve) => setImmediate(resolve));
-  assert.equal((await handle.control("pause")).status, "paused");
-  assert.equal((await handle.control("resume")).status, "running");
-  gates[0].resolve();
-  while (invocations < 2) await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(
-    subject.calls.filter(([name]) => name === "prepare").map(([, , preparation]) => preparation),
-    ["fresh", "resume"],
-  );
-  assert.equal((await handle.control("cancel")).status, "cancelled");
-  gates[1].resolve();
-  await assert.rejects(handle.result(), /cancelled/);
-  await assert.rejects(handle.control("resume"), /cannot be controlled/);
-});
-
-test("manual pause durably checkpoints running tasks and resume injects them before cancel", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const ledger = createWikiRunLedger(path.join(cwd, ".okf-wiki"));
-  const task = {
-    id: "write-paused", role: "write", instruction: "write", sourceScopeIds: ["source"], contextRefs: [],
-  };
-  const sessionFile = path.join(cwd, ".okf-wiki", "sessions", "write-paused.jsonl");
-  const emptyRuntime = { batches: [] };
-  const entered = [deferred(), deferred()];
-  let invocation = 0;
-  const producer = new WikiProducer({
-    createId: () => "run-paused-leaf",
-    adapters: {
-      async prepare(input) {
-        const taskRuntimeState = input.preparation === "resume"
-          ? await ledger.readTaskRuntimeState(input.runId)
-          : emptyRuntime;
-        return {
-          inspection: {}, sourceFingerprint: "source-1", candidateWikiRoot: path.join(cwd, ".candidate"),
-          skillRoot: path.join(cwd, ".skills"), sourceScopeIds: ["source"], language: "en", generation: {},
-          priorWikiSpec: undefined, maxConcurrentAgents: 1,
-          budgets: { maxDelegatedTasks: 24, maxDelegateBatches: 8, maxTurnsPerSession: 60, maxToolCallsPerSession: 120 },
-          models: {}, taskRuntimeState, runSessionDirectory: path.join(cwd, ".okf-wiki", "sessions"),
-          transientRetries: 0, sessionTimeoutMs: 60_000, baseRetryDelayMs: 1, prompt: "Produce Wiki",
-        };
-      },
-      createLead() {
-        return { async run(input) {
-          const current = invocation++;
-          if (current === 0) {
-            await input.persistTaskRuntimeState({
-              batches: [{ batchId: 1, tasks: [{ task, phase: "running", attempt: 2, collected: false, sessionFile }] }],
-            });
-          } else {
-            assert.equal(input.taskRuntimeState.batches[0].tasks[0].phase, "paused");
-            assert.equal(input.taskRuntimeState.batches[0].tasks[0].attempt, 2);
-            assert.equal(input.taskRuntimeState.batches[0].tasks[0].sessionFile, sessionFile);
-          }
-          entered[current].resolve();
-          await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
-          const cancelled = input.signal.reason !== Symbol.for("okf-wiki.manual-pause");
-          assert.equal(input.signal.reason === Symbol.for("okf-wiki.manual-pause"), !cancelled);
-          await input.persistTaskRuntimeState({
-            batches: [{ batchId: 1, tasks: [{
-              task, phase: cancelled ? "terminal" : "paused", attempt: 2, collected: false, sessionFile,
-              ...(cancelled ? { receipt: {
-                id: task.id, role: task.role, status: "failed", summary: "cancelled", outputs: [], coverage: [], gaps: [],
-                error: { code: "cancelled", message: "Wiki run was manually cancelled", retryable: false }, attempts: 2,
-              } } : {}),
-            }] }],
-          });
-          return { kind: "complete", summary: "interrupted" };
-        } };
-      },
-      async validate() { return { ok: true }; },
-      async publish() { return { pages: [], sourceFingerprint: "source-1" }; },
-    },
-  });
-
-  const handle = await producer.start({ cwd });
-  await entered[0].promise;
-  assert.equal((await handle.control("pause")).status, "paused");
-  const paused = await ledger.readTaskRuntimeState(handle.id);
-  assert.equal(paused.batches[0].tasks[0].phase, "paused");
-  assert.equal(paused.batches[0].tasks[0].attempt, 2);
-  assert.equal(paused.batches[0].tasks[0].sessionFile, sessionFile);
-
-  assert.equal((await handle.control("resume")).status, "running");
-  await entered[1].promise;
-  assert.equal((await handle.control("cancel")).status, "cancelled");
-  const cancelled = await ledger.readTaskRuntimeState(handle.id);
-  assert.equal(cancelled.batches[0].tasks[0].phase, "terminal");
-  assert.equal(cancelled.batches[0].tasks[0].receipt.error.code, "cancelled");
-});
-
-test("fresh producer lists and opens disk runs, recovering interruption as paused", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const gate = deferred();
-  let entered = false;
-  const first = fixture({ createLead: () => ({ async run() {
-    entered = true;
-    await gate.promise;
-    return { kind: "complete", summary: "done" };
-  } }) });
-  const original = await first.producer.start({ cwd });
-  while (!entered) await new Promise((resolve) => setImmediate(resolve));
-  const fresh = fixture();
-  const runs = await fresh.producer.list(cwd);
-  assert.equal(runs[0].id, original.id);
-  const recovered = await fresh.producer.open(original.id, cwd);
-  assert.ok(recovered);
-  assert.equal((await recovered.view()).status, "paused");
-  await recovered.control("cancel");
-});
-
-test("quota outcome durably pauses the run with retry metadata", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const retryAt = "2026-08-12T12:00:00.000Z";
-  const subject = fixture({
-    createLead: () => ({
-      async run() {
-        return { kind: "pause", reason: "quota", summary: "Provider quota exhausted", retryAt };
-      },
-    }),
-  });
-  const handle = await subject.producer.start({ cwd });
-  while ((await handle.view()).status === "running") {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.deepEqual((await handle.view()).pause, {
-    reason: "quota",
-    summary: "Provider quota exhausted",
-    retryAt,
-  });
-
-  const fresh = fixture();
-  const recovered = await fresh.producer.open(handle.id, cwd);
-  assert.ok(recovered);
-  assert.equal((await recovered.view()).status, "paused");
-  assert.deepEqual((await recovered.view()).pause, {
-    reason: "quota",
-    summary: "Provider quota exhausted",
-    retryAt,
-  });
-  await recovered.control("cancel");
-});
-
-test("stage is present on prepare/lead/validate/publish and inspect reads sidecar receipts", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const receipt = {
-    id: "research-1",
-    role: "research",
-    status: "complete",
-    summary: "notes",
-    outputs: [],
-    coverage: ["source"],
-    gaps: [],
-    attempts: 1,
-  };
-  const tasks = [
-    { id: "research-1", role: "research", status: "running" },
-    { id: "write-1", role: "write", status: "queued" },
-  ];
-  const subject = fixture({
-    createLead: () => ({
-      async run(input) {
-        await input.report("Delegating research", { tasks });
-        await input.report("Research complete", { batch: 1, taskId: "research-1", receipt });
-        return { kind: "complete", summary: "done" };
-      },
-    }),
-  });
-  const handle = await subject.producer.start({ cwd });
-  await handle.result();
-  const events = [];
-  for await (const event of handle.events()) events.push(event);
-  const staged = Object.fromEntries(
-    events.filter((event) => event.data?.stage).map((event) => [event.message, event.data.stage]),
-  );
-  assert.equal(staged["Preparing candidate Wiki"], "prepare");
-  assert.equal(staged["Running Wiki lead"], "lead");
-  assert.equal(staged["Validating candidate Wiki"], "validate");
-  assert.equal(staged["Publishing candidate Wiki"], "publish");
-
-  const view = await handle.view();
-  assert.equal(view.progress.stage, "publish");
-  assert.deepEqual(view.progress.currentBatch.tasks, [
-    { id: "research-1", role: "research", status: "complete", health: "healthy", attempt: 1, activity: "idle" },
-    { id: "write-1", role: "write", status: "queued" },
-  ]);
-
-  const inspected = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "research-1" });
-  assert.ok(inspected);
-  assert.equal(inspected.runId, handle.id);
-  assert.equal(inspected.agent.target.taskId, "research-1");
-  assert.deepEqual(inspected.receipt, receipt);
-  assert.equal(inspected.process.length, 1);
-  assert.equal(await handle.inspectAgent({ kind: "lead" }), undefined);
-  const activity = await handle.activity({ limit: 2 });
-  assert.ok(activity.entries.length <= 2);
-
-  const snapshotOnly = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "write-1" });
-  assert.ok(snapshotOnly);
-  assert.equal(snapshotOnly.agent.status, "queued");
-  assert.equal(snapshotOnly.agent.role, "write");
-  assert.equal(snapshotOnly.receipt, undefined);
-  assert.deepEqual(snapshotOnly.process, []);
-
-  assert.equal(await handle.inspectAgent({ kind: "task", batch: 1, taskId: "missing-task" }), undefined);
-});
-
-test("telemetry is transactionally projected and replay/live subscribers can cancel", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const ready = deferred();
-  const release = deferred();
-  const subject = fixture({
-    createLead: () => ({ async run(input) {
-      await input.report("Delegating", {
-        stage: "lead",
-        tasks: [{ id: "write-1", role: "write", status: "running", attempt: 1 }],
-      });
-      ready.resolve();
-      await release.promise;
-      await input.report("Writing", {
-        stage: "lead",
-        taskId: "write-1",
-        phase: "agent_update",
-        telemetry: {
-          target: { kind: "task", batch: 1, taskId: "write-1" },
-          attempt: 1,
-          sampledAt: "2026-01-01T00:00:05.000Z",
-          activity: "streaming",
-          usage: { turns: 1, total: 42 },
-        },
-      });
-      return { kind: "complete", summary: "done" };
-    } }),
-  });
-  const handle = await subject.producer.start({ cwd });
-  await ready.promise;
-
-  const abort = new AbortController();
-  const cancelled = handle.events(0, abort.signal)[Symbol.asyncIterator]();
-  assert.equal((await cancelled.next()).value.type, "started");
-  abort.abort();
-  assert.equal((await cancelled.next()).done, true);
-
-  const collect = async () => {
-    const events = [];
-    for await (const event of handle.events()) events.push(event);
-    return events;
-  };
-  const first = collect();
-  const second = collect();
-  release.resolve();
-  const [left, right] = await Promise.all([first, second]);
-  assert.deepEqual(left.map(({ sequence }) => sequence), right.map(({ sequence }) => sequence));
-  assert.equal(new Set(left.map(({ sequence }) => sequence)).size, left.length);
-  assert.equal(left.filter(({ type }) => type === "telemetry").length, 1);
-
-  const view = await handle.view();
-  const task = view.progress.currentBatch.tasks.find(({ id }) => id === "write-1");
-  assert.equal(task.activity, "responding");
-  assert.deepEqual(task.usage, { turns: 1, total: 42 });
-  const inspected = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "write-1" });
-  assert.deepEqual(inspected.agent.usage, { turns: 1, total: 42 });
-  assert.equal(subject.producer.eventHubs.size, 0);
-});
-
-test("live stream observes terminal event even when terminal state is already visible", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const entered = deferred();
-  const release = deferred();
-  const subject = fixture({
-    async publish(input) {
-      entered.resolve();
-      await release.promise;
-      return { pages: ["a.md"], sourceFingerprint: "source-1" };
-    },
-  });
-  const handle = await subject.producer.start({ cwd });
-  await entered.promise;
-  const cursor = (await handle.view()).lastEventSequence;
-  const iterator = handle.events(cursor)[Symbol.asyncIterator]();
-  const next = iterator.next();
-  release.resolve();
-  const event = (await next).value;
-  assert.equal(event.type, "completed");
-  assert.equal((await handle.view()).status, "succeeded");
-  assert.equal((await iterator.next()).done, true);
-});
-
-test("task end event is published only after inspect sees final sidecar", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const ready = deferred();
-  const release = deferred();
-  const receipt = {
-    id: "write-1", role: "write", status: "complete", summary: "done",
-    outputs: [], coverage: ["source"], gaps: [], attempts: 1,
-  };
-  const subject = fixture({
-    createLead: () => ({ async run(input) {
-      await input.report("Delegating", {
-        stage: "lead", tasks: [{ id: "write-1", role: "write", status: "running", attempt: 1 }],
-      });
-      ready.resolve();
-      await release.promise;
-      await input.report("Task complete", {
-        stage: "lead", batch: 1, taskId: "write-1", receipt,
-        usage: { turns: 2, total: 80 },
-      });
-      return { kind: "complete", summary: "done" };
-    } }),
-  });
-  const handle = await subject.producer.start({ cwd });
-  await ready.promise;
-  const iterator = handle.events((await handle.view()).lastEventSequence)[Symbol.asyncIterator]();
-  const next = iterator.next();
-  release.resolve();
-  assert.equal((await next).value.message, "Task complete");
-  const inspected = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "write-1" });
-  assert.equal(inspected.receipt.status, "complete");
-  assert.deepEqual(inspected.agent.usage, { turns: 2, total: 80 });
-  await iterator.return();
-  await handle.result();
-});
-
-test("late report after cancel cannot mutate terminal state or append events", async (t) => {
-  const cwd = await temporaryWorkspace(t);
-  const entered = deferred();
-  const release = deferred();
-  const lateDone = deferred();
-  const subject = fixture({
-    createLead: () => ({ async run(input) {
-      entered.resolve();
-      await release.promise;
-      try {
-        await input.report("Late task end", {
-          stage: "lead",
-          batch: 1,
-          taskId: "late-1",
-          receipt: {
-            id: "late-1", role: "write", status: "complete", summary: "too late",
-            outputs: [], coverage: ["source"], gaps: [], attempts: 1,
-          },
-        });
-      } catch (error) {
-        lateDone.resolve(error);
+  let firstPlan;
+  let calls = 0;
+  const producer = createConfiguredWikiProducer({ createLead(plan) {
+    if (!firstPlan) firstPlan = structuredClone(plan);
+    else {
+      const { leadSessionFile, leadSessionAttempt, ...base } = plan;
+      assert.deepEqual(base, firstPlan);
+      assert.equal(leadSessionFile, path.join(root, "lead-session.jsonl"));
+      assert.equal(leadSessionAttempt, 1);
+    }
+    return { async run(request) {
+      calls += 1;
+      if (calls === 1) {
+        await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: {
+          target: { kind: "lead" }, attempt: 1, sampledAt: "2026-01-01T00:00:00.000Z", activity: "streaming", activeTools: [],
+          sessionFile: path.join(root, "lead-session.jsonl"),
+        } });
+        return { kind: "pause", reason: "quota", summary: "wait" };
       }
-      return { kind: "complete", summary: "ignored" };
+      await completeCandidate(request);
+      await gate.promise;
+      return { kind: "complete", summary: "resumed" };
+    } };
+  } });
+  const first = await producer.start({ cwd: root });
+  while ((await first.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  await assert.rejects(producer.start({ cwd: root }), /already active/);
+  assert.equal((await first.control("resume")).status, "running");
+  gate.resolve();
+  assert.equal((await first.result()).summary, "resumed");
+  assert.equal(calls, 2);
+});
+
+test("source drift after Lead completion fails without publishing the candidate", async (t) => {
+  const root = await workspace(t);
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    await completeCandidate(request);
+    await writeFile(path.join(root, "src", "index.ts"), "export const answer = 43;\n");
+    return { kind: "complete", summary: "stale" };
+  } }) });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(handle.result(), /sources changed while the Wiki run was active/);
+  await assert.rejects(readFile(path.join(root, "wiki", "overview.md"), "utf8"), { code: "ENOENT" });
+  assert.equal((await handle.view()).status, "failed");
+});
+
+test("same deterministic run id in two workspaces keeps executions and update hubs isolated", async (t) => {
+  const left = await workspace(t);
+  const right = await workspace(t);
+  const seen = [];
+  const producer = createConfiguredWikiProducer({
+    createId: () => "same-run",
+    createLead: () => ({ async run(request) {
+      seen.push(request.cwd);
+      return { kind: "pause", reason: "quota", summary: `paused:${request.cwd}` };
     } }),
   });
-  const handle = await subject.producer.start({ cwd });
-  await entered.promise;
-  const cancelled = await handle.control("cancel");
-  assert.equal(cancelled.status, "cancelled");
-  const beforeEvents = [];
-  for await (const event of handle.events()) beforeEvents.push(event);
-  const before = await handle.view();
+  const [leftRun, rightRun] = await Promise.all([producer.start({ cwd: left }), producer.start({ cwd: right })]);
+  while ((await leftRun.view()).status === "running" || (await rightRun.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(leftRun.id, "same-run");
+  assert.equal(rightRun.id, "same-run");
+  assert.deepEqual(new Set(seen), new Set([left, right]));
+  const leftUpdates = [];
+  for await (const update of leftRun.updates()) { leftUpdates.push(update); if (update.event.type === "paused") break; }
+  assert.ok(leftUpdates.every((update) => update.view.cwd === left));
+});
 
+test("resume requested while an abort-ignoring attempt settles is deferred and eventually launches", async (t) => {
+  const root = await workspace(t);
+  const release = deferred();
+  let calls = 0;
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run() {
+    calls += 1;
+    if (calls === 1) await release.promise;
+    return { kind: "pause", reason: "quota", summary: `attempt ${calls}` };
+  } }) });
+  const run = await producer.start({ cwd: root });
+  while (calls === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal((await run.control("pause")).status, "paused");
+  assert.equal((await run.control("resume")).status, "running");
   release.resolve();
-  const error = await lateDone.promise;
-  assert.match(error.message, /immutable/);
-  await new Promise((resolve) => setImmediate(resolve));
-  const after = await handle.view();
-  const afterEvents = [];
-  for await (const event of handle.events()) afterEvents.push(event);
-  assert.equal(after.status, "cancelled");
-  assert.equal(after.lastEventSequence, before.lastEventSequence);
-  assert.equal(after.updatedAt, before.updatedAt);
-  assert.deepEqual(afterEvents, beforeEvents);
-  assert.equal(await handle.inspectAgent({ kind: "task", batch: 1, taskId: "late-1" }), undefined);
+  while (calls < 2 || (await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(calls, 2);
+  assert.equal((await run.view()).status, "paused");
+});
+
+test("cancel fences observations from a slow prior attempt", async (t) => {
+  const root = await workspace(t);
+  const entered = deferred();
+  const release = deferred();
+  const attempted = deferred();
+  let lateError;
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    entered.resolve();
+    await release.promise;
+    try { await request.record({ kind: "progress", message: "late write" }); } catch (error) { lateError = error; }
+    finally { attempted.resolve(); }
+    return { kind: "complete", summary: "too late" };
+  } }) });
+  const run = await producer.start({ cwd: root });
+  await entered.promise;
+  const cancelled = await run.control("cancel");
+  const sequence = cancelled.lastEventSequence;
+  release.resolve();
+  await attempted.promise;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal((await run.view()).status, "cancelled");
+  assert.equal((await run.view()).lastEventSequence, sequence);
+  assert.match(String(lateError), /no longer current/);
+});
+
+test("cancel fences direct Candidate mutations from an abort-ignoring Lead", async (t) => {
+  const root = await workspace(t);
+  const ready = deferred();
+  const release = deferred();
+  const attempted = deferred();
+  let lateError;
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    const lead = await WikiLeadRun.open({
+      workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
+      policy: request.generation, requiredSections: request.generation.templates.requiredSections,
+      executionFence: { runStateFile: path.join(request.cwd, ".okf-wiki", "runs", request.runId, "run-state.json"), attempt: request.attempt, executionToken: request.executionToken },
+    });
+    await lead.saveSpec(spec());
+    ready.resolve();
+    await release.promise;
+    try { await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }); }
+    catch (error) { lateError = error; }
+    finally { attempted.resolve(); }
+    return { kind: "complete", summary: "too late" };
+  } }) });
+  const run = await producer.start({ cwd: root });
+  await ready.promise;
+  await run.control("cancel");
+  release.resolve();
+  await attempted.promise;
+  assert.match(String(lateError), /no longer.*active|execution fence/i);
+  await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", run.id, "candidate", "wiki", "overview.md"), "utf8"), { code: "ENOENT" });
+});
+
+test("a second producer attaches to the live process run and concurrent controls serialize durably", async (t) => {
+  const root = await workspace(t);
+  const entered = deferred();
+  const release = deferred();
+  let calls = 0;
+  const firstProducer = createConfiguredWikiProducer({ createId: () => "shared-run", createLead: () => ({ async run() {
+    calls += 1;
+    if (calls === 1) { entered.resolve(); await release.promise; }
+    return { kind: "pause", reason: "quota", summary: `attempt:${calls}` };
+  } }) });
+  const first = await firstProducer.start({ cwd: root });
+  await entered.promise;
+  const before = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run-state.json"), "utf8"));
+  const secondProducer = createConfiguredWikiProducer({ createLead: () => { throw new Error("must attach to existing run"); } });
+  const second = await secondProducer.open(first.id, path.join(root, "src"));
+  assert.ok(second);
+  const controls = await Promise.allSettled([first.control("pause"), second.control("pause")]);
+  assert.equal(controls.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal((await second.view()).status, "paused");
+  const resumed = await second.control("resume");
+  const after = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run-state.json"), "utf8"));
+  assert.equal(resumed.status, "running");
+  assert.equal(after.attempt, before.attempt + 1);
+  assert.notEqual(after.executionToken, before.executionToken);
+  release.resolve();
+  while (calls < 2 || (await second.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(calls, 2);
+});
+
+test("open and resume use pinned paths even when workspace config becomes invalid", async (t) => {
+  const root = await workspace(t);
+  let calls = 0;
+  const firstProducer = createConfiguredWikiProducer({ createId: () => "pinned-open", createLead: () => ({ async run() {
+    calls += 1;
+    return { kind: "pause", reason: "quota", summary: "wait" };
+  } }) });
+  const run = await firstProducer.start({ cwd: root });
+  while ((await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  await writeFile(path.join(root, "workspace.yaml"), "not: [valid\n");
+  const secondProducer = createConfiguredWikiProducer({});
+  const reopened = await secondProducer.open(run.id, path.join(root, "src"));
+  assert.ok(reopened);
+  await reopened.control("resume");
+  while ((await reopened.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(calls, 2);
+  assert.equal((await reopened.view()).status, "paused");
+});
+
+test("resume rejects a modified materialized production skill", async (t) => {
+  const root = await workspace(t);
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run() {
+    return { kind: "pause", reason: "quota", summary: "wait" };
+  } }) });
+  const run = await producer.start({ cwd: root });
+  while ((await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  await writeFile(path.join(root, ".okf-wiki", "runs", run.id, "skill", "references", "common.md"), "changed\n");
+  await run.control("resume");
+  await assert.rejects(run.result(), /production skill changed/);
+  assert.equal((await run.view()).status, "failed");
 });

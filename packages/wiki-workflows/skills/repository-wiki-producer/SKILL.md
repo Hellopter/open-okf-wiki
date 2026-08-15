@@ -1,31 +1,28 @@
 ---
 name: repository-wiki-producer
-description: Use when the user asks to build, update, regenerate, or refresh a repository Wiki. Invoke the /wiki command. Do not write wiki/ pages yourself.
+description: Use when the user asks to build or replace a repository Wiki. Invoke the /wiki command and let the extension own production.
 ---
 
 # Repository Wiki Producer
 
-Invoke `/wiki`. The extension owns planning, writing, review, validation, and
-publication. Do not edit `wiki/` or invent production-session tools in this
-host session.
+Invoke the matching `/wiki` command. The extension owns planning, writing, review, validation, publication, and recovery; the host session leaves `wiki/` unchanged.
 
-## Commands
+## Produce
 
-| Command | Use |
-|---|---|
-| `/wiki [focus]` | Update the Wiki. Optional focus narrows research without dropping essential context. |
-| `/wiki regenerate [focus]` | Discard the prior page topology and rebuild it. |
-| `/wiki init [workspace] [--lang zh\|en] [--exclude <glob>]... [--no-default-ignores]` | Create an explicit multi-source workspace. |
-| `/wiki source add link <local-git-root>` | Link a local Git repository root (symlink on Linux/macOS, junction on Windows). |
-| `/wiki source add clone <url>` | Clone a local or remote Git URL when linking is unsuitable. |
-| `/wiki status [run-id] [lead\|batch-N/task-id] [--process]` | Inspect the current or named run. |
-| `/wiki runs` | List runs in this workspace. |
-| `/wiki pause` / `/wiki resume [run-id]` / `/wiki cancel [run-id]` | Control the active run. |
+1. Invoke `/wiki [focus]`. Include `focus` only when the user named a priority; it does not narrow required coverage.
+2. Report the created Run id. Production is underway when the command returns a running view.
+3. Use `/wiki status` for a current snapshot or `/wiki status <run-id> <lead|batch-N/task-id> [--process]` for one Agent. Inspection is complete when the requested durable view is shown.
 
-A Git repository without `workspace.yaml` is an implicit single source. Existing
-multi-source workspaces use their declared sources. Use `init` only to create an
-explicit workspace, then add sources.
+Every invocation performs a full generation in a fresh empty Candidate. The Published Wiki and its WikiSpec are provenance, not input.
 
-The host owns run state, source fingerprints, path authorization, validation,
-and publication. Do not create workflow manifests, source copies, or alternate
-plans.
+## Configure Sources
+
+Use `/wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]` only to create an explicit multi-source Workspace. Then add each Source with `/wiki source add link <local-git-root>` or `/wiki source add clone <url>`.
+
+A Git repository without `workspace.yaml` is already an implicit single-source Workspace. Source configuration is complete when the command reports the resolved Workspace and Source path.
+
+## Control
+
+Use `/wiki runs` to find Run ids. Use `/wiki pause`, `/wiki resume [run-id]`, or `/wiki cancel [run-id]` for lifecycle control. A control action is complete when the returned view shows the requested state.
+
+Resume preserves pinned settings, Candidate, artifacts, and Pi sessions. Source drift fails closed. Version-1 Run state requires human cleanup; preserve needed evidence before removing stale `.okf-wiki` Run data.

@@ -12,6 +12,13 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Breaking architecture change
 
+- Runs are isolated full generations. Every Run starts from an empty Candidate;
+  the Published Wiki and final WikiSpec are provenance only.
+- Replaced separate event and view subscriptions with transaction-aligned
+  `WikiRunHandle.updates()` values containing both event and durable view.
+- Version-1 Run state is incompatible and requires explicit human cleanup; it is
+  never migrated or automatically deleted.
+
 - Replaced the fixed DAG, phases, barriers, staged submission tools, node/phase
   retry, snapshot protocol, and TUI with one `WikiProducer` interface and plain
   CLI progress events. Previous run state is intentionally incompatible.
@@ -41,12 +48,37 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Research briefs no longer inherit the Wiki reader language. Only writer and
   reviewer prompts require Simplified Chinese or English.
 - Publication continues to use a recoverable rename journal and atomic swap.
+- Added an opaque, Run-bound publication seal over the final Candidate tree,
+  page set, and WikiSpec. Publication re-verifies the seal immediately before
+  install, reads provenance metadata v1/v2, and writes v2 only.
+- Added a Workspace publication lease shared across store instances and
+  processes. Recovery waits for a live publisher and reclaims only a dead
+  owner; successful Run commit acknowledges the active journal into a durable
+  per-Run audit archive so historical publications cannot affect later Runs.
+- Publication journal v2 binds the complete canonical provenance record
+  (source fingerprint, summary, WikiSpec, page set, and tree digest) with a
+  metadata digest, and reconciliation rejects any field-level divergence.
+- Centralized fsynced atomic write, append, exclusive active-marker, rename,
+  and removal operations so ledger and publication recovery transitions make
+  both file content and directory-entry changes durable.
+- Artifact blobs and manifests, and every file and directory in the
+  materialized production skill, are durable before their receipt or Run plan
+  commits. Resume verifies the pinned complete skill-tree digest. Successful
+  cleanup retains content-addressed artifacts and their Run manifest as audit
+  evidence while removing the transient Candidate, sessions, transactions,
+  finalization preimage, and skill snapshot.
 
 ### Observability
 
 - Added a `/wiki status` progress card, `inspect()` for task receipts and
   handoffs, `--process` compact history, TUI footer/widget, and a bordered
   status overlay that shows context stats for the selected task.
+- Centralized shared status, stage, health, liveness, activity, context, and
+  batch presentation semantics while keeping the Run projection limited to
+  fields consumed by live surfaces.
+- Replaced extensible event data bags with strict event variants and moved event
+  visibility/text/tone projection into the observability module. UI adapters no
+  longer depend on CLI compatibility presentation wrappers.
 
 ### Commands
 
@@ -54,7 +86,7 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   ignore controls for explicit multi-source workspaces.
 - Added `/wiki source add link` for local Git roots and `/wiki source add clone`
   for local or remote URLs, with optional source names, workspace paths and refs.
-- Existing run commands remain `/wiki [focus]`, `regenerate`,
-  `status [run-id] [task-id] [--process]`, `runs`, `pause`, `resume`, and
+- Run commands are `/wiki [focus]`, `status [run-id] [task-id] [--process]`,
+  `runs`, `pause`, `resume`, and
   `cancel`. A Git repository without `workspace.yaml` remains an implicit
   single source and needs no initialization.

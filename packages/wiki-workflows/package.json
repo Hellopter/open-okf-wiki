@@ -4,6 +4,20 @@
   "private": true,
   "type": "module",
   "description": "Git-native repository Wiki workflow extension for Pi",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    },
+    "./pi": {
+      "types": "./dist/extension.d.ts",
+      "default": "./dist/extension.js"
+    }
+  },
   "files": [
     "dist/",
     "skills/"

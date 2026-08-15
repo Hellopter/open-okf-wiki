@@ -37,7 +37,7 @@ test("Lead and leaves can read the materialized skill but cannot write it", asyn
   const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   const policy = await workspaceToolPolicy(root, candidateWikiRoot, skillRoot);
   const skillFile = path.join(skillWorkspacePath("run-1"), "SKILL.md");
-  const lead = workflowTools(policy, "lead", undefined, ["source"]);
+  const lead = workflowTools(policy, "lead", undefined, ["source"], undefined, { async replacePage() {} });
   const read = await call(lead, "read", { path: skillFile });
   assert.match(JSON.stringify(read), /wiki_plan/);
 
@@ -47,4 +47,11 @@ test("Lead and leaves can read the materialized skill but cannot write it", asyn
   const researchRead = await call(researcher, "read", { path: skillFile });
   assert.match(JSON.stringify(researchRead), /wiki_plan/);
   await assert.rejects(call(researcher, "read", { path: "wiki/secret.md" }), /outside the permitted workspace scope/);
+});
+
+test("writer-capable tools require a transactional page writer", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const policy = await workspaceToolPolicy(root, candidateWikiRoot, skillRoot);
+  assert.throws(() => workflowTools(policy, "lead", undefined, ["source"], undefined, undefined), /transactional WikiPageWriter/);
+  assert.throws(() => workflowTools(policy, "writer", ["wiki/page.md"], ["source"], undefined, undefined), /transactional WikiPageWriter/);
 });

@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   parseWikiCliCommand,
-  renderWikiEvent,
   renderWikiAgent,
   renderWikiRun,
   renderWikiSnapshot,
@@ -9,9 +8,9 @@ import {
   wikiCliHelp,
   type WikiCliCommand,
 } from "./cli.js";
-import { createConfiguredWikiProducer } from "./production.js";
-import type { WikiProducer } from "./producer.js";
-import type { WikiAgentTarget, WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
+import { projectWikiRunEvent } from "./observability.js";
+import { createConfiguredWikiProducer } from "./production-run.js";
+import type { WikiAgentTarget, WikiProducer, WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
 import { formatLocalDateTime } from "./time-format.js";
 import { themeWikiLiveText, wikiFooterStatus, wikiWidgetLines } from "./ui/live-surface.js";
 import { openWikiStatusOverlay } from "./ui/status-overlay.js";
@@ -110,7 +109,6 @@ async function dispatch(
   if (command.action === "run") {
     const handle = await producer.start({
       cwd,
-      operation: command.regenerate ? "regenerate" : "update",
       focus: command.focus,
     });
     const view = await handle.view();
@@ -244,37 +242,14 @@ async function streamRun(
   after = 0,
   signal?: AbortSignal,
 ): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const queueRefresh = (): void => {
-    if (!context.hasUI || timer) return;
-    timer = setTimeout(() => {
-      timer = undefined;
-      void handle.view().then((view) => refreshLiveSurface(context, view));
-    }, 100);
-  };
-  const flushRefresh = async (): Promise<void> => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-    refreshLiveSurface(context, await handle.view());
-  };
   try {
-    for await (const event of handle.events(after, signal)) {
+    for await (const update of handle.updates(after, signal)) {
       if (signal?.aborted) break;
-      if (event.type !== "telemetry") output(pi, context, renderWikiEvent(event));
-      queueRefresh();
+      const event = projectWikiRunEvent(update.event);
+      if (event.visible) output(pi, context, event.text, event.tone === "error" ? "error" : event.tone === "warning" ? "warning" : "info");
+      refreshLiveSurface(context, update.view);
     }
-    if (signal?.aborted) {
-      if (timer) clearTimeout(timer);
-      return;
-    }
-    await flushRefresh();
   } catch (error) {
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
     if (signal?.aborted) return;
     context.ui.notify(`Wiki progress stream stopped: ${errorMessage(error)}`, "warning");
     try {
@@ -302,15 +277,14 @@ async function workspaceRoot(cwd: string): Promise<string> {
   return (await loadWikiWorkspace(cwd)).root;
 }
 
-function output(pi: ExtensionAPI, context: ExtensionCommandContext, content: string): void {
-  if (context.hasUI) context.ui.notify(content, "info");
+function output(pi: ExtensionAPI, context: ExtensionCommandContext, content: string, level: "info" | "warning" | "error" = "info"): void {
+  if (context.hasUI) context.ui.notify(content, level);
   else void pi.sendMessage({ customType: "okf-wiki", content, display: true });
 }
 
 const COMPLETIONS = [
   { value: "init ", label: "init", description: "Initialize a Wiki workspace" },
   { value: "source add ", label: "source", description: "Link or clone a Git source" },
-  { value: "regenerate ", label: "regenerate", description: "Rebuild the Wiki topology" },
   { value: "status ", label: "status", description: "Show a run" },
   { value: "runs", label: "runs", description: "List repository Wiki runs" },
   { value: "pause", label: "pause", description: "Pause the active run" },
