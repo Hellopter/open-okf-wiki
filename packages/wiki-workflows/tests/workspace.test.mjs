@@ -154,6 +154,31 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
   }
 });
 
+test("version errors identify the exact workspace config and require numeric version 1", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-version-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  const configPath = path.join(root, "workspace.yaml");
+  const config = (version) => [
+    `version: ${version}`,
+    "language: zh",
+    "defaultSourceIgnores: true",
+    "wiki:",
+    "  exclude: []",
+    "sources: []",
+    "",
+  ].join("\n");
+
+  await writeFile(configPath, config("2"));
+  await assert.rejects(
+    loadWikiWorkspace(path.join(root, "src")),
+    new RegExp(`Invalid workspace\\.yaml at ${configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: expected numeric version 1, received 2 \\(number\\)`),
+  );
+
+  await writeFile(configPath, config("'1'"));
+  await assert.rejects(loadWikiWorkspace(root), /expected numeric version 1, received "1" \(string\)/);
+});
+
 test("strictly loads the complete Wiki generation profile", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-generation-profile-"));
   temporaryDirectories.push(parent);

@@ -335,9 +335,13 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
   try {
     document = YAML.parse(text);
   } catch (error) {
-    throw new Error(`Invalid workspace.yaml: ${errorMessage(error)}`);
+    throw new Error(`Invalid workspace.yaml at ${configPath}: ${errorMessage(error)}`);
   }
-  if (!isRecord(document) || document.version !== 1) throw new Error("workspace.yaml must declare version: 1");
+  if (!isRecord(document)) throw new Error(`Invalid workspace.yaml at ${configPath}: expected a mapping with numeric version 1`);
+  if (document.version !== 1) {
+    const received = JSON.stringify(document.version) ?? String(document.version);
+    throw new Error(`Invalid workspace.yaml at ${configPath}: expected numeric version 1, received ${received} (${typeof document.version})`);
+  }
   if (document.language !== "zh" && document.language !== "en") throw new Error("workspace.yaml language must be zh or en");
   if (typeof document.defaultSourceIgnores !== "boolean") throw new Error("workspace.yaml defaultSourceIgnores must be true or false");
   const wiki = document.wiki === undefined ? structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG) : parseWikiConfig(document.wiki);
