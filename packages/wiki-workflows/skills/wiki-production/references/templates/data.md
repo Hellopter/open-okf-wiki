@@ -1,10 +1,12 @@
 # Data Page Skeleton
 
-Use for a domain data model or persistence contract. Consider these sections when source supports them:
+Use for `<domain>/<concept>/data.md`. Persistence, serialization, and storage
+contracts — not the conceptual model (that is `models.md`). Consider these
+sections when source supports them:
 
-1. Model purpose and ownership
-2. Fields, relationships, and identity
-3. Constraints and invariants
-4. Creation, mutation, and deletion lifecycle
-5. Persistence, serialization, or migration boundaries
-6. Links to flows and modules that read or change the data
+1. Persistence purpose and ownership
+2. Storage shape, keys, and indexes
+3. Serialization or schema boundaries
+4. Migration, retention, or compatibility rules
+5. Who reads or writes the store
+6. Links to models, flows, and modules

@@ -9,9 +9,11 @@ pnpm build
 pi install ./packages/wiki-workflows
 ```
 
-The host skill ships in the package (`pi.skills`) and is loaded by `pi install`,
-not from the repository `.agents/` directory. Production Lead and delegated
-sessions use a separate packaged skill copied into the run directory.
+The host skill `repository-wiki-producer` is the only model-facing skill. It
+ships in the package (`pi.skills`) and is loaded by `pi install`, not from the
+repository `.agents/` directory. Production `wiki-production/SKILL.md` is the
+Lead session brief, copied into the run directory. Worker roles are
+`briefs/*.md`, not skills. Templates are disclosed references.
 
 Run Pi in the repository and use:
 
@@ -122,27 +124,25 @@ Unknown fields are rejected.
 
 The Lead must persist a versioned WikiSpec before any page can be written. The
 Spec declares every content page, its type, evidence findings, reader questions,
-and cross-links. A published Wiki uses this standard topology:
+and cross-links. A published Wiki uses this cluster topology:
 
 ```text
 wiki/
-  index.md
+  index.md                 # host
   overview.md
-  architecture.md                 # optional
+  architecture.md          # optional
   <domain>/
     index.md
     domain.md
-    concepts/
-    flows/
-    states/
-    data/
-    modules/
+    <concept>/
+      concept.md
+      models.md / flows.md / sequences.md / states.md / data.md / modules.md
 ```
 
-Each populated category contains its own generated `index.md` and topic pages.
-Indexes are deterministic host-owned projections, not model-authored pages. The
-Published Wiki and final WikiSpec are provenance only; neither seeds a new Run's
-topology or content.
+Page paths sit beside their concept. There are no type-bucket directories
+(`concepts/`, `flows/`). Indexes are deterministic host-owned projections, not
+model-authored pages. The Published Wiki and final WikiSpec are provenance
+only; neither seeds a new Run's topology or content.
 
 ## Watching a run
 
@@ -181,9 +181,17 @@ Resume preserves the Candidate and pinned settings; Source drift fails the Run.
 Compaction summarizes older context when the session approaches its context
 limit and preserves recent work.
 
-The Lead may write directly only for a one-domain Spec with at most three pages.
-Larger plans use delegated Writers, and any Lead compaction permanently disables
-direct writes for that run. Writer output is parsed, source-checked, link-checked,
+The Lead may write directly only for a one-domain Spec with at most three
+content pages and no compaction. Otherwise the Lead writes by cluster through
+delegated Writers. Any Lead compaction permanently disables direct writes for
+that run. Review is always independent. Research is delegated only when the
+scope needs parallel coverage or the Lead cannot cover it.
+
+The host projects remaining work to a read-only
+`.okf-wiki/runs/<id>/board.md`. The Lead reads that board after compaction and
+before every dispatch or finish.
+
+Writer output is parsed, source-checked, link-checked,
 and YAML-canonicalized in process before an atomic replacement; no external
 `yamlformatter` executable is required. Reviewers receive exact read-only page
 and generated-index paths. Their structured result is accepted only for the

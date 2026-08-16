@@ -97,8 +97,16 @@ async function writePage(root, relative, content = page()) {
 }
 
 function expectedPageType(relative) {
-  if (relative === "overview/overview.md") return "Overview";
-  if (relative.startsWith("architecture/")) return "Architecture";
+  if (relative === "overview.md" || relative === "overview/overview.md") return "Overview";
+  if (relative === "architecture.md" || relative.startsWith("architecture/")) return "Architecture";
+  const filename = relative.split("/").at(-1);
+  if (filename === "domain.md") return "Domain";
+  if (filename === "concept.md") return "Concept";
+  if (filename === "flows.md" || filename === "sequences.md") return "Flow";
+  if (filename === "states.md") return "State";
+  if (filename === "data.md" || filename === "models.md") return "Data";
+  if (filename === "modules.md") return "Module";
+  if (relative.split("/").includes("models")) return "Data";
   if (relative.split("/").includes("flows")) return "Flow";
   if (relative.split("/").includes("modules")) return "Module";
   return "Concept";
@@ -511,28 +519,28 @@ test("index materialization is idempotent and never removes concept pages", asyn
   assert.equal(await readFile(path.join(root, "wiki", "index.md"), "utf8"), first);
 });
 
-test("deep indexes include a localized deterministic concept count", async () => {
+test("concept directory indexes fall back to the directory name", async () => {
   const root = await fixture();
   const target = spec({
-    pages: [{ path: "core/flows/request.md", pageType: "flow", findingIds: ["finding-api"] }],
+    pages: [{ path: "core/request/flows.md", pageType: "flow", findingIds: ["finding-api"] }],
   });
-  await writePage(root, "core/flows/request.md");
+  await writePage(root, "core/request/flows.md");
 
   await materializeWikiIndexes(root, target);
 
   assert.equal(
-    await readFile(path.join(root, "wiki", "core", "flows", "index.md"), "utf8"),
-    "# 流程\n\n1 个流程页面\n\n## Pages\n\n- [Example](./request.md): Example documentation\n",
+    await readFile(path.join(root, "wiki", "core", "request", "index.md"), "utf8"),
+    "# request\n\n## Pages\n\n- [Example](./flows.md): Example documentation\n",
   );
 });
 
-test("standard topology creates root, domain, and localized category indexes", async () => {
+test("standard topology creates root, domain, and concept indexes", async () => {
   const root = await fixture();
-  const metadata = (pageType, pagePath) => ({
+  const metadata = (pageType, pagePath, title = pagePath, purpose = "Document the target") => ({
     pageType,
     path: pagePath,
-    title: pagePath,
-    purpose: "Document the target",
+    title,
+    purpose,
     readerQuestions: [],
     requiredFacets: [],
     findingIds: [],
@@ -547,10 +555,10 @@ test("standard topology creates root, domain, and localized category indexes", a
       purpose: "Payment lifecycle",
       pages: [
         metadata("domain", "payments/domain.md"),
-        metadata("concept", "payments/concepts/payment.md"),
-        metadata("flow", "payments/flows/authorization.md"),
-        metadata("state", "payments/states/payment.md"),
-        metadata("data", "payments/data/payment.md"),
+        metadata("concept", "payments/invoice/concept.md", "Invoice", "Invoice lifecycle"),
+        metadata("flow", "payments/invoice/flows.md"),
+        metadata("state", "payments/invoice/states.md"),
+        metadata("data", "payments/invoice/data.md"),
       ],
     }],
     crossLinks: [],
@@ -563,15 +571,11 @@ test("standard topology creates root, domain, and localized category indexes", a
 
   assert.deepEqual(await materializeWikiIndexes(root, target), [
     "index.md",
-    "payments/concepts/index.md",
-    "payments/data/index.md",
-    "payments/flows/index.md",
     "payments/index.md",
-    "payments/states/index.md",
+    "payments/invoice/index.md",
   ]);
-  assert.match(await readFile(path.join(root, "wiki", "payments", "flows", "index.md"), "utf8"), /^# 流程\n\n1 个流程页面/m);
-  assert.match(await readFile(path.join(root, "wiki", "payments", "states", "index.md"), "utf8"), /^# 状态\n\n1 个状态页面/m);
-  assert.match(await readFile(path.join(root, "wiki", "payments", "data", "index.md"), "utf8"), /^# 数据结构\n\n1 个数据结构页面/m);
+  assert.match(await readFile(path.join(root, "wiki", "payments", "index.md"), "utf8"), /^# Payments\n\nPayment lifecycle/m);
+  assert.match(await readFile(path.join(root, "wiki", "payments", "invoice", "index.md"), "utf8"), /^# Invoice\n\nInvoice lifecycle/m);
   assert.deepEqual((await validateWiki(root, target)).issues, []);
 });
 

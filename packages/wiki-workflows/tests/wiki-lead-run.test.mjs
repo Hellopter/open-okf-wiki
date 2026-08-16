@@ -52,13 +52,42 @@ async function fixture(t, fault, finalizeFault) {
   return { root, candidate, run, executionFence };
 }
 
+async function settleReviews(run, tasks) {
+  const { contracts } = await run.queueDelegateBatch(tasks);
+  for (const contract of contracts) {
+    const receipt = {
+      id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: [], gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+      review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
+    };
+    await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
+  }
+  return contracts;
+}
+
 async function completeAndApprove(run) {
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
-  const { contracts: [contract] } = await run.queueDelegateBatch([{ id: "review-all", role: "review", instruction: "Review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md", "wiki/core/domain.md"] }]);
-  const receipt = { id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: [], gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: contract.contractDigest, review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] } };
+  return await settleReviews(run, [
+    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+  ]);
+}
+
+async function settleWrite(run, id, writePaths) {
+  const { contracts: [contract] } = await run.queueDelegateBatch([{
+    id, role: "write", instruction: `Write ${id}`, sourceScopeIds: [], contextRefs: [], writePaths,
+  }]);
   await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-  await run.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
+  await run.taskTransitions.taskSettled(contract.batchId, contract.id, {
+    attempt: 1,
+    receipt: {
+      id: contract.id, role: "write", status: "complete", summary: "wrote",
+      outputs: [], coverage: writePaths, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    },
+  });
   return contract;
 }
 
@@ -92,13 +121,14 @@ test("candidate rejects a symlink page and globally invalidates accepted review 
   await rm(path.join(candidate, "overview.md"));
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
-  const { contracts: [contract] } = await run.queueDelegateBatch([{ id: "review", role: "review", instruction: "Review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md", "wiki/core/domain.md"] }]);
-  const receipt = { id: "review", role: "review", status: "complete", summary: "pass", outputs: [], coverage: [], gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: contract.contractDigest, review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] } };
-  await run.taskTransitions.taskStarted(1, "review", { attempt: 1 });
-  await run.taskTransitions.taskSettled(1, "review", { attempt: 1, receipt });
-  await run.assertPublishable(contract.reviewPaths, []);
+  const reviewPaths = ["wiki/overview.md", "wiki/core/domain.md"];
+  await settleReviews(run, [
+    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+    { id: "review-domain", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+  ]);
+  await run.assertPublishable(reviewPaths, []);
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview", " changed"), actor: "lead" });
-  await assert.rejects(run.assertPublishable(contract.reviewPaths, []), /lacks passing independent review/);
+  await assert.rejects(run.assertPublishable(reviewPaths, []), /lacks passing independent review/);
 });
 
 test("independent WikiLeadRun instances serialize page commits without losing a global Candidate Revision", async (t) => {
@@ -217,6 +247,29 @@ test("pinned validation and finalization ignore workspace configuration changes 
   await completeAndApprove(run);
   const seal = await run.sealForPublication({ requiredProfileCoverage: [], publicationAt: "2026-01-01T00:00:00.000Z" });
   await verifyWikiPublicationSeal(seal);
+});
+
+test("saveSpec writes host-owned board.md for the run", async (t) => {
+  const { root } = await fixture(t);
+  const board = await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "board.md"), "utf8");
+  assert.match(board, /^# Wiki board/m);
+  assert.match(board, /run: run-1/);
+});
+
+test("observeCompaction projects compaction onto the board and disables direct writes", async (t) => {
+  const { root, run } = await fixture(t);
+  await run.observeCompaction();
+  const board = await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "board.md"), "utf8");
+  assert.match(board, /compactionObserved: yes/);
+  assert.match(board, /directWriteAllowed: no/);
+});
+
+test("three terminal write or review tasks on one cluster block wiki_finish", async (t) => {
+  const { run } = await fixture(t);
+  await settleWrite(run, "write-1", ["wiki/core/domain.md"]);
+  await settleWrite(run, "write-2", ["wiki/core/domain.md"]);
+  await settleWrite(run, "write-3", ["wiki/core/domain.md"]);
+  await assert.rejects(run.assertPublishable(["wiki/overview.md", "wiki/core/domain.md"], []), /blocked.*core/);
 });
 
 for (const point of ["afterFinalizeJournal", "afterValidation", "afterObsoleteRemoval", "afterStamp", "afterIndexes", "afterCleanup", "afterFinalize", "afterSeal"]) {

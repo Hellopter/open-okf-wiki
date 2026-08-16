@@ -25,7 +25,7 @@ function spec() {
     version: 1,
     overview: page("overview", "overview.md", "Overview"),
     domains: [{ id: "runtime", title: "Runtime", purpose: "Runtime behavior", pages: [
-      page("domain", "runtime/domain.md", "Runtime domain"), page("concept", "runtime/concepts/runtime.md", "Runtime"),
+      page("domain", "runtime/domain.md", "Runtime domain"), page("concept", "runtime/lifecycle/concept.md", "Runtime"),
     ] }],
     crossLinks: [], sharedTerms: [], omissions: [],
   };
@@ -44,19 +44,29 @@ async function completeCandidate(request) {
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await lead.replacePage({ path: "wiki/runtime/domain.md", content: content("Domain", "Runtime domain"), actor: "lead" });
-  await lead.replacePage({ path: "wiki/runtime/concepts/runtime.md", content: content("Concept", "Runtime"), actor: "lead" });
-  await acceptReview(lead, ["wiki/overview.md", "wiki/runtime/domain.md", "wiki/runtime/concepts/runtime.md"]);
+  await lead.replacePage({ path: "wiki/runtime/lifecycle/concept.md", content: content("Concept", "Runtime"), actor: "lead" });
+  await acceptReviews(lead, [
+    ["wiki/overview.md"],
+    ["wiki/runtime/domain.md"],
+    ["wiki/runtime/lifecycle/concept.md"],
+  ]);
 }
 
-async function acceptReview(lead, reviewPaths) {
-  const { batchId, contracts } = await lead.queueDelegateBatch([{ id: "review-all", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths }]);
-  const contract = contracts[0];
-  await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
-  await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
-    id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: reviewPaths, gaps: [], attempts: 1,
-    contractId: contract.contractId, contractDigest: contract.contractDigest,
-    review: { verdict: "pass", reviewedPaths: reviewPaths, findings: [], profileCoverage: [] },
-  } });
+async function acceptReviews(lead, groups) {
+  for (let offset = 0; offset < groups.length; offset += 2) {
+    const chunk = groups.slice(offset, offset + 2);
+    const { batchId, contracts } = await lead.queueDelegateBatch(chunk.map((reviewPaths, index) => ({
+      id: `review-${offset + index + 1}`, role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths,
+    })));
+    for (const contract of contracts) {
+      await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
+      await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+        id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
+        contractId: contract.contractId, contractDigest: contract.contractDigest,
+        review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
+      } });
+    }
+  }
 }
 
 function deferred() {

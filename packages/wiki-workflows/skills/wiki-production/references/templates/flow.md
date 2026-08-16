@@ -1,8 +1,8 @@
 # Flow Page Skeleton
 
-Use only for a Flow page. Consider these sections when verified source supports
-them. Ordering is optional guidance only; write a section only when source
-supports it.
+Use for `<domain>/<concept>/flows.md`. Consider these sections when verified
+source supports them. Ordering is optional guidance only; write a section only
+when source supports it.
 
 1. Trigger, actors, and scope
 2. Ordered happy path

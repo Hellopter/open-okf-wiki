@@ -67,17 +67,48 @@ test("widget accepts Chinese labels for the live card", () => {
       language: "zh",
       lead: lead({ activity: "delegating" }),
       currentBatch: { batch: 1, status: "running", completed: 0, total: 2, tasks: [
-        { id: "pages/auth.md", role: "write", status: "running" },
-        { id: "pages/old.md", role: "review", status: "complete" },
+        { id: "auth", role: "write", status: "running" },
+        { id: "old", role: "review", status: "complete" },
       ] },
     },
   }));
   assert.deepEqual(lines, [
     "◆ 主理  协调委派",
     "批次 1  0/2",
-    "  ◆ write  pages/auth.md",
-    "  ✓ review  pages/old.md",
+    "  ◆ write  auth",
+    "  ✓ review  old",
   ]);
+});
+
+test("widget shows a cluster label when task snapshots already carry paths or a cluster id", () => {
+  const lines = wikiWidgetLines(view({
+    progress: {
+      stage: "lead",
+      lead: lead(),
+      currentBatch: { batch: 1, status: "running", completed: 0, total: 3, tasks: [
+        { id: "write-runtime", role: "write", status: "running", writePaths: ["wiki/core/runtime/concept.md", "wiki/core/runtime/flows.md"] },
+        { id: "review-runtime", role: "review", status: "queued", reviewPaths: ["wiki/core/runtime/concept.md"] },
+        { id: "core/runtime", role: "research", status: "queued" },
+      ] },
+    },
+  }));
+  assert.deepEqual(lines, [
+    "◆ lead  synthesizing",
+    "batch 1  0/3",
+    "  ◆ write  core/runtime  write-runtime",
+    "  · review  core/runtime  review-runtime",
+    "  · research  core/runtime",
+  ]);
+  const withoutPaths = wikiWidgetLines(view({
+    progress: {
+      stage: "lead",
+      lead: lead(),
+      currentBatch: { batch: 1, status: "running", completed: 0, total: 1, tasks: [
+        { id: "write-auth", role: "write", status: "running" },
+      ] },
+    },
+  }));
+  assert.deepEqual(withoutPaths.slice(2), ["  ◆ write  write-auth"]);
 });
 
 test("live text paints success, failure, warning, and running marks", () => {

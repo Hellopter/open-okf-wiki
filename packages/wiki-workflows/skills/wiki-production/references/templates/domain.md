@@ -1,6 +1,6 @@
 # Domain Page Skeleton
 
-Use only for `<domain-id>/domain.md`. Aggregate the domain rather than repeating
+Use only for `<domain>/domain.md`. Aggregate the domain rather than repeating
 its child pages. Consider these sections when verified source supports them:
 
 1. Domain purpose, vocabulary, and ownership boundary

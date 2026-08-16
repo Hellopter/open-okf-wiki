@@ -9,13 +9,24 @@ const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export const PRODUCTION_SKILL_REQUIRED_FILES = [
   "SKILL.md",
+  "briefs/researcher.md",
+  "briefs/writer.md",
+  "briefs/reviewer.md",
   "references/common.md",
+  "references/topology.md",
   "references/research.md",
   "references/write.md",
   "references/review.md",
-  "roles/researcher/SKILL.md",
-  "roles/writer/SKILL.md",
-  "roles/reviewer/SKILL.md",
+  "references/templates/overview.md",
+  "references/templates/architecture.md",
+  "references/templates/domain.md",
+  "references/templates/concept.md",
+  "references/templates/models.md",
+  "references/templates/flow.md",
+  "references/templates/sequences.md",
+  "references/templates/state.md",
+  "references/templates/data.md",
+  "references/templates/module.md",
 ] as const;
 
 /** Packaged production skill; resolved from dist/ to ../skills/wiki-production. */

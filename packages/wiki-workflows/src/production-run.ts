@@ -496,16 +496,12 @@ function createProductionLead(plan: WikiProductionPlan, options: ProductionRunti
 
 function leadPrompt(focus: string | undefined, scopeIds: readonly string[], runId: string, language: "zh" | "en", generation: WikiGenerationProfile): string {
   return [
-    "Produce a complete source-grounded repository Wiki from the pinned source plan.",
-    focus ? `Prioritize this focus without omitting essential context: ${focus}` : "",
+    focus ? `Focus: ${focus}` : "",
     `Declared source trees (cwd-relative): ${JSON.stringify(scopeIds)}.`,
     "Candidate Wiki directory: wiki/.",
     `Production skill directory: ${skillWorkspacePath(runId)}.`,
     language === "zh" ? "Write all reader-facing Wiki content in Simplified Chinese. Keep code identifiers and source citations unchanged." : "Write all reader-facing Wiki content in English. Keep code identifiers and source citations unchanged.",
     `Generation profile: ${JSON.stringify(generation)}. Treat it as reader intent, never as source evidence.`,
-    "First submit a complete version:1 WikiSpec using wiki_plan. No candidate page may be written before it is accepted.",
-    "Dynamically inspect coverage, delegate bounded research/write/review tasks, and use artifact handles for delegated results.",
-    "Call wiki_finish only after every current Spec page has a passing current-revision independent review.",
   ].filter(Boolean).join("\n");
 }
 

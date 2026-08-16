@@ -94,6 +94,17 @@ function sessionFactory(prompt) {
   };
 }
 
+function assignedReviewPaths(prompt, fallback) {
+  const match = String(prompt ?? "").match(/Exact required review paths: (\[[^\n]+])/);
+  if (!match) return fallback;
+  return JSON.parse(match[1]);
+}
+
+const clusterReviewTasks = [
+  { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+  { id: "review-core", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+];
+
 async function call(tools, name, params) {
   const tool = tools.find((value) => value.name === name);
   assert.ok(tool, `missing ${name}`);
@@ -177,7 +188,7 @@ test("wiki_delegate_start forbids mixing write and review in one revision snapsh
 
 test("governed Lead direct writes are disabled above three pages and permanently after compaction", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
-  const large = spec([page("flow", "core/flows/runtime.md"), page("concept", "core/concepts/runtime.md")]);
+  const large = spec([page("flow", "core/runtime/flows.md"), page("concept", "core/runtime/concept.md")]);
   const largeRuntime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
     await call(tools, "wiki_plan", { spec: large });
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid\n" });
@@ -196,6 +207,9 @@ test("governed Lead direct writes are disabled above three pages and permanently
         listener({ type: "compaction_start", reason: "threshold" });
         listener({ type: "compaction_end", reason: "threshold", result: {}, aborted: false, willRetry: false });
         await new Promise((resolve) => setTimeout(resolve, 20));
+        const afterCompact = await call(options.customTools, "wiki_plan", { spec: spec() });
+        assert.equal(afterCompact.details.board, ".okf-wiki/runs/run-1/board.md");
+        assert.equal(afterCompact.details.note, "Read board.md before dispatching or finishing");
         await call(options.customTools, "write", { path: "wiki/overview.md", content: "invalid\n" });
       },
       async waitForIdle() {}, async abort() {}, dispose() {}, getLastAssistantText() { return ""; },
@@ -209,21 +223,22 @@ test("wiki_finish requires current pass review coverage and accepts a structured
   await seedGovernedCandidate(candidateWikiRoot);
   let sessions = 0;
   const planned = spec();
-  const reviewPaths = ["wiki/overview.md", "wiki/core/domain.md"];
   const runtime = createPiLeadRuntime({ createSession: async (options) => {
     sessions += 1;
-    return sessionFactory(async (tools) => {
+    return sessionFactory(async (tools, prompt) => {
       if (sessions === 1) {
-        await call(tools, "wiki_plan", { spec: planned });
+        const plannedResult = await call(tools, "wiki_plan", { spec: planned });
+        assert.equal(plannedResult.details.board, ".okf-wiki/runs/run-1/board.md");
+        assert.equal(plannedResult.details.note, undefined);
         await assert.rejects(call(tools, "wiki_finish", { summary: "too early" }), /lacks passing independent review/);
-        const started = await call(tools, "wiki_delegate_start", { tasks: [{ id: "review-all", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths }] });
+        const started = await call(tools, "wiki_delegate_start", { tasks: clusterReviewTasks });
         await assert.rejects(call(tools, "wiki_finish", { summary: "active" }), /terminal state/);
         await call(tools, "wiki_delegate_collect", { batchId: started.details.batchId, until: "all", timeoutSeconds: 60 });
         await call(tools, "wiki_finish", { summary: "reviewed" });
       } else {
         const index = await call(tools, "read", { path: "wiki/index.md" });
         assert.match(JSON.stringify(index), /Overview/);
-        await call(tools, "wiki_review_finish", { verdict: "pass", reviewedPaths: reviewPaths, findings: [], profileCoverage: [] });
+        await call(tools, "wiki_review_finish", { verdict: "pass", reviewedPaths: assignedReviewPaths(prompt, ["wiki/overview.md"]), findings: [], profileCoverage: [] });
       }
     })(options);
   } });
@@ -236,19 +251,20 @@ test("changes_requested and stale spec-revision reviews block wiki_finish", asyn
     await seedGovernedCandidate(candidateWikiRoot);
     let sessions = 0;
     const planned = spec();
-    const reviewPaths = ["wiki/overview.md", "wiki/core/domain.md"];
     const runtime = createPiLeadRuntime({ createSession: async (options) => {
       sessions += 1;
-      return sessionFactory(async (tools) => {
+      return sessionFactory(async (tools, prompt) => {
         if (sessions === 1) {
           await call(tools, "wiki_plan", { spec: planned });
-          await delegateAndCollect(tools, [{ id: "review-all", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths }]);
+          await delegateAndCollect(tools, clusterReviewTasks);
           if (stale) await call(tools, "wiki_plan", { spec: planned });
           await call(tools, "wiki_finish", { summary: "blocked" });
         } else {
+          const reviewedPaths = assignedReviewPaths(prompt, ["wiki/overview.md"]);
+          const requestChanges = !stale && reviewedPaths.includes("wiki/overview.md");
           await call(tools, "wiki_review_finish", {
-            verdict: stale ? "pass" : "changes_requested", reviewedPaths: reviewPaths,
-            findings: stale ? [] : [{ path: "wiki/overview.md", severity: "major", message: "Missing evidence", evidence: ["src/a.ts#L1"], suggestion: "Add evidence" }],
+            verdict: requestChanges ? "changes_requested" : "pass", reviewedPaths,
+            findings: requestChanges ? [{ path: "wiki/overview.md", severity: "major", message: "Missing evidence", evidence: ["src/a.ts#L1"], suggestion: "Add evidence" }] : [],
             profileCoverage: [],
           });
         }
@@ -261,7 +277,6 @@ test("changes_requested and stale spec-revision reviews block wiki_finish", asyn
 test("review receipt is rejected when a concurrent write changes its captured revision", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   await seedGovernedCandidate(candidateWikiRoot);
-  const reviewPaths = ["wiki/overview.md", "wiki/core/domain.md"];
   let sessions = 0;
   let signalStarted;
   let releaseReview;
@@ -269,10 +284,10 @@ test("review receipt is rejected when a concurrent write changes its captured re
   const released = new Promise((resolve) => { releaseReview = resolve; });
   const runtime = createPiLeadRuntime({ createSession: async (options) => {
     sessions += 1;
-    return sessionFactory(async (tools) => {
+    return sessionFactory(async (tools, prompt) => {
       if (sessions === 1) {
         await call(tools, "wiki_plan", { spec: spec() });
-        const startedBatch = await call(tools, "wiki_delegate_start", { tasks: [{ id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths }] });
+        const startedBatch = await call(tools, "wiki_delegate_start", { tasks: clusterReviewTasks });
         await started;
         await call(tools, "write", { path: "wiki/overview.md", content: validWikiPage("Overview", "Overview") });
         releaseReview();
@@ -282,7 +297,7 @@ test("review receipt is rejected when a concurrent write changes its captured re
       } else {
         signalStarted();
         await released;
-        await call(tools, "wiki_review_finish", { verdict: "pass", reviewedPaths: reviewPaths, findings: [], profileCoverage: [] });
+        await call(tools, "wiki_review_finish", { verdict: "pass", reviewedPaths: assignedReviewPaths(prompt, ["wiki/overview.md"]), findings: [], profileCoverage: [] });
       }
     })(options);
   } });
@@ -486,7 +501,7 @@ test("wiki tools use json_schema constrained sampling and reject write tasks wit
   assert.equal(reviewFinish.constrainedSampling.strict, "prefer");
 });
 
-test("leaf sessions expose one explicit Pi role skill and keep writer-only prompt details isolated", async (t) => {
+test("leaf sessions inject role briefs without /skill: bootstrap and keep writer-only prompt details isolated", async (t) => {
   const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   const artifacts = artifactStore();
   const prompts = {};
@@ -527,23 +542,26 @@ test("leaf sessions expose one explicit Pi role skill and keep writer-only promp
     await agent.run(task, leafContext(root, candidateWikiRoot));
   }
 
+  for (const prompt of Object.values(prompts)) {
+    assert.ok(!prompt.startsWith("/skill:"), prompt.slice(0, 80));
+    assert.doesNotMatch(prompt, /\/skill:/);
+  }
+  assert.match(prompts.writer, /# Writer|Write one cluster per task/);
   assert.match(prompts.writer, /type: Domain/);
   assert.match(prompts.writer, /description: One-sentence reader summary/);
   assert.match(prompts.writer, /Overview\/Domain\/Architecture\/Module\/Flow\/Concept\/State\/Data/);
   assert.match(prompts.writer, /Required sections: Behavior, Evidence/);
-  assert.match(prompts.writer, /references\/templates\/<pageType>\.md/);
-  assert.match(prompts.writer, /^\/skill:wiki-production-writer /);
-  assert.match(prompts.researcher, /^\/skill:wiki-production-researcher /);
+  assert.match(prompts.writer, /read only `references\/templates\/<pageType>\.md`/);
+  assert.match(prompts.researcher, /# Researcher|Cover one Source/);
   assert.match(prompts.researcher, /Readable source trees \(cwd-relative\): source/);
   assert.doesNotMatch(prompts.researcher, /Write `brief\.md`/);
   assert.doesNotMatch(prompts.researcher, /type: Domain/);
-  assert.match(prompts.reviewer, /^\/skill:wiki-production-reviewer /);
+  assert.match(prompts.reviewer, /# Reviewer|Review one whole cluster/);
   assert.doesNotMatch(prompts.reviewer, /type: Domain/);
-  assert.deepEqual(loadedSkills, {
-    writer: ["wiki-production-writer"],
-    researcher: ["wiki-production-researcher"],
-    reviewer: ["wiki-production-reviewer"],
-  });
+  for (const names of Object.values(loadedSkills)) {
+    assert.ok(names.every((name) => name === "wiki-production"), JSON.stringify(names));
+    assert.ok(!names.some((name) => name.startsWith("wiki-production-")));
+  }
 });
 
 test("Pi Lead creates a persistent session, reopens its exact file, and exposes only the production skill", async (t) => {
@@ -577,7 +595,9 @@ test("Pi Lead creates a persistent session, reopens its exact file, and exposes 
   await assert.rejects(resumedRuntime.run(resumed), /without wiki_finish/);
   assert.equal(managers[1].getSessionFile(), sessionFile);
   assert.deepEqual(skills, [["wiki-production"], ["wiki-production"]]);
-  assert.ok(prompts.every((prompt) => prompt.startsWith("/skill:wiki-production ")));
+  assert.ok(prompts.every((prompt) => !prompt.startsWith("/skill:")));
+  assert.ok(prompts.every((prompt) => prompt.includes("board.md")));
+  assert.ok(prompts.every((prompt) => prompt.includes("topology.md")));
   assert.equal(sessionOptions[0].model, initialModel);
   assert.equal(sessionOptions[0].thinkingLevel, "high");
   assert.equal(Object.hasOwn(sessionOptions[1], "model"), false);
@@ -612,7 +632,8 @@ test("Pi leaf reopens its exact persisted session without overriding the saved m
   assert.equal(receivedOptions.sessionManager.getSessionFile(), sessionFile);
   assert.equal(Object.hasOwn(receivedOptions, "model"), false);
   assert.equal(Object.hasOwn(receivedOptions, "thinkingLevel"), false);
-  assert.match(prompt, /^\/skill:wiki-production-writer /);
+  assert.ok(!prompt.startsWith("/skill:"));
+  assert.match(prompt, /# Writer|Write one cluster|write resumed-leaf/);
   assert.ok(telemetry.every((value) => value.attempt === 3));
   assert.ok(telemetry.some((value) => value.sessionFile === sessionFile));
 });
@@ -781,7 +802,6 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
   const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   await seedGovernedCandidate(candidateWikiRoot);
   const runSessionDirectory = path.join(root, ".okf-wiki", "runs", "run-1", "sessions");
-  const reviewPaths = ["wiki/overview.md", "wiki/core/domain.md"];
   const model = { provider: "test", id: "leaf-model" };
   let leadRuns = 0;
   let researchRuns = 0;
@@ -807,9 +827,11 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
         assert.equal(research.details.receipts[0].status, "complete");
         assert.equal(research.details.receipts[0].attempts, 1);
         const contextRef = research.details.receipts[0].outputs[0].nodeId;
-        const review = await call(options.customTools, "wiki_delegate_start", { tasks: [{
-          id: "review", role: "review", instruction: "Review all pages", sourceScopeIds: [], contextRefs: [contextRef], reviewPaths,
-        }] });
+        const review = await call(options.customTools, "wiki_delegate_start", { tasks: clusterReviewTasks.map((task, index) => ({
+          ...task,
+          contextRefs: [contextRef],
+          id: index === 0 ? "review-root" : "review-core",
+        })) });
         await call(options.customTools, "wiki_delegate_collect", { batchId: review.details.batchId, until: "all", timeoutSeconds: 60 });
         await call(options.customTools, "wiki_finish", { summary: "resumed and reviewed" });
       };
@@ -825,15 +847,15 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
         });
       }
     } else {
-      prompt = async () => await call(options.customTools, "wiki_review_finish", {
-        verdict: "pass", reviewedPaths: reviewPaths, findings: [], profileCoverage: [],
+      prompt = async (value) => await call(options.customTools, "wiki_review_finish", {
+        verdict: "pass", reviewedPaths: assignedReviewPaths(value, ["wiki/overview.md"]), findings: [], profileCoverage: [],
       });
     }
     return { session: {
       sessionFile,
       state: {},
       subscribe() { return () => {}; },
-      async prompt() { await prompt(); },
+      async prompt(value) { await prompt(value); },
       async waitForIdle() {}, async abort() {}, dispose() {},
       getLastAssistantText() { return "# completed handoff"; },
     } };

@@ -27,15 +27,18 @@ async function writeComplete(request) {
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: markdown("Overview", "Overview"), actor: "lead" });
   await lead.replacePage({ path: "wiki/runtime/domain.md", content: markdown("Domain", "Runtime"), actor: "lead" });
-  const reviewPaths = ["wiki/overview.md", "wiki/runtime/domain.md"];
-  const { batchId, contracts } = await lead.queueDelegateBatch([{ id: "review-all", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths }]);
-  const contract = contracts[0];
-  await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
-  await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
-    id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: reviewPaths, gaps: [], attempts: 1,
-    contractId: contract.contractId, contractDigest: contract.contractDigest,
-    review: { verdict: "pass", reviewedPaths: reviewPaths, findings: [], profileCoverage: [] },
-  } });
+  const { batchId, contracts } = await lead.queueDelegateBatch([
+    { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+    { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/runtime/domain.md"] },
+  ]);
+  for (const contract of contracts) {
+    await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
+    await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+      review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
+    } });
+  }
 }
 
 test("fresh production candidate is completely empty and never reads prior Wiki content", async (t) => {
@@ -64,7 +67,10 @@ test("invalid full candidate fails deterministic validation and leaves published
     await lead.saveSpec(spec());
     await mkdir(path.join(request.candidateWikiRoot, "runtime"), { recursive: true });
     await writeFile(path.join(request.candidateWikiRoot, "overview.md"), "# invalid\n");
-    await lead.queueDelegateBatch([{ id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md", "wiki/runtime/domain.md"] }]);
+    await lead.queueDelegateBatch([
+      { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+      { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/runtime/domain.md"] },
+    ]);
     return { kind: "complete", summary: "invalid" };
   } }) });
   await assert.rejects((await producer.start({ cwd: root })).result(), /valid target Wiki|missing/i);

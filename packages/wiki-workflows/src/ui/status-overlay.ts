@@ -7,6 +7,7 @@ import {
   projectWikiAgentLines,
   runStatusSemantics,
   stageSemantics,
+  wikiTaskClusterLabel,
   type WikiStatusSemantics,
   type WikiTextLine,
   type WikiTextRole,
@@ -253,7 +254,7 @@ function navigationRows(view: WikiRunView, state?: Pick<WikiOverlayState, "openB
       for (const task of batch.tasks) {
         const taskPresentation = agentStatusSemantics(task.status);
         rows.push({
-          spans: [{ text: "  ", role: "primary" }, ...statusLabel(taskPresentation, ` ${task.role}  ${task.id}`)],
+          spans: [{ text: "  ", role: "primary" }, ...statusLabel(taskPresentation, ` ${task.role}  ${taskIdentity(task)}`)],
           target: { kind: "agent", target: { kind: "task", batch: batch.batch, taskId: task.id } },
         });
       }
@@ -264,6 +265,11 @@ function navigationRows(view: WikiRunView, state?: Pick<WikiOverlayState, "openB
 
 function statusLabel(presentation: WikiStatusSemantics, label: string): WikiTextSpan[] {
   return [{ text: presentation.marker, role: presentation.tone }, { text: label, role: "primary" }];
+}
+
+function taskIdentity(task: { id: string; writePaths?: readonly string[]; reviewPaths?: readonly string[] }): string {
+  const cluster = wikiTaskClusterLabel(task);
+  return cluster && cluster !== task.id ? `${cluster}  ${task.id}` : task.id;
 }
 
 function renderBody(state: WikiOverlayState, view: WikiRunView, selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, width: number, bodyRows: number, theme: unknown, now: number, warning?: string, busy?: string): string[] {
@@ -345,7 +351,7 @@ function batchInspectorLines(view: WikiRunView, batchId: number, theme: unknown)
   for (const task of batch.tasks) {
     const taskPresentation = agentStatusSemantics(task.status);
     const summary = task.summary ? `  ${task.summary}` : "";
-    lines.push(`${paint(theme, textRoleColor(taskPresentation.tone), taskPresentation.marker)} ${task.role}  ${task.id}${summary}`);
+    lines.push(`${paint(theme, textRoleColor(taskPresentation.tone), taskPresentation.marker)} ${task.role}  ${taskIdentity(task)}${summary}`);
   }
   lines.push(paint(theme, "dim", language === "zh" ? "Enter 展开或收起任务  再选中任务查看输出" : "Enter expands tasks  then open a task for output"));
   return lines;

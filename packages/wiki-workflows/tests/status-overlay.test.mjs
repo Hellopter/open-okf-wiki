@@ -655,6 +655,32 @@ test("completed batches stay collapsed until expanded and then inspect their tas
   }
 });
 
+test("navigation and batch inspector show a cluster label when paths are already on the snapshot", async () => {
+  const clustered = {
+    ...view,
+    progress: {
+      ...view.progress,
+      currentBatch: {
+        batch: 2, status: "running", completed: 0, total: 2,
+        tasks: [
+          { id: "write-runtime", role: "write", status: "running", writePaths: ["wiki/core/runtime/concept.md"] },
+          { id: "review-runtime", role: "review", status: "queued", reviewPaths: ["wiki/core/runtime/flows.md"] },
+        ],
+      },
+    },
+  };
+  const { component } = await componentFor(handle({ async view() { return clustered; } }));
+  await new Promise((resolve) => setImmediate(resolve));
+  const nav = plain(component.render(80).join("\n"));
+  assert.match(nav, /write  core\/runtime  write-runtime/);
+  assert.match(nav, /review  core\/runtime  review-runtime/);
+  component.handleInput("j");
+  await new Promise((resolve) => setImmediate(resolve));
+  const inspector = plain(component.render(120).join("\n"));
+  assert.match(inspector, /write  core\/runtime  write-runtime/);
+  component.dispose();
+});
+
 test("missing custom UI returns without reading the handle", async () => {
   await openWikiStatusOverlay({ ui: {}, handle: handle({ async view() { throw new Error("must not run"); } }) });
 });

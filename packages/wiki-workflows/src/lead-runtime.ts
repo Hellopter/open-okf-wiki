@@ -32,11 +32,12 @@ import {
   parseWikiSpec,
   wikiPlanParameters,
   wikiSpecPagePaths,
-  wikiSpecPages,
   type WikiSpec,
 } from "./wiki-spec.js";
+import { wikiLeadMayWrite } from "./wiki-board.js";
 import { derivedIndexPaths } from "./wiki-validate.js";
 import type { WikiReviewResult } from "./delegate-contracts.js";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { WikiAgentRole, WikiGenerationProfile } from "./workspace.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
@@ -233,17 +234,24 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         planTool(async (input) => {
           const spec = parseWikiSpec(input);
           specRecord = await leadRun.saveSpec(spec, specRecord?.revision ?? 0);
-          return { revision: specRecord.revision, pages: wikiSpecPagePaths(spec), directWriteAllowed: leadMayWrite(spec, leadRun.compactionObserved) };
+          return withBoard(request.runId, leadRun.compactionObserved, {
+            revision: specRecord.revision,
+            pages: wikiSpecPagePaths(spec),
+            directWriteAllowed: wikiLeadMayWrite(spec, leadRun.compactionObserved),
+          });
         }),
         delegateStartTool(async (delegated) => {
-          assertDelegationAllowed(delegated, specRecord?.spec);
           if (delegated.some((task) => task.role === "review")) writeLease.assertReviewAllowed();
           const queued = await leadRun.queueDelegateBatch(delegated);
-          return await tasks.start(queued.contracts, controller.signal);
+          return withBoard(request.runId, leadRun.compactionObserved, await tasks.start(queued.contracts, controller.signal));
         }),
         delegateCollectTool(async (batchId, collectOptions) => {
           try {
-            return await leadRun.presentSnapshot(await tasks.collect(batchId, collectOptions, controller.signal));
+            return withBoard(
+              request.runId,
+              leadRun.compactionObserved,
+              await leadRun.presentSnapshot(await tasks.collect(batchId, collectOptions, controller.signal)),
+            );
           } catch (error) {
             if (error instanceof WikiTaskPauseError) {
               pause = error;
@@ -268,6 +276,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           }
           await leadRun.assertPublishable(wikiSpecPagePaths(specRecord.spec).map(addWikiPrefix), requiredReviewCoverage);
           finishSummary = boundedDelegateSummary(summary);
+          return withBoard(request.runId, leadRun.compactionObserved, { accepted: true });
         }),
       ]);
       await request.record({ kind: "progress", message: "Wiki Lead is deciding adaptive research and writing tasks" });
@@ -282,12 +291,11 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             const resumeFile = retryIndex === 0
               ? request.leadSessionFile ?? options.leadSessionFile ?? options.sessionFile
               : undefined;
-            await runPiSession(policy.workspaceRoot, leadTools, request.prompt, controller.signal, {
+            await runPiSession(policy.workspaceRoot, leadTools, leadSessionPrompt(request.prompt, request.runId), controller.signal, {
               ...sessionOptions,
               sessionDir: leadSessionDir,
               sessionFile: resumeFile,
               skillRoot: request.skillRoot,
-              skillName: "wiki-production",
               skillPath: request.skillRoot,
               budgets,
             }, async (telemetry) => {
@@ -399,16 +407,13 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         research = result;
       })] : []),
     ]);
-    const skillDirectory = this.options.skillRoot
-      ? path.relative(policy.workspaceRoot, this.options.skillRoot).split(path.sep).join("/")
-      : undefined;
-    const roleSkillName = `wiki-production-${role}`;
-    const roleSkillPath = this.options.skillRoot ? path.join(this.options.skillRoot, "roles", role) : undefined;
+    const brief = await readRoleBrief(this.options.skillRoot, role);
     const taskSessionDir = this.options.sessionDir
       ? path.join(this.options.sessionDir, "tasks", String(context.batch), task.id, String(context.attempt))
       : undefined;
     const roleModel = this.roleModels?.[task.role] ?? { model: this.options.model, thinkingLevel: this.options.thinkingLevel };
     const sessionResult = await runPiSession(policy.workspaceRoot, tools, [
+        brief ? `${brief}\n\n` : "",
         task.instruction,
         leafLanguageInstruction(role, this.options.language),
         `\nReadable source trees (cwd-relative): ${task.sourceScopeIds.join(", ") || "(none)"}`,
@@ -417,9 +422,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
         this.generation ? `\nGeneration profile: ${JSON.stringify(this.generation)}. Treat it as reader intent, never as source evidence.` : "",
         role === "writer" ? `\n${writerFrontmatterPrompt(this.generation)}` : "",
-        skillDirectory && role === "writer"
-          ? `\nFor each assigned pageType, read ${skillDirectory}/references/templates/<pageType>.md before writing.`
-          : "",
+        role === "writer" ? "\nRead only `references/templates/<pageType>.md` for the page being written." : "",
         artifactHandoffs.length
           ? `\nAccepted context artifacts (read only the ranges needed):\n${artifactHandoffs.map((value) => `- ${value.id}: ${value.path} (${value.sizeBytes} bytes, sha256 ${value.sha256})`).join("\n")}`
           : "",
@@ -430,8 +433,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         thinkingLevel: roleModel.thinkingLevel,
         sessionDir: taskSessionDir,
         sessionFile: context.sessionFile,
-        skillName: roleSkillPath ? roleSkillName : undefined,
-        skillPath: roleSkillPath,
+        skillPath: this.options.skillRoot,
       }, context.onTelemetry, {
         target: { kind: "task", batch: context.batch, taskId: task.id },
         attempt: context.attempt,
@@ -513,7 +515,7 @@ function planTool(save: (spec: unknown) => Promise<unknown>): ToolDefinition<any
       "wiki_plan overview is a page object, never a string.",
       "wiki_plan page fields are only pageType/path/title/purpose/readerQuestions/requiredFacets/findingIds.",
       "Do not put frontmatter description/type/sources on the wiki_plan Spec.",
-      "wiki_plan paths are overview.md, <domain>/domain.md, and child dirs concepts|flows|states|data|modules.",
+      "wiki_plan paths are overview.md, <domain>/domain.md, and <domain>/<concept>/{concept,flows,sequences,states,data,models,modules}.md.",
       "wiki_plan crossLinks/sharedTerms/omissions are arrays; use [] if empty.",
     ],
     parameters: wikiPlanParameters,
@@ -524,7 +526,7 @@ function planTool(save: (spec: unknown) => Promise<unknown>): ToolDefinition<any
   } as ToolDefinition<any, any, any>;
 }
 
-function delegateStartTool(start: (tasks: WikiDelegateTask[]) => Promise<{ batchId: number }>): ToolDefinition<any, any, any> {
+function delegateStartTool(start: (tasks: WikiDelegateTask[]) => Promise<unknown>): ToolDefinition<any, any, any> {
   return {
     name: "wiki_delegate_start",
     label: "Start Wiki tasks",
@@ -546,7 +548,7 @@ function delegateStartTool(start: (tasks: WikiDelegateTask[]) => Promise<{ batch
 }
 
 function delegateCollectTool(
-  collect: (batchId: number, options: { until: "any" | "all"; timeoutSeconds: number }) => Promise<WikiDelegateBatchSnapshot>,
+  collect: (batchId: number, options: { until: "any" | "all"; timeoutSeconds: number }) => Promise<unknown>,
 ): ToolDefinition<any, any, any> {
   return {
     name: "wiki_delegate_collect",
@@ -588,7 +590,7 @@ function delegateCancelTool(
   } as ToolDefinition<any, any, any>;
 }
 
-function finishTool(finish: (summary: string) => void | Promise<void>): ToolDefinition<any, any, any> {
+function finishTool(finish: (summary: string) => unknown | Promise<unknown>): ToolDefinition<any, any, any> {
   return {
     name: "wiki_finish",
     label: "Finish Wiki workflow",
@@ -607,8 +609,7 @@ function finishTool(finish: (summary: string) => void | Promise<void>): ToolDefi
     }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
-      await finish((params as { summary: string }).summary);
-      return toolResult({ accepted: true });
+      return toolResult(await finish((params as { summary: string }).summary));
     },
   } as ToolDefinition<any, any, any>;
 }
@@ -709,6 +710,32 @@ function toolResult(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
 }
 
+function runBoardPath(runId: string): string {
+  return `.okf-wiki/runs/${runId}/board.md`;
+}
+
+function leadSessionPrompt(prompt: string, runId: string): string {
+  if (prompt.includes("board.md")) return prompt;
+  return `${prompt}\nBoard: ${runBoardPath(runId)}. Read board.md before dispatch or wiki_finish. Read topology.md before wiki_plan.`;
+}
+
+function withBoard<T extends object>(runId: string, compactionObserved: boolean, value: T): T & { board: string; note?: string } {
+  return {
+    ...value,
+    board: runBoardPath(runId),
+    ...(compactionObserved ? { note: "Read board.md before dispatching or finishing" } : {}),
+  };
+}
+
+async function readRoleBrief(skillRoot: string | undefined, role: "researcher" | "writer" | "reviewer"): Promise<string> {
+  if (!skillRoot) return "";
+  try {
+    return (await readFile(path.join(skillRoot, "briefs", `${role}.md`), "utf8")).trim();
+  } catch {
+    throw new Error(`Wiki ${role} brief is unavailable: briefs/${role}.md`);
+  }
+}
+
 function firstLine(value: string): string {
   return value.split(/\r?\n/, 1)[0].replace(/^#+\s*/, "").trim() || "Delegated task completed";
 }
@@ -732,25 +759,6 @@ function stripWikiPrefix(value: string): string {
 }
 
 function addWikiPrefix(value: string): string { return `wiki/${value}`; }
-
-function leadMayWrite(spec: WikiSpec, compacted: boolean): boolean {
-  return !compacted && spec.domains.length === 1 && wikiSpecPages(spec).length <= 3;
-}
-
-function assertDelegationAllowed(tasks: readonly WikiDelegateTask[], spec: WikiSpec | undefined): void {
-  if (tasks.some((task) => task.role === "write") && tasks.some((task) => task.role === "review")) {
-    throw new Error("A wiki_delegate_start batch may not mix write and review tasks");
-  }
-  for (const task of tasks) {
-    if (task.role === "research") continue;
-    if (!spec) throw new Error(`Submit an accepted WikiSpec before delegating ${task.role} tasks`);
-    const declared = new Set(wikiSpecPagePaths(spec).map(addWikiPrefix));
-    const paths = task.role === "write" ? task.writePaths : task.reviewPaths;
-    for (const page of paths ?? []) {
-      if (!declared.has(page)) throw new Error(`Delegated ${task.role} path is not declared by the current WikiSpec: ${page}`);
-    }
-  }
-}
 
 function taskActivity(activity: NonNullable<WikiAgentTelemetry["activity"]>): NonNullable<WikiTaskSnapshot["activity"]> {
   if (activity === "compacting") return "compacting";
@@ -815,12 +823,6 @@ async function runPiSession(
     additionalSkillPaths: options.skillPath ? [options.skillPath] : [],
   });
   await loader.reload();
-  if (options.skillName) {
-    const skills = loader.getSkills().skills;
-    if (skills.length !== 1 || skills[0].name !== options.skillName) {
-      throw new Error(`Required Wiki production skill is unavailable: ${options.skillName}`);
-    }
-  }
   const sessionFile = options.sessionFile;
   const sessionManager = sessionFile
     ? SessionManager.open(sessionFile, options.sessionDir, cwd)
@@ -894,8 +896,7 @@ async function runPiSession(
   try {
     sessionObserver?.start();
     try {
-      const expandedPrompt = options.skillName ? `/skill:${options.skillName} ${prompt}` : prompt;
-      await runSessionWithDeadline(session, expandedPrompt, signal, options.sessionTimeoutMs);
+      await runSessionWithDeadline(session, prompt, signal, options.sessionTimeoutMs);
     } catch (error) {
       const failure = budgetError ?? (signal.aborted ? sessionAbortReason(signal) : error);
       await sessionObserver?.failed(failure);

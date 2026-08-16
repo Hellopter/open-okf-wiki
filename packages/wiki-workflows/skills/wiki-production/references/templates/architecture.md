@@ -1,6 +1,6 @@
 # Architecture Page Skeleton
 
-Use only for an Architecture page. Consider these sections when verified source
+Use only for `architecture.md`. Consider these sections when verified source
 supports them. Ordering is optional guidance only; write a section only when
 source supports it.
 

@@ -47,3 +47,11 @@ _Avoid_: Agent transcript, handoff prose
 **Publication Seal**:
 An opaque Run-bound proof that the Candidate's exact final tree, WikiSpec, and independent review coverage passed governance and remain unchanged at installation.
 _Avoid_: Publish flag, mutable approval metadata
+
+**Cluster**:
+A dispatch unit of related Candidate pages: the root overview and optional architecture, one domain page, or the evidence-backed pages under one concept directory.
+_Avoid_: Type bucket, category folder
+
+**Board**:
+The host-owned, read-only Markdown projection of remaining Run work at `.okf-wiki/runs/<id>/board.md`.
+_Avoid_: Lead notes, mutable plan

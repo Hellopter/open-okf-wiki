@@ -9,6 +9,7 @@ import type {
   WikiRunView,
 } from "./producer-types.js";
 import { formatLocalDateTime } from "./time-format.js";
+import { wikiSpecClusterId } from "./wiki-spec.js";
 
 export type WikiTone = "muted" | "accent" | "success" | "warning" | "error";
 export type WikiMarker = "·" | "◆" | "✓" | "◐" | "✗" | "○" | "!" | "⏸";
@@ -171,6 +172,37 @@ export function projectWikiAgentLines(
   if (context) lines.push(fieldLine("context", context, "primary"));
   if (agent.summary) lines.push([span("summary", "label")], ...textLines(`  ${agent.summary}`, "primary"));
   return lines;
+}
+
+/** Short cluster id from snapshot paths or a path-like task id. Absent paths yield no label. */
+export function wikiTaskClusterLabel(task: {
+  id?: string;
+  writePaths?: readonly string[];
+  reviewPaths?: readonly string[];
+}): string | undefined {
+  const fromPaths = clusterIdFromAssignedPaths(task.writePaths ?? task.reviewPaths);
+  if (fromPaths) return fromPaths;
+  return clusterIdFromTaskId(task.id);
+}
+
+function clusterIdFromAssignedPaths(paths: readonly string[] | undefined): string | undefined {
+  if (!paths?.length) return undefined;
+  const ids = new Set<string>();
+  for (const pagePath of paths) {
+    const clusterId = wikiSpecClusterId(pagePath);
+    if (!clusterId) return undefined;
+    ids.add(clusterId);
+  }
+  return ids.size === 1 ? [...ids][0] : undefined;
+}
+
+function clusterIdFromTaskId(id: string | undefined): string | undefined {
+  if (!id) return undefined;
+  if (id.startsWith("wiki/") || id.includes(".md")) return wikiSpecClusterId(id);
+  if (!id.includes("/")) return undefined;
+  const segments = id.split("/");
+  if (segments.length !== 2 || segments.some((segment) => !segment || segment.includes("."))) return undefined;
+  return id;
 }
 
 export function formatWikiContext(usage: WikiContextStats | undefined): string | undefined {

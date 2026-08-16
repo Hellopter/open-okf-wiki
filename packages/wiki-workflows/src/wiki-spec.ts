@@ -77,13 +77,18 @@ export type WikiSpec = Omit<Type.Static<typeof wikiSpecSchema>, "architecture"> 
 
 const wikiSpecValidator = Compile(wikiSpecSchema);
 
-const CHILD_DIRECTORIES: Readonly<Record<string, string>> = {
-  concept: "concepts",
-  flow: "flows",
-  state: "states",
-  data: "data",
-  module: "modules",
+const TYPE_BUCKETS = new Set(["concepts", "flows", "states", "data", "modules"]);
+const CLUSTER_FILES: Readonly<Record<string, WikiSpecPage["pageType"]>> = {
+  "concept.md": "concept",
+  "models.md": "data",
+  "flows.md": "flow",
+  "sequences.md": "flow",
+  "states.md": "state",
+  "data.md": "data",
+  "modules.md": "module",
 };
+
+export type WikiClusterId = string;
 
 export function wikiSpecPages(spec: WikiSpec): WikiSpecPage[] {
   return [spec.overview, ...(spec.architecture ? [spec.architecture] : []), ...spec.domains.flatMap((domain) => domain.pages)];
@@ -91,6 +96,38 @@ export function wikiSpecPages(spec: WikiSpec): WikiSpecPage[] {
 
 export function wikiSpecPagePaths(spec: WikiSpec): string[] {
   return wikiSpecPages(spec).map((page) => page.path);
+}
+
+export function wikiSpecClusterId(pagePath: string): WikiClusterId | undefined {
+  const relative = wikiSpecRelativePath(pagePath);
+  if (relative === "overview.md" || relative === "architecture.md") return "_root";
+  const segments = relative.split("/");
+  if (segments.length < 2) return undefined;
+  return segments.length === 2 ? segments[0] : `${segments[0]}/${segments[1]}`;
+}
+
+export function wikiSpecClusterPaths(spec: WikiSpec, clusterId: WikiClusterId): string[] {
+  return wikiSpecPagePaths(spec).filter((pagePath) => wikiSpecClusterId(pagePath) === clusterId);
+}
+
+export function wikiSpecClusters(spec: WikiSpec): WikiClusterId[] {
+  const clusters = new Set<WikiClusterId>();
+  for (const pagePath of wikiSpecPagePaths(spec)) {
+    const clusterId = wikiSpecClusterId(pagePath);
+    if (clusterId) clusters.add(clusterId);
+  }
+  return [...clusters].sort();
+}
+
+export function sameWikiCluster(paths: readonly string[]): boolean {
+  if (!paths.length) return false;
+  const clusterId = wikiSpecClusterId(paths[0]);
+  if (!clusterId) return false;
+  return paths.every((pagePath) => wikiSpecClusterId(pagePath) === clusterId);
+}
+
+export function wikiSpecRelativePath(pagePath: string): string {
+  return pagePath.startsWith("wiki/") ? pagePath.slice("wiki/".length) : pagePath;
 }
 
 /** Parse an untrusted persisted or Agent-produced WikiSpec and enforce its complete topology. */
@@ -148,15 +185,28 @@ function checkDomain(value: WikiDomain, index: number): WikiDomain {
       if (page.path !== expectedDomainPage) throw new Error(`${label} domain page must be ${expectedDomainPage}`);
       continue;
     }
-    const directory = CHILD_DIRECTORIES[page.pageType];
-    if (!directory) throw new Error(`${label} cannot contain ${page.pageType} pages`);
-    const prefix = `${value.id}/${directory}/`;
-    const basename = page.path.slice(prefix.length);
-    if (!page.path.startsWith(prefix) || !PAGE_SLUG.test(basename)) {
-      throw new Error(`${label} ${page.pageType} page must match ${prefix}<slug>.md`);
+    if (page.pageType === "overview" || page.pageType === "architecture") {
+      throw new Error(`${label} cannot contain ${page.pageType} pages`);
+    }
+    if (clusterPageType(value.id, page.path) !== page.pageType) {
+      throw new Error(`${label} ${page.pageType} page must match ${value.id}/<concept>/<kind>.md`);
     }
   }
   return value;
+}
+
+function clusterPageType(domainId: string, pagePath: string): WikiSpecPage["pageType"] | undefined {
+  const prefix = `${domainId}/`;
+  if (!pagePath.startsWith(prefix)) return undefined;
+  const rest = pagePath.slice(prefix.length);
+  const slash = rest.indexOf("/");
+  if (slash <= 0) return undefined;
+  const concept = rest.slice(0, slash);
+  const tail = rest.slice(slash + 1);
+  if (!PAGE_SLUG.test(`${concept}.md`) || TYPE_BUCKETS.has(concept)) return undefined;
+  if (CLUSTER_FILES[tail]) return CLUSTER_FILES[tail];
+  if (tail.startsWith("models/") && PAGE_SLUG.test(tail.slice("models/".length))) return "data";
+  return undefined;
 }
 
 function formatWikiSpecStructureError(errors: readonly TLocalizedValidationError[]): string {

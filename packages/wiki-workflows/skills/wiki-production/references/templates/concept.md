@@ -1,8 +1,8 @@
 # Concept Page Skeleton
 
-Use only for a Concept page. Consider these sections when verified source
-supports them. Ordering is optional guidance only; write a section only when
-source supports it.
+Use only for `<domain>/<concept>/concept.md`. Consider these sections when
+verified source supports them. Ordering is optional guidance only; write a
+section only when source supports it.
 
 1. Definition and scope
 2. Why the concept exists

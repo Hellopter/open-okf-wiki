@@ -1,7 +1,7 @@
 # Overview Page Skeleton
 
-Use only for the Overview page. After reading all target content pages and
-source roots, consider these sections when evidence supports them. Ordering is
+Use only for `overview.md`. After reading all target content pages and source
+roots, consider these sections when evidence supports them. Ordering is
 optional guidance only; write a section only when source supports it.
 
 1. Scope and reader orientation

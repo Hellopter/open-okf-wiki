@@ -14,16 +14,17 @@ import {
 test("packaged production skill contains required files and not the host skill", async () => {
   const root = packagedProductionSkillRoot();
   assert.match(root, /skills\/wiki-production$/);
+  assert.ok(PRODUCTION_SKILL_REQUIRED_FILES.includes("briefs/researcher.md"));
+  assert.ok(PRODUCTION_SKILL_REQUIRED_FILES.includes("briefs/writer.md"));
+  assert.ok(PRODUCTION_SKILL_REQUIRED_FILES.includes("briefs/reviewer.md"));
+  assert.ok(PRODUCTION_SKILL_REQUIRED_FILES.includes("references/topology.md"));
+  assert.ok(PRODUCTION_SKILL_REQUIRED_FILES.every((relative) => !relative.startsWith("roles/")));
   for (const relative of PRODUCTION_SKILL_REQUIRED_FILES) {
     await readFile(path.join(root, ...relative.split("/")), "utf8");
   }
   const production = await readFile(path.join(root, "SKILL.md"), "utf8");
   assert.match(production, /wiki_plan/);
   assert.doesNotMatch(production, /\/wiki init/);
-  for (const role of ["researcher", "writer", "reviewer"]) {
-    const roleSkill = await readFile(path.join(root, "roles", role, "SKILL.md"), "utf8");
-    assert.match(roleSkill, new RegExp(`name: wiki-production-${role}`));
-  }
 });
 
 test("materialize copies the production skill into the run directory", async (t) => {
@@ -48,7 +49,7 @@ test("materialize replaces a stale copy and fails when the source tree is incomp
   const broken = path.join(workspace, "broken-skill");
   await mkdir(broken);
   await writeFile(path.join(broken, "SKILL.md"), "# incomplete\n");
-  await assert.rejects(materializeProductionSkill(workspace, "run-3", broken), /missing references\/common.md/);
+  await assert.rejects(materializeProductionSkill(workspace, "run-3", broken), /missing briefs\/researcher.md/);
 });
 
 test("resume preserves the run skill snapshot and rejects a missing snapshot", async (t) => {
@@ -83,16 +84,17 @@ test("skill digest pins every file, dot entry, and empty directory and rejects s
   await assert.rejects(digestProductionSkillTree(skillRoot), /symbolic link/);
 });
 
-test("role skills point to the shared and assigned production references", async (t) => {
+test("briefs point to the shared and assigned production references", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
   const skillRoot = await materializeProductionSkill(workspace, "run-5");
-  const researcher = await readFile(path.join(skillRoot, "roles", "researcher", "SKILL.md"), "utf8");
-  const writer = await readFile(path.join(skillRoot, "roles", "writer", "SKILL.md"), "utf8");
-  const reviewer = await readFile(path.join(skillRoot, "roles", "reviewer", "SKILL.md"), "utf8");
+  const researcher = await readFile(path.join(skillRoot, "briefs", "researcher.md"), "utf8");
+  const writer = await readFile(path.join(skillRoot, "briefs", "writer.md"), "utf8");
+  const reviewer = await readFile(path.join(skillRoot, "briefs", "reviewer.md"), "utf8");
   assert.match(researcher, /references\/research\.md/);
   assert.match(researcher, /wiki_research_finish/);
   assert.match(writer, /references\/write\.md/);
+  assert.match(writer, /references\/templates\/<pageType>\.md/);
   assert.match(reviewer, /references\/review\.md/);
   assert.match(reviewer, /wiki_review_finish/);
 });

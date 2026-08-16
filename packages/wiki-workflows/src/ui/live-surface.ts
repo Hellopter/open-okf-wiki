@@ -6,7 +6,7 @@ import type {
   WikiRunView,
   WikiTaskSnapshot,
 } from "../producer-types.js";
-import { activitySemantics, agentStatusSemantics, projectWikiRunObservability } from "../observability.js";
+import { activitySemantics, agentStatusSemantics, projectWikiRunObservability, wikiTaskClusterLabel } from "../observability.js";
 import { formatLocalDateTime } from "../time-format.js";
 
 export function wikiFooterStatus(view: WikiRunView, now = Date.now()): string | undefined {
@@ -83,7 +83,9 @@ function taskLine(task: WikiTaskSnapshot, language: "zh" | "en"): string {
   const degraded = task.health === "degraded";
   const detail = task.status === "running" ? liveDetail(task.activeTool, undefined, language) : task.summary;
   const health = degraded ? language === "zh" ? "观测降级" : "observability degraded" : undefined;
-  return `  ${degraded ? "!" : agentStatusSemantics(task.status).marker} ${task.role}  ${task.id}${detail ? `  ${detail}` : ""}${health ? `  ${health}` : ""}`;
+  const cluster = wikiTaskClusterLabel(task);
+  const identity = cluster && cluster !== task.id ? `${cluster}  ${task.id}` : task.id;
+  return `  ${degraded ? "!" : agentStatusSemantics(task.status).marker} ${task.role}  ${identity}${detail ? `  ${detail}` : ""}${health ? `  ${health}` : ""}`;
 }
 
 function leadLabel(language: "zh" | "en"): string {

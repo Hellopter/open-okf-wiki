@@ -120,7 +120,7 @@ export async function renderWikiIndex(
     .map((candidate) => path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate))
     .filter((candidate) => candidate && (path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate)) === relativeDirectory)
     .sort();
-  const descriptor = directoryDescriptor(relativeDirectory, targetPages, spec, language);
+  const descriptor = directoryDescriptor(relativeDirectory, spec);
   const title = descriptor.title;
   const lines = indexPath === "index.md"
     ? ["---", 'okf_version: "0.2"', "---", "", `# ${escapeMarkdownText(title)}`, ""]
@@ -132,7 +132,7 @@ export async function renderWikiIndex(
       "",
       ...directDirectories.map((child) => {
         const name = path.posix.basename(child);
-        const childDescriptor = directoryDescriptor(child, targetPages, spec, language);
+        const childDescriptor = directoryDescriptor(child, spec);
         return `- [${escapeMarkdownText(childDescriptor.title)}](./${name}/index.md): ${escapeMarkdownText(childDescriptor.description)}`;
       }),
       "",
@@ -159,36 +159,22 @@ export async function renderWikiIndex(
 
 function directoryDescriptor(
   relativeDirectory: string,
-  targetPages: readonly string[],
   spec: WikiSpec,
-  language: "zh" | "en",
 ): { description: string; title: string } {
   if (!relativeDirectory) return { title: "Wiki", description: "" };
   if (!relativeDirectory.includes("/")) {
     const domain = spec.domains.find((candidate) => candidate.id === relativeDirectory);
     if (domain) return { title: normalizeIndexText(domain.title), description: normalizeIndexText(domain.purpose) };
   }
-  const count = targetPages.filter((page) => page.startsWith(`${relativeDirectory}/`)).length;
-  const category = categoryDescriptor(path.posix.basename(relativeDirectory), language);
-  return {
-    title: category.title,
-    description: language === "zh"
-      ? `${count} 个${category.unit}页面`
-      : `${count} ${category.unit} ${count === 1 ? "page" : "pages"}`,
-  };
-}
-
-function categoryDescriptor(category: string, language: "zh" | "en"): { title: string; unit: string } {
-  const labels: Record<string, { en: string; zh: string }> = {
-    concepts: { en: "Concepts", zh: "概念" },
-    flows: { en: "Flows", zh: "流程" },
-    states: { en: "States", zh: "状态" },
-    data: { en: "Data Structures", zh: "数据结构" },
-    modules: { en: "Modules", zh: "模块" },
-  };
-  const label = labels[category];
-  const title = label?.[language] ?? category;
-  return { title, unit: language === "zh" ? title : title.toLocaleLowerCase("en-US") };
+  if (relativeDirectory.split("/").length === 2) {
+    const conceptPage = spec.domains
+      .flatMap((domain) => domain.pages)
+      .find((page) => page.pageType === "concept" && page.path === `${relativeDirectory}/concept.md`);
+    if (conceptPage) {
+      return { title: normalizeIndexText(conceptPage.title), description: normalizeIndexText(conceptPage.purpose) };
+    }
+  }
+  return { title: path.posix.basename(relativeDirectory), description: "" };
 }
 
 async function assertSafeDirectoryChain(wikiRoot: string, relative: string): Promise<void> {

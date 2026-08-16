@@ -7,6 +7,7 @@ import {
   projectWikiRunEvent,
   projectWikiRunObservability,
   runStatusSemantics,
+  wikiTaskClusterLabel,
 } from "../dist/observability.js";
 
 const now = Date.parse("2026-08-15T00:02:00.000Z");
@@ -75,6 +76,30 @@ test("run projection contains only stage, health, and liveness consumed by run s
   assert.equal("context" in projected, false);
   assert.equal("batch" in projected, false);
   assert.equal("activityLabel" in projected, false);
+});
+
+test("cluster labels come from assigned paths or a path-like task id", () => {
+  assert.equal(wikiTaskClusterLabel({
+    id: "write-runtime",
+    writePaths: ["wiki/core/runtime/concept.md", "wiki/core/runtime/flows.md"],
+  }), "core/runtime");
+  assert.equal(wikiTaskClusterLabel({
+    id: "review-core",
+    reviewPaths: ["wiki/core/domain.md"],
+  }), "core");
+  assert.equal(wikiTaskClusterLabel({ id: "core/runtime" }), "core/runtime");
+  assert.equal(wikiTaskClusterLabel({ id: "wiki/billing/invoice/models/line-item.md" }), "billing/invoice");
+  assert.equal(wikiTaskClusterLabel({ id: "write-auth" }), undefined);
+  assert.equal(wikiTaskClusterLabel({
+    id: "mixed",
+    writePaths: ["wiki/core/domain.md", "wiki/core/runtime/concept.md"],
+  }), undefined);
+  assert.equal(wikiTaskClusterLabel({
+    writePaths: ["wiki/overview.md", "wiki/architecture.md"],
+  }), "_root");
+  assert.equal(wikiTaskClusterLabel({
+    reviewPaths: ["overview.md"],
+  }), "_root");
 });
 
 test("degraded, silent-live, and terminal states are distinct", () => {

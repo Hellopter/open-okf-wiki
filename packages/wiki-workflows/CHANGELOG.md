@@ -9,6 +9,8 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Split the host `/wiki` skill from the production Lead skill. Each run copies
   the production skill into `.okf-wiki/runs/<id>/skill/`, injects the assigned
   role brief, and allows read-only access to templates.
+- Candidate pages live in concept clusters (`<domain>/<concept>/`); type-bucket
+  directories are rejected. Remaining work is projected to host-owned `board.md`.
 
 ### Breaking architecture change
 

@@ -20,7 +20,7 @@ import {
 import type { WikiPinnedSourcePlan, WikiTaskRuntimeState } from "./runtime-types.js";
 import type { WikiDelegateBatchSnapshot } from "./delegate-contracts.js";
 import { finalizeWiki, materializeValidatedWikiIndexes, type WikiFinalizeFaultPoint } from "./wiki-finalize.js";
-import { parseWikiSpec, wikiSpecPagePaths, wikiSpecPages, type WikiSpec } from "./wiki-spec.js";
+import { parseWikiSpec, wikiSpecPagePaths, type WikiSpec } from "./wiki-spec.js";
 import { canonicalizeWikiPageContent, formatIssue, resolvePinnedWikiRoots, validateWikiPageContent, type ResolvedWikiRoots } from "./wiki-validate.js";
 import { parseWikiReviewResult, type WikiReviewResult } from "./delegate-contracts.js";
 import {
@@ -29,6 +29,8 @@ import {
   type WikiPublicationSeal,
 } from "./wiki-publication-seal.js";
 import { sameStringSet, stableStringify } from "./util.js";
+import { projectWikiBoard, renderWikiBoard, wikiLeadMayWrite, type WikiBoardProjectionInput } from "./wiki-board.js";
+import { assertDispatchable } from "./wiki-dispatch.js";
 
 const STATE_VERSION = 2 as const;
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -187,7 +189,7 @@ export class WikiLeadRun {
       if (expectedRevision !== this.state.specRevision) throw new Error(`WikiSpec revision conflict: expected ${expectedRevision}, found ${this.state.specRevision}`);
       const spec = parseWikiSpec(specValue);
       const next = { ...this.state, spec, specRevision: this.state.specRevision + 1, candidateRevision: this.state.candidateRevision + 1, reviews: [] };
-      await writeText(this.stateFile, serializeState(next));
+      await this.writeState(next);
       this.state = next;
       await this.tryIndexes();
       return { revision: next.specRevision, spec: structuredClone(spec) };
@@ -209,7 +211,7 @@ export class WikiLeadRun {
       const spec = this.requireSpec();
       const relative = stripWikiPrefix(input.path);
       if (!wikiSpecPagePaths(spec).includes(relative)) throw new Error(`Wiki page is not declared by the current WikiSpec: ${input.path}`);
-      if (input.actor === "lead" && !leadMayWrite(spec, this.state.compactionObserved)) {
+      if (input.actor === "lead" && !wikiLeadMayWrite(spec, this.state.compactionObserved)) {
         throw new Error("Lead direct writing is disabled for this WikiSpec or after context compaction; delegate an exact-path writer");
       }
       const issues = await validateWikiPageContent(this.workspace, spec, relative, input.content, candidateDirectory(this.workspace, this.candidateWikiRoot), undefined, this.requiredSections, this.pinnedRoots);
@@ -228,7 +230,7 @@ export class WikiLeadRun {
       const transaction: CandidateTransaction = { version: 1, runId: this.runId, path: relative, staged, oldDigest, newDigest, nextState };
       await writeText(this.journalFile, `${JSON.stringify(transaction, null, 2)}\n`);
       await this.fault?.("afterJournal");
-      await writeText(this.stateFile, serializeState(nextState));
+      await this.writeState(nextState);
       this.state = nextState;
       await this.fault?.("afterState");
       await rename(staged, target);
@@ -247,15 +249,17 @@ export class WikiLeadRun {
   async queueDelegateBatch(values: readonly unknown[]): Promise<{ batchId: number; contracts: WikiDelegateContract[] }> {
     return await this.serial(async () => {
       await this.recover();
+      const parsed = values.map(parseWikiDelegateTask);
+      assertDispatchable({
+        tasks: parsed,
+        spec: this.state.spec,
+        pendingWritePaths: pendingWritePaths(this.state),
+        knownContextRefs: knownContextRefs(this.state),
+        delegatedTasks: delegatedTaskCount(this.state),
+        delegateBatches: this.state.delegates.batches.length,
+      });
       const batchId = this.state.delegates.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1);
       if (!Number.isSafeInteger(batchId)) throw new Error("Delegate batch identity is exhausted");
-      const parsed = values.map(parseWikiDelegateTask);
-      if (!parsed.length) throw new Error("Delegation requires at least one task");
-      const ids = new Set<string>();
-      for (const task of parsed) {
-        if (ids.has(task.id)) throw new Error(`Duplicate delegate task id: ${task.id}`);
-        ids.add(task.id);
-      }
       const reviewTree = parsed.some((task) => task.role === "review") ? await this.prepareReviewTree() : undefined;
       const contracts = parsed.map((task) => createWikiDelegateContract(
         batchId,
@@ -454,6 +458,9 @@ export class WikiLeadRun {
     requiredProfileCoverage: readonly string[],
     tree: string,
   ): Promise<void> {
+    const board = projectWikiBoard(boardInput(this.state));
+    const blocked = board.clusters.find((cluster) => cluster.status === "blocked");
+    if (blocked) throw new Error(`Wiki cluster is blocked after 3 write/review attempts: ${blocked.id}`);
     const current = this.state.reviews.filter((review) => sameBasis(review.basis, this.state, tree));
     const requested = current.find((review) => review.verdict === "changes_requested");
     if (requested) throw new Error(`Wiki review requested changes in contract ${requested.contractId}`);
@@ -520,7 +527,7 @@ export class WikiLeadRun {
     if (targetDigest !== transaction.oldDigest && targetDigest !== transaction.newDigest) {
       throw new WikiCandidateCorruptionError(`Cannot recover externally modified candidate page: ${transaction.path}`);
     }
-    await writeText(this.stateFile, serializeState(transaction.nextState));
+    await this.writeState(transaction.nextState);
     this.state = transaction.nextState;
     if (targetDigest === transaction.oldDigest) {
       if (await fileDigest(transaction.staged) !== transaction.newDigest) throw new WikiCandidateCorruptionError(`Cannot recover missing or modified staged page: ${transaction.path}`);
@@ -544,12 +551,17 @@ export class WikiLeadRun {
     return this.state.spec;
   }
 
-  private async persist(): Promise<void> { await writeText(this.stateFile, serializeState(this.state)); }
+  private async persist(): Promise<void> { await this.writeState(this.state); }
 
   private async commitState(next: WikiLeadRunState): Promise<void> {
     const parsed = parseState(JSON.parse(serializeState(next)), this.runId);
-    await writeText(this.stateFile, serializeState(parsed));
+    await this.writeState(parsed);
     this.state = parsed;
+  }
+
+  private async writeState(state: WikiLeadRunState): Promise<void> {
+    await writeText(this.stateFile, serializeState(state));
+    await writeText(path.join(path.dirname(this.stateFile), "board.md"), renderWikiBoard(projectWikiBoard(boardInput(state))));
   }
 
   private async serial<T>(operation: () => Promise<T>): Promise<T> {
@@ -785,7 +797,39 @@ function replaceBatch(state: WikiLeadRunState, index: number, batch: WikiTaskRun
   return { ...state, delegates: { batches } };
 }
 
-function leadMayWrite(spec: WikiSpec, compacted: boolean): boolean { return !compacted && spec.domains.length === 1 && wikiSpecPages(spec).length <= 3; }
+function boardInput(state: WikiLeadRunState): WikiBoardProjectionInput {
+  return {
+    runId: state.runId,
+    specRevision: state.specRevision,
+    candidateRevision: state.candidateRevision,
+    compactionObserved: state.compactionObserved,
+    spec: state.spec,
+    reviews: state.reviews.map((review) => ({ verdict: review.verdict, reviewedPaths: review.reviewedPaths })),
+    delegates: {
+      batches: state.delegates.batches.map((batch) => ({
+        tasks: batch.tasks.map((task) => ({
+          id: task.task.id,
+          role: task.task.role,
+          phase: task.phase,
+          ...(task.task.role === "write" ? { writePaths: task.task.writePaths } : {}),
+          ...(task.task.role === "review" ? { reviewPaths: task.task.reviewPaths } : {}),
+          ...(task.receipt ? { receipt: { status: task.receipt.status, ...(task.receipt.error ? { error: { code: task.receipt.error.code } } : {}) } } : {}),
+        })),
+      })),
+    },
+  };
+}
+function pendingWritePaths(state: WikiLeadRunState): string[] {
+  return state.delegates.batches.flatMap((batch) => batch.tasks
+    .filter((task) => task.task.role === "write" && task.phase !== "terminal")
+    .flatMap((task) => task.task.writePaths ?? []));
+}
+function knownContextRefs(state: WikiLeadRunState): string[] {
+  return state.delegates.batches.flatMap((batch) => batch.tasks.flatMap((task) => (task.receipt?.outputs ?? []).map((output) => output.nodeId)));
+}
+function delegatedTaskCount(state: WikiLeadRunState): number {
+  return state.delegates.batches.reduce((sum, batch) => sum + batch.tasks.length, 0);
+}
 function stripWikiPrefix(value: string): string { if (!value.startsWith("wiki/")) throw new Error(`Wiki path must start with wiki/: ${value}`); return value.slice(5); }
 function candidateDirectory(workspace: string, candidate: string): string { return path.relative(workspace, candidate).split(path.sep).join("/"); }
 function serializeState(state: WikiLeadRunState): string {

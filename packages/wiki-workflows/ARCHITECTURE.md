@@ -34,6 +34,27 @@ claim Workspace -> pin settings and Sources -> create empty Candidate
 
 Inspection, Candidate preparation, validation, publication, lifecycle persistence, and cleanup are fixed Wiki implementation, not adapters. `WikiLeadRuntime` is a real seam with a Pi adapter and deterministic test adapter. The Lead chooses research scope, fan-out, follow-up questions, and page grouping without exposing a workflow language.
 
+Pages sit beside their concept. There are no type-bucket directories.
+
+```text
+wiki/
+  index.md                 # host
+  overview.md
+  architecture.md          # optional
+  <domain>/
+    index.md
+    domain.md
+    <concept>/
+      concept.md
+      models.md / flows.md / sequences.md / states.md / data.md / modules.md
+```
+
+A Cluster is the dispatch unit: root overview (and optional architecture), one domain page, or the evidence-backed pages under one concept. The host projects remaining work to `.okf-wiki/runs/<id>/board.md`. The Lead reads that board after compaction and before dispatch or finish.
+
+The Lead may write directly only for a one-domain Spec with at most three content pages and no compaction. Otherwise writers are delegated per cluster. Review is always independent. Research is delegated only when the scope needs parallel coverage or the Lead cannot cover it.
+
+`repository-wiki-producer` is the only model-facing host skill. Production `wiki-production/SKILL.md` is the Lead session brief. Worker roles are `briefs/*.md`, not skills. Templates are disclosed references.
+
 ## Candidate and review
 
 Candidate page replacement, Page Revision advancement, Review Assignment capture, and review acceptance belong to one deep module. A write is canonicalized and validated before replacement and review invalidation commit together. Reviewers receive exact read-only paths and durable revision identity. A receipt is accepted only while its assignment matches the current WikiSpec and Page Revisions. Publication fails closed on missing, stale, or `changes_requested` coverage.
