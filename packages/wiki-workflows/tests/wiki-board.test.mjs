@@ -149,24 +149,8 @@ test("renderWikiBoard prints projected status without overriding accepted to blo
   assert.match(renderWikiBoard(model), /`core` \*\*accepted\*\* \(writes\/reviews: 3\)/);
 });
 
-function page(pageType, pagePath) {
-  return { pageType, path: pagePath, title: pagePath, purpose: "Document", readerQuestions: ["Why?"], requiredFacets: [], findingIds: [] };
-}
-
-function projectionSpec() {
-  return parseWikiSpec({
-    version: 1,
-    overview: page("overview", "overview.md"),
-    domains: [{
-      id: "core",
-      title: "Core",
-      purpose: "Core",
-      pages: [page("domain", "core/domain.md"), page("concept", "core/runtime/concept.md")],
-    }],
-    crossLinks: [],
-    sharedTerms: [],
-    omissions: [],
-  });
+function projectionSpec(pages = ["overview.md", "core/domain.md", "core/runtime/concept.md"]) {
+  return parseWikiSpec({ pages });
 }
 
 test("projector maps a DTO to accepted, blocked, and remaining cluster work", () => {
@@ -206,6 +190,66 @@ test("projector maps a DTO to accepted, blocked, and remaining cluster work", ()
   assert.equal(model.directWriteAllowed, true);
   assert.equal(model.delegatedTaskCount, 3);
   assert.equal(model.delegateBatchCount, 1);
+});
+
+test("directWriteAllowed requires one domain, at most three pages, and no compaction", () => {
+  const input = {
+    runId: "run-1",
+    specRevision: 1,
+    candidateRevision: 1,
+    compactionObserved: false,
+  };
+  assert.equal(projectWikiBoard({ ...input, spec: projectionSpec(["overview.md", "core/domain.md"]) }).directWriteAllowed, true);
+  assert.equal(projectWikiBoard({
+    ...input,
+    compactionObserved: true,
+    spec: projectionSpec(["overview.md", "core/domain.md"]),
+  }).directWriteAllowed, false);
+  assert.equal(projectWikiBoard({
+    ...input,
+    spec: projectionSpec(["overview.md", "core/domain.md", "core/runtime/concept.md", "core/runtime/flows.md"]),
+  }).directWriteAllowed, false);
+  assert.equal(projectWikiBoard({
+    ...input,
+    spec: projectionSpec(["overview.md", "core/domain.md", "billing/domain.md"]),
+  }).directWriteAllowed, false);
+});
+
+test("task line includes batch n when batchId is present and omits it otherwise", () => {
+  const withBatch = projectWikiBoard({
+    runId: "run-1",
+    specRevision: 1,
+    candidateRevision: 1,
+    compactionObserved: false,
+    spec: projectionSpec(),
+    delegates: {
+      batches: [{
+        batchId: 2,
+        tasks: [
+          { id: "w1", role: "write", phase: "running", writePaths: ["wiki/core/domain.md"] },
+        ],
+      }],
+    },
+  });
+  assert.equal(withBatch.tasks[0].batch, 2);
+  assert.match(renderWikiBoard(withBatch), /`w1` write running batch 2/);
+
+  const withoutBatch = projectWikiBoard({
+    runId: "run-1",
+    specRevision: 1,
+    candidateRevision: 1,
+    compactionObserved: false,
+    spec: projectionSpec(),
+    delegates: {
+      batches: [{
+        tasks: [
+          { id: "w1", role: "write", phase: "running", writePaths: ["wiki/core/domain.md"] },
+        ],
+      }],
+    },
+  });
+  assert.equal(withoutBatch.tasks[0].batch, undefined);
+  assert.equal(renderWikiBoard(withoutBatch).includes("batch "), false);
 });
 
 test("sorts clusters, cluster paths, and tasks independently of input order", () => {

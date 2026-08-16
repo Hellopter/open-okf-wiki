@@ -9,16 +9,7 @@ import { verifyWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
 
-function page(pageType, pagePath) {
-  return { pageType, path: pagePath, title: pagePath, purpose: "Document behavior", readerQuestions: [], requiredFacets: [], findingIds: [] };
-}
-
-const spec = {
-  version: 1,
-  overview: page("overview", "overview.md"),
-  domains: [{ id: "core", title: "Core", purpose: "Core behavior", pages: [page("domain", "core/domain.md")] }],
-  crossLinks: [], sharedTerms: [], omissions: [],
-};
+const spec = { pages: ["overview.md", "core/domain.md"] };
 
 function content(type, title, suffix = "") {
   return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: repo:source/a.ts#L1-L1", "---", "", `Runtime behavior${suffix}.[^source-a]`, "", "[^source-a]: [Source](repo:source/a.ts#L1-L1)", ""].join("\n");
@@ -155,6 +146,35 @@ test("each review contract persists an exact independent path basis", async (t) 
   assert.deepEqual(contracts[0].reviewBasis.paths, ["wiki/overview.md"]);
   assert.deepEqual(contracts[1].reviewBasis.paths, ["wiki/core/domain.md"]);
   assert.equal(contracts[0].reviewBasis.treeDigest, contracts[1].reviewBasis.treeDigest);
+});
+
+test("rollbackDelegateBatch removes an unlaunched queued batch so the next queue can reuse its identity", async (t) => {
+  const { run } = await fixture(t);
+  const first = await run.queueDelegateBatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  assert.equal(first.batchId, 1);
+  await run.rollbackDelegateBatch(1);
+  const second = await run.queueDelegateBatch([{ id: "research-retry", role: "research", instruction: "Research again", sourceScopeIds: [], contextRefs: [] }]);
+  assert.equal(second.batchId, 1);
+  assert.equal(second.contracts[0].contractId, "b1-research-retry");
+  assert.equal(run.taskRuntimeState.batches.length, 1);
+});
+
+test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => {
+  const { run } = await fixture(t);
+  const { batchId, contracts: [contract] } = await run.queueDelegateBatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  await run.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
+  await assert.rejects(run.rollbackDelegateBatch(batchId), /Cannot roll back delegate batch 1 after launch/);
+  assert.equal(run.taskRuntimeState.batches.length, 1);
+  await run.taskTransitions.taskSettled(batchId, contract.id, {
+    attempt: 1,
+    receipt: {
+      id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    },
+  });
+  await assert.rejects(run.rollbackDelegateBatch(batchId), /Cannot roll back delegate batch 1 after launch/);
+  const next = await run.queueDelegateBatch([{ id: "later", role: "research", instruction: "Later", sourceScopeIds: [], contextRefs: [] }]);
+  assert.equal(next.batchId, 2);
 });
 
 test("semantic task transitions reject rollback, collection before terminal, and forged receipts", async (t) => {

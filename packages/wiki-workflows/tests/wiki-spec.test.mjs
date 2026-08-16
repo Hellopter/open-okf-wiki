@@ -6,133 +6,95 @@ import {
   wikiSpecClusterId,
   wikiSpecClusterPaths,
   wikiSpecClusters,
+  wikiSpecDomainIds,
   wikiSpecPagePaths,
+  wikiSpecPageType,
   wikiSpecPages,
 } from "../dist/wiki-spec.js";
 
-const page = (pageType, path) => ({
-  pageType, path, title: path, purpose: `Explain ${path}`,
-  readerQuestions: ["How does it work?"], requiredFacets: [], findingIds: [],
-});
+const validPages = [
+  "overview.md",
+  "billing/domain.md",
+  "billing/invoice/concept.md",
+  "billing/invoice/models.md",
+  "billing/invoice/models/line-item.md",
+  "billing/invoice/sequences.md",
+];
 
-const validSpec = () => ({
-  version: 1,
-  overview: page("overview", "overview.md"),
-  architecture: page("architecture", "architecture.md"),
-  domains: [{
-    id: "billing", title: "Billing", purpose: "Billing behavior", pages: [
-      page("domain", "billing/domain.md"),
-      page("concept", "billing/invoice/concept.md"),
-      page("flow", "billing/invoice/flows.md"),
-      page("state", "billing/invoice/states.md"),
-      page("data", "billing/invoice/data.md"),
-      page("module", "billing/invoice/modules.md"),
-    ],
-  }],
-  crossLinks: [{ fromPath: "overview.md", toPath: "billing/domain.md", purpose: "Domain navigation" }],
-  sharedTerms: [{ term: "Invoice", definition: "A receivable" }], omissions: [],
-});
+const validSpec = () => ({ pages: [...validPages] });
 
-test("parses and flattens the complete versioned Wiki topology", () => {
+test("accepts a slim pages spec and derives host-owned page types", () => {
   const spec = parseWikiSpec(validSpec());
-  assert.equal(wikiSpecPages(spec).length, 8);
-  assert.deepEqual(wikiSpecPagePaths(spec).slice(0, 3), ["overview.md", "architecture.md", "billing/domain.md"]);
+  assert.deepEqual(spec, { pages: validPages });
+  assert.deepEqual(wikiSpecPagePaths(spec), validPages);
+  assert.deepEqual(wikiSpecPages(spec), [
+    { path: "overview.md", pageType: "overview" },
+    { path: "billing/domain.md", pageType: "domain" },
+    { path: "billing/invoice/concept.md", pageType: "concept" },
+    { path: "billing/invoice/models.md", pageType: "data" },
+    { path: "billing/invoice/models/line-item.md", pageType: "data" },
+    { path: "billing/invoice/sequences.md", pageType: "flow" },
+  ]);
+  assert.equal(wikiSpecPageType("billing/invoice/models.md"), "data");
+  assert.equal(wikiSpecPageType("billing/invoice/sequences.md"), "flow");
+  assert.deepEqual(wikiSpecDomainIds(spec), ["billing"]);
 });
 
-test("accepts concept cluster pages including sequences and model slugs", () => {
-  const spec = validSpec();
-  spec.domains[0].pages.push(
-    page("flow", "billing/invoice/sequences.md"),
-    page("data", "billing/invoice/models.md"),
-    page("data", "billing/invoice/models/line-item.md"),
-  );
-  const parsed = parseWikiSpec(spec);
-  assert.equal(wikiSpecPages(parsed).length, 11);
+test("accepts optional architecture.md and a domain that contains only domain.md", () => {
+  const spec = parseWikiSpec({ pages: ["overview.md", "architecture.md", "billing/domain.md"] });
+  assert.deepEqual(wikiSpecPages(spec).map((page) => page.pageType), ["overview", "architecture", "domain"]);
+  assert.deepEqual(wikiSpecClusters(spec), ["_root", "billing"]);
 });
 
-test("accepts a domain that contains only domain.md", () => {
-  const spec = validSpec();
-  spec.domains[0].pages = [page("domain", "billing/domain.md")];
-  const parsed = parseWikiSpec(spec);
-  assert.equal(wikiSpecPages(parsed).length, 3);
-  assert.deepEqual(wikiSpecClusters(parsed), ["_root", "billing"]);
+test("rejects version, extra fields, and overview as an object", () => {
+  assert.throws(() => parseWikiSpec({ version: 1, pages: validPages }), /unknown field/);
+  assert.throws(() => parseWikiSpec({ pages: validPages, extra: true }), /unknown field/);
+  assert.throws(() => parseWikiSpec({ overview: { path: "overview.md" } }), /unknown field|pages/);
+  assert.throws(() => parseWikiSpec({ pages: validPages, overview: { path: "overview.md" } }), /unknown field/);
 });
 
-test("rejects invalid domain topology, paths, duplicates, and dangling links", () => {
-  const cases = [
-    (spec) => { spec.domains[0].id = "Billing/Unsafe"; },
-    (spec) => { spec.domains[0].pages = spec.domains[0].pages.slice(1); },
-    (spec) => { spec.domains[0].pages[1].path = "billing/invoice/flows.md"; },
-    (spec) => { spec.domains[0].pages.push(page("flow", "billing/invoice/flows.md")); },
-    (spec) => { spec.crossLinks[0].toPath = "missing.md"; },
+test("rejects illegal paths and type-bucket concept names", () => {
+  const illegal = [
+    "billing/concepts/invoice.md",
+    "billing/flows/collection.md",
+    "billing/states/invoice.md",
+    "billing/data/invoice.md",
+    "billing/modules/ledger.md",
+    "billing/concept.md",
+    "invoice/flows.md",
+    "billing/invoice/models/line/item.md",
+    "billing/invoice/unknown.md",
+    "wiki/overview.md",
+    "Billing/domain.md",
   ];
-  for (const mutate of cases) {
-    const spec = validSpec();
-    mutate(spec);
-    assert.throws(() => parseWikiSpec(spec));
+  for (const path of illegal) {
+    assert.throws(() => parseWikiSpec({ pages: ["overview.md", "billing/domain.md", path] }));
   }
+  assert.throws(() => parseWikiSpec({ pages: ["overview.md", "billing/domain.md", "overview.md"] }));
 });
 
-test("rejects old type-bucket paths and pages outside a concept cluster", () => {
-  const cases = [
-    ["concept", "billing/concepts/invoice.md"],
-    ["flow", "billing/flows/collection.md"],
-    ["state", "billing/states/invoice.md"],
-    ["data", "billing/data/invoice.md"],
-    ["module", "billing/modules/ledger.md"],
-    ["concept", "billing/concept.md"],
-    ["flow", "invoice/flows.md"],
-    ["data", "billing/invoice/models/line/item.md"],
-    ["concept", "billing/invoice/unknown.md"],
-  ];
-  for (const [pageType, path] of cases) {
-    const spec = validSpec();
-    spec.domains[0].pages[1] = page(pageType, path);
-    assert.throws(() => parseWikiSpec(spec));
-  }
-});
-
-test("rejects unknown fields at every contract boundary", () => {
-  const spec = validSpec();
-  spec.unplanned = true;
-  assert.throws(() => parseWikiSpec(spec), /unknown field/);
-  const nested = validSpec();
-  nested.domains[0].pages[0].extra = true;
-  assert.throws(() => parseWikiSpec(nested), /unknown field/);
-});
-
-test("rejects unknown description fields on the spec and on a page", () => {
-  const spec = validSpec();
-  spec.description = "not part of WikiSpec";
-  assert.throws(() => parseWikiSpec(spec), /unknown field/);
-  const page = validSpec();
-  page.overview.description = "not a page field";
-  assert.throws(() => parseWikiSpec(page), /unknown field/);
-});
-
-test("rejects overview when it is a string", () => {
-  const spec = validSpec();
-  spec.overview = "overview.md";
-  assert.throws(() => parseWikiSpec(spec));
-});
-
-test("treats architecture null as absent", () => {
-  const spec = validSpec();
-  spec.architecture = null;
-  const parsed = parseWikiSpec(spec);
-  assert.equal("architecture" in parsed, false);
-  assert.equal(wikiSpecPages(parsed).length, 7);
-  assert.deepEqual(wikiSpecPagePaths(parsed).slice(0, 2), ["overview.md", "billing/domain.md"]);
-});
-
-test("TypeBox structure errors include a field path", () => {
-  const spec = validSpec();
-  delete spec.overview.title;
-  assert.throws(() => parseWikiSpec(spec), /\/overview\/title/);
+test("rejects missing overview.md and missing domain.md", () => {
+  assert.throws(() => parseWikiSpec({ pages: ["billing/domain.md"] }));
+  assert.throws(() => parseWikiSpec({ pages: ["overview.md"] }));
+  assert.throws(() => parseWikiSpec({ pages: ["overview.md", "billing/invoice/concept.md"] }));
+  assert.throws(() => parseWikiSpec({
+    pages: ["overview.md", "core/domain.md", "billing/invoice/concept.md"],
+  }));
 });
 
 test("cluster helpers group root, domain, and concept pages", () => {
-  const spec = parseWikiSpec(validSpec());
+  const spec = parseWikiSpec({
+    pages: [
+      "overview.md",
+      "architecture.md",
+      "billing/domain.md",
+      "billing/invoice/concept.md",
+      "billing/invoice/flows.md",
+      "billing/invoice/states.md",
+      "billing/invoice/data.md",
+      "billing/invoice/modules.md",
+    ],
+  });
   assert.equal(wikiSpecClusterId("overview.md"), "_root");
   assert.equal(wikiSpecClusterId("architecture.md"), "_root");
   assert.equal(wikiSpecClusterId("wiki/overview.md"), "_root");

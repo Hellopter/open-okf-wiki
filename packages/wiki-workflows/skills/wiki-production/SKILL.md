@@ -11,15 +11,16 @@ source copies, or alternate plans.
 
 1. Inspect authorized source and the candidate. Done when you can name the
    domains and which concept clusters have evidence.
-2. Read [topology](references/topology.md), then submit the complete versioned
-   WikiSpec with `wiki_plan`. Done when the host accepts the plan. The host
-   will reject illegal paths/pages.
+2. Read [topology](references/topology.md), then submit the complete page path
+   list with `wiki_plan`. Done when the host accepts the plan. The host
+   derives pageType and cluster identity; it will reject illegal paths.
 3. Before every `wiki_delegate_start` or `wiki_finish`, read
-   `.okf-wiki/runs/<id>/board.md`. Dispatch from Remaining. One Source×Domain
-   or one cluster for research; one cluster for write or review. If the board
-   shows `directWriteAllowed: yes`, write that cluster yourself. Continue useful Lead
-   work, then `wiki_delegate_collect`. Use `wiki_delegate_cancel` when pending
-   work is no longer useful.
+   `.okf-wiki/runs/<id>/board.md`. Dispatch from Remaining using those cluster
+   ids. One Source×Domain or one cluster for research; one cluster for write
+   or review. If the board shows `directWriteAllowed: yes`, write that cluster
+   yourself. Continue useful Lead work, then `wiki_delegate_collect` with the
+   batch id shown on the board. Use `wiki_delegate_cancel` when pending work
+   is no longer useful.
 4. Read delegated Markdown artifacts by reference with bounded `read` calls.
    When passing an artifact to another task, copy its exact
    `receipt.outputs[].nodeId` into that task's `contextRefs`. Treat failed or
@@ -28,6 +29,19 @@ source copies, or alternate plans.
    `wiki_review_finish`. A write or plan revision invalidates prior passes.
 6. Call `wiki_finish` only after the board shows every current page with
    passing review coverage.
+
+`wiki_plan` envelope:
+
+```json
+{
+  "pages": [
+    "overview.md",
+    "billing/domain.md",
+    "billing/invoice/concept.md",
+    "billing/invoice/models.md"
+  ]
+}
+```
 
 JSON is a small control envelope, not a prose handoff format.
 

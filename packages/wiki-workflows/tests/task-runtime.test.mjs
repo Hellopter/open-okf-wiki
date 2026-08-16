@@ -450,6 +450,50 @@ test("passes an incrementing batch identity to delegated agents", async () => {
   assert.deepEqual(batches, [1, 2]);
 });
 
+test("start accepts a non-next batch identity when it is not a duplicate", async () => {
+  const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) });
+  const started = await r.start([contract(2, task("skip-ahead"))], new AbortController().signal);
+  assert.equal(started.batchId, 2);
+  assert.equal((await r.collect(2, { until: "all", timeoutSeconds: 1 })).status, "complete");
+  const first = await r.start([contract(1, task("earlier"))], new AbortController().signal);
+  assert.equal(first.batchId, 1);
+  assert.equal((await r.collect(1, { until: "all", timeoutSeconds: 1 })).status, "complete");
+});
+
+test("start rejects a duplicate batch identity and mixed batch contracts", async () => {
+  const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) });
+  await r.start([contract(1, task("first"))], new AbortController().signal);
+  await assert.rejects(
+    r.start([contract(1, task("dup"))], new AbortController().signal),
+    /Duplicate delegate batch: 1/,
+  );
+  await assert.rejects(
+    r.start([contract(3, task("a")), contract(4, task("b"))], new AbortController().signal),
+    /must belong to one batch/,
+  );
+});
+
+test("failed start that never registered does not poison a later start of the same batch", async () => {
+  const transitions = memoryTransitions({ batches: [] });
+  let failQueue = true;
+  const subject = new WikiTaskRuntime({
+    runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
+    agent: { async run() { return { summary: "ok", markdown: "ok" }; } },
+    transitions: {
+      ...transitions,
+      async batchQueued(contracts) {
+        if (failQueue) throw new Error("queue commit failed");
+        await transitions.batchQueued(contracts);
+      },
+    },
+  });
+  await assert.rejects(subject.start([contract(1, task("retry"))], new AbortController().signal), /queue commit failed/);
+  failQueue = false;
+  const started = await subject.start([contract(1, task("retry"))], new AbortController().signal);
+  assert.equal(started.batchId, 1);
+  assert.equal((await subject.collect(1, { until: "all", timeoutSeconds: 1 })).status, "complete");
+});
+
 test("telemetry delivery failures do not fail or delay task completion", async () => {
   const r = runtime({
     async run(value, context) {

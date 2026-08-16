@@ -1,8 +1,9 @@
 # Cluster topology
 
-WikiSpec `version` is `1`. Plan pages on these paths. The host will reject
-illegal paths/pages. Host-owned `index.md` files are generated; never plan or
-write them.
+Plan only these page paths. The host derives pageType from the path
+(`models.md` → data, `sequences.md` → flow, `modules.md` → module) and
+rejects illegal paths. Host-owned `index.md` files are generated; never plan
+or write them.
 
 ```text
 wiki/

@@ -17,8 +17,7 @@ async function fixture(t) {
   return root;
 }
 
-const page = (pageType, pagePath, title) => ({ pageType, path: pagePath, title, purpose: "Runtime", readerQuestions: [], requiredFacets: [], findingIds: [] });
-const spec = () => ({ version: 1, overview: page("overview", "overview.md", "Overview"), domains: [{ id: "runtime", title: "Runtime", purpose: "Runtime", pages: [page("domain", "runtime/domain.md", "Runtime")] }], crossLinks: [], sharedTerms: [], omissions: [] });
+const spec = () => ({ pages: ["overview.md", "runtime/domain.md"] });
 const markdown = (type, title) => ["---", `type: ${type}`, `title: ${title}`, "description: Runtime", "sources:", "  - id: runtime", "    resource: repo:src/index.ts#L1-L1", "---", "", "Runtime.[^runtime]", "", "[^runtime]: [Source](repo:src/index.ts#L1-L1)", ""].join("\n");
 
 async function writeComplete(request) {

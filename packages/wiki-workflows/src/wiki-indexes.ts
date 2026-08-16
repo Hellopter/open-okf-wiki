@@ -120,23 +120,19 @@ export async function renderWikiIndex(
     .map((candidate) => path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate))
     .filter((candidate) => candidate && (path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate)) === relativeDirectory)
     .sort();
-  const descriptor = directoryDescriptor(relativeDirectory, spec);
+  const descriptor = await directoryDescriptor(wikiRoot, relativeDirectory, spec);
   const title = descriptor.title;
   const lines = indexPath === "index.md"
     ? ["---", 'okf_version: "0.2"', "---", "", `# ${escapeMarkdownText(title)}`, ""]
     : [`# ${escapeMarkdownText(title)}`, ""];
   if (descriptor.description) lines.push(escapeMarkdownText(descriptor.description), "");
   if (directDirectories.length) {
-    lines.push(
-      "## Directories",
-      "",
-      ...directDirectories.map((child) => {
-        const name = path.posix.basename(child);
-        const childDescriptor = directoryDescriptor(child, spec);
-        return `- [${escapeMarkdownText(childDescriptor.title)}](./${name}/index.md): ${escapeMarkdownText(childDescriptor.description)}`;
-      }),
-      "",
-    );
+    const directoryEntries = await Promise.all(directDirectories.map(async (child) => {
+      const name = path.posix.basename(child);
+      const childDescriptor = await directoryDescriptor(wikiRoot, child, spec);
+      return `- [${escapeMarkdownText(childDescriptor.title)}](./${name}/index.md): ${escapeMarkdownText(childDescriptor.description)}`;
+    }));
+    lines.push("## Directories", "", ...directoryEntries, "");
   }
   if (directPages.length) {
     const pageMetadata = await Promise.all(directPages.map(async (page) => {
@@ -157,22 +153,22 @@ export async function renderWikiIndex(
   return `${lines.join("\n").replace(/\n+$/, "\n")}`;
 }
 
-function directoryDescriptor(
+async function directoryDescriptor(
+  wikiRoot: string,
   relativeDirectory: string,
   spec: WikiSpec,
-): { description: string; title: string } {
+): Promise<{ description: string; title: string }> {
   if (!relativeDirectory) return { title: "Wiki", description: "" };
-  if (!relativeDirectory.includes("/")) {
-    const domain = spec.domains.find((candidate) => candidate.id === relativeDirectory);
-    if (domain) return { title: normalizeIndexText(domain.title), description: normalizeIndexText(domain.purpose) };
-  }
-  if (relativeDirectory.split("/").length === 2) {
-    const conceptPage = spec.domains
-      .flatMap((domain) => domain.pages)
-      .find((page) => page.pageType === "concept" && page.path === `${relativeDirectory}/concept.md`);
-    if (conceptPage) {
-      return { title: normalizeIndexText(conceptPage.title), description: normalizeIndexText(conceptPage.purpose) };
-    }
+  const segments = relativeDirectory.split("/");
+  const descriptorPage = segments.length === 1
+    ? `${relativeDirectory}/domain.md`
+    : segments.length === 2
+      ? `${relativeDirectory}/concept.md`
+      : undefined;
+  if (descriptorPage && spec.pages.includes(descriptorPage)) {
+    const parsed = parsePage(await readText(safeWikiPath(wikiRoot, descriptorPage)));
+    const title = normalizeIndexText(parsed.frontmatter.title);
+    if (title) return { title, description: normalizeIndexText(parsed.frontmatter.description) };
   }
   return { title: path.posix.basename(relativeDirectory), description: "" };
 }

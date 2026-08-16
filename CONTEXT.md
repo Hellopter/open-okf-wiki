@@ -29,7 +29,7 @@ The last successfully validated Candidate installed for a Workspace.
 _Avoid_: Current Candidate, mutable Wiki
 
 **WikiSpec**:
-A Run's versioned declaration of Candidate page topology, evidence goals, reader questions, and cross-links.
+A Run's declared Candidate page topology (path list).
 _Avoid_: Workflow manifest, prior topology
 
 **Page Revision**:

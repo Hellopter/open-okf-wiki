@@ -16,19 +16,8 @@ async function workspace(t) {
   return root;
 }
 
-function page(pageType, pagePath, title) {
-  return { pageType, path: pagePath, title, purpose: "Runtime behavior", readerQuestions: [], requiredFacets: [], findingIds: [] };
-}
-
 function spec() {
-  return {
-    version: 1,
-    overview: page("overview", "overview.md", "Overview"),
-    domains: [{ id: "runtime", title: "Runtime", purpose: "Runtime behavior", pages: [
-      page("domain", "runtime/domain.md", "Runtime domain"), page("concept", "runtime/lifecycle/concept.md", "Runtime"),
-    ] }],
-    crossLinks: [], sharedTerms: [], omissions: [],
-  };
+  return { pages: ["overview.md", "runtime/domain.md", "runtime/lifecycle/concept.md"] };
 }
 
 function content(type, title) {

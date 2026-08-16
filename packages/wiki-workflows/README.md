@@ -122,9 +122,9 @@ Unknown fields are rejected.
 
 ## Wiki topology
 
-The Lead must persist a versioned WikiSpec before any page can be written. The
-Spec declares every content page, its type, evidence findings, reader questions,
-and cross-links. A published Wiki uses this cluster topology:
+The Lead submits a WikiSpec page path list with `wiki_plan` before any page
+can be written. The host derives pageType and cluster identity from those
+paths. A published Wiki uses this cluster topology:
 
 ```text
 wiki/

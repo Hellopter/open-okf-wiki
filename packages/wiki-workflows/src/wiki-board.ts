@@ -1,4 +1,4 @@
-import { wikiSpecClusterId, wikiSpecClusterPaths, wikiSpecClusters, wikiSpecPages, wikiSpecRelativePath, type WikiSpec } from "./wiki-spec.js";
+import { wikiSpecClusterId, wikiSpecClusterPaths, wikiSpecClusters, wikiSpecDomainIds, wikiSpecRelativePath, type WikiSpec } from "./wiki-spec.js";
 
 export type WikiBoardClusterStatus =
   | "unplanned"
@@ -19,6 +19,7 @@ export interface WikiBoardTask {
   role: "research" | "write" | "review";
   paths: string[];
   phase: "queued" | "running" | "paused" | "terminal";
+  batch?: number;
   receiptStatus?: "complete" | "incomplete" | "failed";
   errorCode?: string;
 }
@@ -62,6 +63,7 @@ export interface WikiBoardProjectionInput {
   reviews?: readonly WikiBoardProjectionReview[];
   delegates?: {
     batches: readonly {
+      batchId?: number;
       tasks: readonly WikiBoardProjectionTask[];
     }[];
   };
@@ -69,12 +71,13 @@ export interface WikiBoardProjectionInput {
 
 export function wikiLeadMayWrite(spec: WikiSpec | undefined, compactionObserved: boolean): boolean {
   if (!spec || compactionObserved) return false;
-  return spec.domains.length === 1 && wikiSpecPages(spec).length <= 3;
+  return wikiSpecDomainIds(spec).length === 1 && spec.pages.length <= 3;
 }
 
 /** Project Lead state onto the host-owned board. Research tasks have no paths and do not change cluster status. */
 export function projectWikiBoard(input: WikiBoardProjectionInput): WikiBoardModel {
-  const tasks = (input.delegates?.batches ?? []).flatMap((batch) => batch.tasks);
+  const batches = input.delegates?.batches ?? [];
+  const tasks = batches.flatMap((batch) => batch.tasks);
   const reviews = input.reviews ?? [];
   const spec = input.spec;
   const clusters = spec ? wikiSpecClusters(spec).map((id) => projectCluster(id, spec, tasks, reviews)) : [];
@@ -87,10 +90,10 @@ export function projectWikiBoard(input: WikiBoardProjectionInput): WikiBoardMode
     compactionObserved: input.compactionObserved,
     directWriteAllowed: wikiLeadMayWrite(input.spec, input.compactionObserved),
     clusters,
-    tasks: tasks.map(toBoardTask),
+    tasks: batches.flatMap((batch) => batch.tasks.map((task) => toBoardTask(task, batch.batchId))),
     remaining,
     delegatedTaskCount: tasks.length,
-    delegateBatchCount: input.delegates?.batches.length ?? 0,
+    delegateBatchCount: batches.length,
   };
 }
 
@@ -167,12 +170,13 @@ function reviewTouchesCluster(review: WikiBoardProjectionReview, clusterId: stri
   return review.reviewedPaths.some((page) => wikiSpecClusterId(page) === clusterId);
 }
 
-function toBoardTask(task: WikiBoardProjectionTask): WikiBoardTask {
+function toBoardTask(task: WikiBoardProjectionTask, batchId?: number): WikiBoardTask {
   return {
     id: task.id,
     role: task.role,
     paths: [...taskPaths(task)],
     phase: task.phase,
+    ...(batchId !== undefined ? { batch: batchId } : {}),
     ...(task.receipt ? { receiptStatus: task.receipt.status } : {}),
     ...(task.receipt?.error?.code ? { errorCode: task.receipt.error.code } : {}),
   };
@@ -222,6 +226,7 @@ export function renderWikiBoard(model: WikiBoardModel): string {
 
 function formatTask(task: WikiBoardTask): string {
   const parts = [`\`${task.id}\``, task.role, task.phase];
+  if (task.batch !== undefined) parts.push(`batch ${task.batch}`);
   if (task.receiptStatus) parts.push(task.receiptStatus);
   if (task.errorCode) parts.push(task.errorCode);
   return `- ${parts.join(" ")}`;

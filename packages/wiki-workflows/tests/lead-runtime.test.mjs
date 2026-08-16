@@ -52,20 +52,14 @@ function pinnedPlan(root) {
 const generation = { audience: [], purpose: "", focus: { include: [], exclude: [] }, granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] } };
 const transactionalWriter = { async replacePage() {} };
 
-function page(pageType, pagePath) {
-  return { pageType, path: pagePath, title: pagePath, purpose: "Document behavior", readerQuestions: [], requiredFacets: [], findingIds: [] };
-}
-
 function spec(extraPages = [], domains = 1) {
-  return {
-    version: 1,
-    overview: page("overview", "overview.md"),
-    domains: Array.from({ length: domains }, (_, index) => {
-      const id = index === 0 ? "core" : `domain-${index + 1}`;
-      return { id, title: id, purpose: "Domain behavior", pages: [page("domain", `${id}/domain.md`), ...(index === 0 ? extraPages : [])] };
-    }),
-    crossLinks: [], sharedTerms: [], omissions: [],
-  };
+  const pages = ["overview.md"];
+  for (let index = 0; index < domains; index += 1) {
+    const id = index === 0 ? "core" : `domain-${index + 1}`;
+    pages.push(`${id}/domain.md`);
+    if (index === 0) pages.push(...extraPages);
+  }
+  return { pages };
 }
 
 function validWikiPage(type, title) {
@@ -101,9 +95,17 @@ function assignedReviewPaths(prompt, fallback) {
 }
 
 const clusterReviewTasks = [
-  { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-  { id: "review-core", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+  { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], cluster: "_root" },
+  { id: "review-core", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], cluster: "core" },
 ];
+
+function leadWriteTask(id, cluster = "_root") {
+  return { id, role: "write", instruction: `write ${id}`, sourceScopeIds: [], contextRefs: [], cluster };
+}
+
+function leadReviewTask(id, cluster) {
+  return { id, role: "review", instruction: `review ${id}`, sourceScopeIds: [], contextRefs: [], cluster };
+}
 
 async function call(tools, name, params) {
   const tool = tools.find((value) => value.name === name);
@@ -158,7 +160,7 @@ test("pre-write validation rejects invalid replacement after planning and preser
   const target = path.join(candidateWikiRoot, "overview.md");
   await writeFile(target, "existing\n");
   const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
-    await call(tools, "wiki_plan", { spec: spec() });
+    await call(tools, "wiki_plan", spec());
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid replacement\n" });
   }) });
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /validation failed before write/);
@@ -168,7 +170,7 @@ test("pre-write validation rejects invalid replacement after planning and preser
 test("governed Lead direct writes are disabled for multi-domain plans", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
-    await call(tools, "wiki_plan", { spec: spec([], 2) });
+    await call(tools, "wiki_plan", spec([], 2));
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid\n" });
   }) });
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /direct writing is disabled/);
@@ -177,10 +179,10 @@ test("governed Lead direct writes are disabled for multi-domain plans", async (t
 test("wiki_delegate_start forbids mixing write and review in one revision snapshot", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
-    await call(tools, "wiki_plan", { spec: spec() });
+    await call(tools, "wiki_plan", spec());
     await call(tools, "wiki_delegate_start", { tasks: [
-      { id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/overview.md"] },
-      { id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+      leadWriteTask("write", "_root"),
+      leadReviewTask("review", "_root"),
     ] });
   }) });
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /may not mix write and review/);
@@ -188,9 +190,9 @@ test("wiki_delegate_start forbids mixing write and review in one revision snapsh
 
 test("governed Lead direct writes are disabled above three pages and permanently after compaction", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
-  const large = spec([page("flow", "core/runtime/flows.md"), page("concept", "core/runtime/concept.md")]);
+  const large = spec(["core/runtime/flows.md", "core/runtime/concept.md"]);
   const largeRuntime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
-    await call(tools, "wiki_plan", { spec: large });
+    await call(tools, "wiki_plan", large);
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid\n" });
   }) });
   await assert.rejects(largeRuntime.run(request(root, candidateWikiRoot)), /direct writing is disabled/);
@@ -203,11 +205,11 @@ test("governed Lead direct writes are disabled above three pages and permanently
       subscribe(value) { listener = value; return () => { listener = undefined; }; },
       setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
       async prompt() {
-        await call(options.customTools, "wiki_plan", { spec: spec() });
+        await call(options.customTools, "wiki_plan", spec());
         listener({ type: "compaction_start", reason: "threshold" });
         listener({ type: "compaction_end", reason: "threshold", result: {}, aborted: false, willRetry: false });
         await new Promise((resolve) => setTimeout(resolve, 20));
-        const afterCompact = await call(options.customTools, "wiki_plan", { spec: spec() });
+        const afterCompact = await call(options.customTools, "wiki_plan", spec());
         assert.equal(afterCompact.details.board, ".okf-wiki/runs/run-1/board.md");
         assert.equal(afterCompact.details.note, "Read board.md before dispatching or finishing");
         await call(options.customTools, "write", { path: "wiki/overview.md", content: "invalid\n" });
@@ -227,7 +229,7 @@ test("wiki_finish requires current pass review coverage and accepts a structured
     sessions += 1;
     return sessionFactory(async (tools, prompt) => {
       if (sessions === 1) {
-        const plannedResult = await call(tools, "wiki_plan", { spec: planned });
+        const plannedResult = await call(tools, "wiki_plan", planned);
         assert.equal(plannedResult.details.board, ".okf-wiki/runs/run-1/board.md");
         assert.equal(plannedResult.details.note, undefined);
         await assert.rejects(call(tools, "wiki_finish", { summary: "too early" }), /lacks passing independent review/);
@@ -255,9 +257,9 @@ test("changes_requested and stale spec-revision reviews block wiki_finish", asyn
       sessions += 1;
       return sessionFactory(async (tools, prompt) => {
         if (sessions === 1) {
-          await call(tools, "wiki_plan", { spec: planned });
+          await call(tools, "wiki_plan", planned);
           await delegateAndCollect(tools, clusterReviewTasks);
-          if (stale) await call(tools, "wiki_plan", { spec: planned });
+          if (stale) await call(tools, "wiki_plan", planned);
           await call(tools, "wiki_finish", { summary: "blocked" });
         } else {
           const reviewedPaths = assignedReviewPaths(prompt, ["wiki/overview.md"]);
@@ -286,7 +288,7 @@ test("review receipt is rejected when a concurrent write changes its captured re
     sessions += 1;
     return sessionFactory(async (tools, prompt) => {
       if (sessions === 1) {
-        await call(tools, "wiki_plan", { spec: spec() });
+        await call(tools, "wiki_plan", spec());
         const startedBatch = await call(tools, "wiki_delegate_start", { tasks: clusterReviewTasks });
         await started;
         await call(tools, "write", { path: "wiki/overview.md", content: validWikiPage("Overview", "Overview") });
@@ -335,7 +337,7 @@ test("wiki_finish rejects terminal delegated receipts that were not collected", 
   const runtime = createPiLeadRuntime({
     createSession: async (options) => sessionFactory(async (tools) => {
       if (tools.some((tool) => tool.name === "wiki_delegate_start")) {
-        await call(tools, "wiki_plan", { spec: spec() });
+        await call(tools, "wiki_plan", spec());
         await call(tools, "wiki_delegate_start", { tasks: [{ id: "research", role: "research", instruction: "research", sourceScopeIds: ["source"], contextRefs: [] }] });
         await terminal;
         await call(tools, "wiki_finish", { summary: "not collected" });
@@ -359,10 +361,10 @@ test("active delegated writer blocks review start", async (t) => {
     createSession: async (options) => {
       if (options.customTools.some((tool) => tool.name === "wiki_delegate_start")) {
         return sessionFactory(async (tools) => {
-          await call(tools, "wiki_plan", { spec: spec() });
-          const writer = await call(tools, "wiki_delegate_start", { tasks: [{ id: "writer", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/overview.md"] }] });
+          await call(tools, "wiki_plan", spec());
+          const writer = await call(tools, "wiki_delegate_start", { tasks: [leadWriteTask("writer", "_root")] });
           await started;
-          await assert.rejects(call(tools, "wiki_delegate_start", { tasks: [{ id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] }] }), /review is blocked while Wiki writes are active/);
+          await assert.rejects(call(tools, "wiki_delegate_start", { tasks: [leadReviewTask("review", "_root")] }), /review is blocked while Wiki writes are active/);
           await call(tools, "wiki_delegate_cancel", { batchId: writer.details.batchId, reason: "test complete" });
         })(options);
       }
@@ -391,8 +393,8 @@ test("delegated writer and Lead direct write share the same path lease", async (
     createSession: async (options) => {
       if (options.customTools.some((tool) => tool.name === "wiki_delegate_start")) {
         return sessionFactory(async (tools) => {
-          await call(tools, "wiki_plan", { spec: spec() });
-          const writer = await call(tools, "wiki_delegate_start", { tasks: [{ id: "writer", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/overview.md"] }] });
+          await call(tools, "wiki_plan", spec());
+          const writer = await call(tools, "wiki_delegate_start", { tasks: [leadWriteTask("writer", "_root")] });
           await started;
           const leadWrite = call(tools, "write", { path: "wiki/overview.md", content: validWikiPage("Overview", "Overview") }).then(() => { leadWriteSettled = true; });
           await new Promise((resolve) => setImmediate(resolve));
@@ -422,7 +424,7 @@ test("failed Lead persistence releases its write lease without advancing the rev
   await mkdir(path.join(candidateWikiRoot, "overview.md"));
   let finishError;
   const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
-    await call(tools, "wiki_plan", { spec: spec() });
+    await call(tools, "wiki_plan", spec());
     await assert.rejects(
       call(tools, "write", { path: "wiki/overview.md", content: validWikiPage("Overview", "Overview") }),
     );
@@ -441,7 +443,7 @@ test("failed Lead persistence releases its write lease without advancing the rev
   assert.equal(state.candidateRevision, 1, "failed page replacement must not advance the global Candidate Revision");
 });
 
-test("wiki tools use json_schema constrained sampling and reject write tasks without writePaths", async (t) => {
+test("wiki tools use json_schema constrained sampling and reject write tasks without cluster", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   let leadTools;
   const lead = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
@@ -451,7 +453,12 @@ test("wiki tools use json_schema constrained sampling and reject write tasks wit
 
   const plan = toolDefinition(leadTools, "wiki_plan");
   assert.equal(plan.parameters, wikiPlanParameters);
+  assert.equal(Value.Check(plan.parameters, { pages: ["overview.md", "core/domain.md"] }), true);
   assert.equal(Value.Check(plan.parameters, { spec: { version: 1, overview: "overview.md" } }), false);
+  assert.equal(Value.Check(plan.parameters, { version: 1, pages: ["overview.md", "core/domain.md"] }), false);
+  assert.equal(Value.Check(plan.parameters, {
+    pages: [{ path: "overview.md", pageType: "overview", title: "Overview", purpose: "Map" }],
+  }), false);
   assert.equal(Value.Check(plan.parameters, { spec: {
     version: 1,
     overview: { pageType: "overview", path: "overview.md", title: "Overview", purpose: "Map", readerQuestions: [], requiredFacets: [], findingIds: [], description: "no" },
@@ -468,12 +475,15 @@ test("wiki tools use json_schema constrained sampling and reject write tasks wit
     assert.equal(tool.constrainedSampling.strict, "prefer");
   }
 
-  const writeWithoutPaths = {
+  const writeWithoutCluster = {
     tasks: [{ id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [] }],
   };
-  assert.equal(Value.Check(delegate.parameters, writeWithoutPaths), false);
+  assert.equal(Value.Check(delegate.parameters, writeWithoutCluster), false);
   assert.equal(Value.Check(delegate.parameters, {
     tasks: [{ id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/overview.md"] }],
+  }), false);
+  assert.equal(Value.Check(delegate.parameters, {
+    tasks: [{ id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], cluster: "_root" }],
   }), true);
   assert.equal(toolDefinition(leadTools, "read").executionMode, "parallel");
   assert.equal(toolDefinition(leadTools, "grep").executionMode, "parallel");
@@ -781,10 +791,8 @@ test("delegated usage limit aborts Lead and bubbles as producer pause", async (t
         setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
         async prompt() {
           if (lead) {
-            await call(options.customTools, "wiki_plan", { spec: spec() });
-            const started = await call(options.customTools, "wiki_delegate_start", { tasks: [{
-              id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/overview.md"],
-            }] });
+            await call(options.customTools, "wiki_plan", spec());
+            const started = await call(options.customTools, "wiki_delegate_start", { tasks: [leadWriteTask("write", "_root")] });
             await call(options.customTools, "wiki_delegate_collect", { batchId: started.details.batchId, until: "all", timeoutSeconds: 60 });
           }
         },
@@ -816,7 +824,7 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
       leadRuns += 1;
       prompt = async () => {
         if (leadRuns === 1) {
-          await call(options.customTools, "wiki_plan", { spec: spec() });
+          await call(options.customTools, "wiki_plan", spec());
           const started = await call(options.customTools, "wiki_delegate_start", { tasks: [{
             id: "research", role: "research", instruction: "Research runtime behavior", sourceScopeIds: ["source"], contextRefs: [],
           }] });
@@ -826,6 +834,9 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
         const research = await call(options.customTools, "wiki_delegate_collect", { batchId: 1, until: "all", timeoutSeconds: 60 });
         assert.equal(research.details.receipts[0].status, "complete");
         assert.equal(research.details.receipts[0].attempts, 1);
+        assert.equal(research.details.receipts[0].contractId, undefined);
+        assert.equal(research.details.receipts[0].contractDigest, undefined);
+        assert.deepEqual(Object.keys(research.details.receipts[0].outputs[0]), ["nodeId"]);
         const contextRef = research.details.receipts[0].outputs[0].nodeId;
         const review = await call(options.customTools, "wiki_delegate_start", { tasks: clusterReviewTasks.map((task, index) => ({
           ...task,
@@ -924,7 +935,7 @@ test("Lead uses configured transient retry count", async (t) => {
     createSession: sessionFactory(async (tools) => {
       sessions += 1;
       if (sessions < 3) throw Object.assign(new Error("429 too many requests"), { status: 429 });
-      await call(tools, "wiki_plan", { spec: spec() });
+      await call(tools, "wiki_plan", spec());
     }),
   });
 
@@ -1102,8 +1113,8 @@ test("Pi leaf emits tool, compaction, and exact turn telemetry through Lead repo
       sessionNumber += 1;
       if (sessionNumber > 1) return originalFactory(options);
       return sessionFactory(async (tools) => {
-        await call(tools, "wiki_plan", { spec: spec() });
-        await delegateAndCollect(tools, [{ ...writeTask("live"), writePaths: ["wiki/overview.md"] }]);
+        await call(tools, "wiki_plan", spec());
+        await delegateAndCollect(tools, [leadWriteTask("live", "_root")]);
       })(options);
     },
   });
@@ -1133,9 +1144,9 @@ test("Lead telemetry covers delegation, synthesis, finish, and settled lifecycle
         async prompt() {
           listener?.({ type: "agent_start" });
           if (lead) {
-            await call(options.customTools, "wiki_plan", { spec: spec() });
+            await call(options.customTools, "wiki_plan", spec());
             listener?.({ type: "tool_execution_start", toolCallId: "delegate-1", toolName: "wiki_delegate_start", args: { tasks: [{ id: "page", role: "write", instruction: "secret", sourceScopeIds: [], contextRefs: [] }] } });
-            await delegateAndCollect(options.customTools, [{ ...writeTask("page"), writePaths: ["wiki/overview.md"] }]);
+            await delegateAndCollect(options.customTools, [leadWriteTask("page", "_root")]);
             listener?.({ type: "tool_execution_end", toolCallId: "delegate-1", toolName: "wiki_delegate_start", result: { private: "result" }, isError: false });
             listener?.({ type: "tool_execution_start", toolCallId: "finish-1", toolName: "wiki_finish", args: { summary: "private summary" } });
             await assert.rejects(call(options.customTools, "wiki_finish", { summary: "complete" }), /lacks passing independent review/);

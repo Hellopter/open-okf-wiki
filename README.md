@@ -109,23 +109,23 @@ text, writer/reviewer handoffs, and deterministic index text. Research briefs
 are model-readable and do not have to use that language. Code identifiers and
 source citations remain unchanged.
 
-Each run plans and persists a versioned WikiSpec before writing pages. Published
-content is organized by domain instead of as a flat page list:
+Each run plans a WikiSpec as a Candidate page path list. The host derives
+pageType and cluster identity. Published content uses this cluster topology:
 
 ```text
 wiki/
   index.md
   overview.md
-  architecture.md                 # when required by the repository
+  architecture.md                 # optional
   <domain>/
     index.md
     domain.md
-    concepts|flows|states|data|modules/
-      index.md
-      <topic>.md
+    <concept>/
+      concept.md
+      models.md / flows.md / sequences.md / states.md / data.md / modules.md
 ```
 
-Root, domain, and category indexes are generated deterministically. Page
+Root, domain, and concept indexes are generated deterministically. Page
 frontmatter is parsed and canonicalized in process, so generation does not
 require an external `yamlformatter`. Invalid pages are rejected before they can
 replace existing content. Publication additionally requires independent review

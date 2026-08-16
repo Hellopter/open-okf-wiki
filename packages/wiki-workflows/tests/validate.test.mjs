@@ -43,37 +43,14 @@ async function fixture() {
   return root;
 }
 
-function spec({ pages, crossLinks = [] } = {}) {
-  const selected = pages ?? [
-    { path: "overview/overview.md", pageType: "overview", findingIds: [] },
-    { path: "architecture/design.md", pageType: "architecture", findingIds: ["finding-api"] },
-  ];
-  const normalized = selected.map((selectedPage) => ({
-    pageType: selectedPage.pageType,
-    path: selectedPage.path,
-    title: selectedPage.path,
-    purpose: "Document the target",
-    readerQuestions: [],
-    requiredFacets: [],
-    findingIds: selectedPage.findingIds,
-  }));
-  const overview = normalized[0];
-  const architecture = normalized.find((page) => page !== overview && page.pageType === "architecture");
-  const domainPages = normalized.filter((page) => page !== overview && page !== architecture);
-  return {
-    version: 1,
-    overview,
-    ...(architecture ? { architecture } : {}),
-    domains: normalized.map((selectedPage) => ({
-      id: selectedPage.path.split("/", 1)[0],
-      title: `${selectedPage.path.split("/", 1)[0]} domain`,
-      purpose: "Document the target",
-      pages: domainPages.includes(selectedPage) ? [selectedPage] : [],
-    })),
-    crossLinks,
-    sharedTerms: [],
-    omissions: [],
-  };
+function spec(pages) {
+  return { pages: pages ?? ["overview.md", "architecture.md", "core/domain.md"] };
+}
+
+async function writeSpecPages(root, target, contents = {}) {
+  for (const relative of target.pages) {
+    await writePage(root, relative, contents[relative]);
+  }
 }
 
 function page({
@@ -97,8 +74,8 @@ async function writePage(root, relative, content = page()) {
 }
 
 function expectedPageType(relative) {
-  if (relative === "overview.md" || relative === "overview/overview.md") return "Overview";
-  if (relative === "architecture.md" || relative.startsWith("architecture/")) return "Architecture";
+  if (relative === "overview.md") return "Overview";
+  if (relative === "architecture.md") return "Architecture";
   const filename = relative.split("/").at(-1);
   if (filename === "domain.md") return "Domain";
   if (filename === "concept.md") return "Concept";
@@ -118,17 +95,13 @@ test.after(async () => {
 
 test("validation is read-only and checks the materialized OKF index projection", async () => {
   const root = await fixture();
-  const target = spec({
-    crossLinks: [{
-      fromPath: "overview/overview.md",
-      toPath: "architecture/design.md",
-      purpose: "Connect overview to architecture",
-    }],
+  const target = spec();
+  await writeSpecPages(root, target, {
+    "overview.md": page({
+      body: "[Architecture](./architecture.md)\n[Core index](./core/index.md)\n",
+    }),
+    "architecture.md": page({ body: "```mermaid\nflowchart TD\n  A --> B\n```\n" }),
   });
-  await writePage(root, "overview/overview.md", page({
-    body: "[Architecture](../architecture/design.md)\n[Architecture index](../architecture/index.md)\n",
-  }));
-  await writePage(root, "architecture/design.md", page({ body: "```mermaid\nflowchart TD\n  A --> B\n```\n" }));
   await writePage(root, "legacy.md");
   await materializeWikiIndexes(root, target);
   const indexBefore = await readFile(path.join(root, "wiki", "index.md"), "utf8");
@@ -136,7 +109,7 @@ test("validation is read-only and checks the materialized OKF index projection",
   assert.deepEqual(await validateWiki(root, target), {
     ok: true,
     issues: [],
-    pages: ["architecture/design.md", "overview/overview.md"],
+    pages: ["architecture.md", "core/domain.md", "overview.md"],
     obsoletePages: ["legacy.md"],
   });
   assert.equal(await readFile(path.join(root, "wiki", "index.md"), "utf8"), indexBefore);
@@ -151,47 +124,41 @@ test("validation is read-only and checks the materialized OKF index projection",
 
 test("page validation checks only local content and planned outgoing links", async () => {
   const root = await fixture();
-  const target = spec({
-    crossLinks: [{
-      fromPath: "overview/overview.md",
-      toPath: "architecture/design.md",
-      purpose: "Connect overview to architecture",
-    }],
-  });
-  await writePage(root, "overview/overview.md", page({ body: "[Architecture](../architecture/design.md)\n" }));
+  const target = spec();
+  await writePage(root, "overview.md", page({ body: "[Architecture](./architecture.md)\n" }));
 
-  assert.deepEqual(await validateWikiPage(root, target, "overview/overview.md"), []);
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  assert.deepEqual(await validateWikiPage(root, target, "overview.md"), []);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "missing-page",
-    page: "architecture/design.md",
-    message: "Target page is missing: architecture/design.md",
+    page: "architecture.md",
+    message: "Target page is missing: architecture.md",
   }]);
 
-  await writePage(root, "overview/overview.md", page());
-  assert.deepEqual(await validateWikiPage(root, target, "overview/overview.md"), [{
-    code: "cross-link",
-    page: "overview/overview.md",
-    message: "Declared cross-link is missing: overview/overview.md -> architecture/design.md",
+  await writePage(root, "overview.md", page({ body: "[Missing](./not-planned.md)\n" }));
+  assert.deepEqual(await validateWikiPage(root, target, "overview.md"), [{
+    code: "internal-link",
+    page: "overview.md",
+    message: "Internal Markdown link target is not in the target Wiki: ./not-planned.md",
   }]);
 });
 
 test("content validation rejects invalid writer output before touching the candidate", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
-  const before = await readFile(path.join(root, "wiki", "overview", "overview.md"), "utf8");
+  await writePage(root, "overview.md");
+  const before = await readFile(path.join(root, "wiki", "overview.md"), "utf8");
   const invalid = page({
     description: "",
     body: "## Present\n\n```mermaid\nflowchart TD\n  click A callback\n```\n",
   });
 
   assert.deepEqual(
-    await validateWikiPageContent(root, target, "overview/overview.md", invalid.replace("type: __AUTO__", "type: Overview"), "wiki", undefined, ["Required"]),
-    [{ code: "frontmatter", page: "overview/overview.md", message: "Frontmatter requires a non-empty description" },
-      { code: "mermaid-policy", page: "overview/overview.md", message: "Mermaid fence on line 4 is invalid: interactive Mermaid click actions are not allowed" },
-      { code: "required-section", page: "overview/overview.md", message: "Required section is missing: Required" }],
+    await validateWikiPageContent(root, target, "overview.md", invalid.replace("type: __AUTO__", "type: Overview"), "wiki", undefined, ["Required"]),
+    [{ code: "frontmatter", page: "overview.md", message: "Frontmatter requires a non-empty description" },
+      { code: "mermaid-policy", page: "overview.md", message: "Mermaid fence on line 4 is invalid: interactive Mermaid click actions are not allowed" },
+      { code: "required-section", page: "overview.md", message: "Required section is missing: Required" }],
   );
-  assert.equal(await readFile(path.join(root, "wiki", "overview", "overview.md"), "utf8"), before);
+  assert.equal(await readFile(path.join(root, "wiki", "overview.md"), "utf8"), before);
 
   const unformatted = before.replace("title: Example", "title:   Example");
   const canonical = canonicalizeWikiPageContent(unformatted);
@@ -202,8 +169,7 @@ test("content validation rejects invalid writer output before touching the candi
 test("finalization revalidates required sections even when pre-write validation was bypassed", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
-  await writePage(root, "architecture/design.md");
+  await writeSpecPages(root, target);
   const publicationAt = "2026-08-11T00:00:00.000Z";
 
   await assert.rejects(
@@ -211,20 +177,23 @@ test("finalization revalidates required sections even when pre-write validation 
     /Required section is missing: Operational guarantees/,
   );
   await assert.rejects(readFile(path.join(root, "wiki", "index.md"), "utf8"));
-  assert.equal(Object.hasOwn(parsePage(await readFile(path.join(root, "wiki", "overview", "overview.md"), "utf8")).frontmatter, "verified"), false);
+  assert.equal(Object.hasOwn(parsePage(await readFile(path.join(root, "wiki", "overview.md"), "utf8")).frontmatter, "verified"), false);
 });
 
 test("review indexes materialize only after all pages pass final deterministic checks", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md", page({ body: "## Required\n" }));
-  await writePage(root, "architecture/design.md", page({ body: "## Required\n" }));
+  await writeSpecPages(root, target, {
+    "overview.md": page({ body: "## Required\n" }),
+    "architecture.md": page({ body: "## Required\n" }),
+    "core/domain.md": page({ body: "## Required\n" }),
+  });
 
   assert.deepEqual(
     await materializeValidatedWikiIndexes(root, target, "wiki", undefined, ["Required"]),
-    ["architecture/index.md", "index.md", "overview/index.md"],
+    ["core/index.md", "index.md"],
   );
-  await writePage(root, "architecture/design.md");
+  await writePage(root, "architecture.md");
   const indexBefore = await readFile(path.join(root, "wiki", "index.md"), "utf8");
   await assert.rejects(
     materializeValidatedWikiIndexes(root, target, "wiki", undefined, ["Required"]),
@@ -236,11 +205,11 @@ test("review indexes materialize only after all pages pass final deterministic c
 test("page validation enforces the Spec type and rejects publisher-owned trust fields", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "architecture/design.md", page({ type: "Concept" }));
+  await writePage(root, "architecture.md", page({ type: "Concept" }));
 
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "frontmatter",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter type must match WikiSpec page type: Architecture",
   }]);
 
@@ -248,14 +217,14 @@ test("page validation enforces the Spec type and rejects publisher-owned trust f
     "tags:\n",
     "generated: { by: attacker, at: 2026-08-11T00:00:00.000Z }\nverified: true\ntags:\n",
   );
-  await writePage(root, "architecture/design.md", forged);
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", forged);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "frontmatter",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter field is publisher-owned and forbidden in writer output: generated",
   }, {
     code: "frontmatter",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter field is publisher-owned and forbidden in writer output: verified",
   }]);
 });
@@ -263,7 +232,7 @@ test("page validation enforces the Spec type and rejects publisher-owned trust f
 test("uses dependency-free Mermaid syntax-lite checks and separate policy diagnostics", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
+  await writePage(root, "overview.md");
 
   const cases = [
     ["graph TD\n  A --> B", "mermaid-syntax", "diagram declaration must be flowchart, sequenceDiagram, classDiagram, stateDiagram-v2, or erDiagram"],
@@ -275,11 +244,11 @@ test("uses dependency-free Mermaid syntax-lite checks and separate policy diagno
     ["flowchart TD\n  A[\"<span onclick='run()'>unsafe</span>\"]", "mermaid-policy", "diagram contains an HTML event handler"],
   ];
   for (const [diagram, code, expected] of cases) {
-    await writePage(root, "architecture/design.md", page({ body: `\`\`\`mermaid\n${diagram}\n\`\`\`\n` }));
-    const result = await validateWikiPage(root, target, "architecture/design.md");
+    await writePage(root, "architecture.md", page({ body: `\`\`\`mermaid\n${diagram}\n\`\`\`\n` }));
+    const result = await validateWikiPage(root, target, "architecture.md");
     assert.deepEqual(result, [{
       code,
-      page: "architecture/design.md",
+      page: "architecture.md",
       message: `Mermaid fence on line 2 is invalid: ${expected}`,
     }]);
   }
@@ -294,16 +263,17 @@ test("uses dependency-free Mermaid syntax-lite checks and separate policy diagno
     "erDiagram\n  USER ||--o{ ORDER : places",
   ];
   for (const diagram of valid) {
-    await writePage(root, "architecture/design.md", page({ body: `\`\`\`mermaid\n${diagram}\n\`\`\`\n` }));
-    assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), []);
+    await writePage(root, "architecture.md", page({ body: `\`\`\`mermaid\n${diagram}\n\`\`\`\n` }));
+    assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), []);
   }
 });
 
 test("an obsolete physical page cannot make a target Wiki link pass", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md", page({ body: "[Legacy](../legacy.md)\n" }));
-  await writePage(root, "architecture/design.md");
+  await writeSpecPages(root, target, {
+    "overview.md": page({ body: "[Legacy](./legacy.md)\n" }),
+  });
   await writePage(root, "legacy.md");
   await materializeWikiIndexes(root, target);
 
@@ -313,8 +283,8 @@ test("an obsolete physical page cannot make a target Wiki link pass", async () =
   assert.deepEqual(result.obsoletePages, ["legacy.md"]);
   assert.deepEqual(result.issues, [{
     code: "internal-link",
-    page: "overview/overview.md",
-    message: "Internal Markdown link target is not in the target Wiki: ../legacy.md",
+    page: "overview.md",
+    message: "Internal Markdown link target is not in the target Wiki: ./legacy.md",
   }]);
 });
 
@@ -322,15 +292,15 @@ test("frontmatter tags are optional but validated when present", async () => {
   const root = await fixture();
   const target = spec();
   const withoutTags = page().replace("tags:\n  - documentation\n", "");
-  await writePage(root, "overview/overview.md", withoutTags);
-  await writePage(root, "architecture/design.md", withoutTags);
+  await writePage(root, "overview.md", withoutTags);
+  await writePage(root, "architecture.md", withoutTags);
 
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), []);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), []);
 
-  await writePage(root, "architecture/design.md", page().replace("tags:\n  - documentation", "tags: []"));
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", page().replace("tags:\n  - documentation", "tags: []"));
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "frontmatter",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter tags must be a non-empty string array",
   }]);
 });
@@ -338,25 +308,25 @@ test("frontmatter tags are optional but validated when present", async () => {
 test("requires OKF source objects and complete source-id footnotes", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
+  await writePage(root, "overview.md");
 
-  await writePage(root, "architecture/design.md", page({
+  await writePage(root, "architecture.md", page({
     sources: [
       { id: "duplicate", resource: "repo:api/src/index.ts#L1-L1" },
       { id: "duplicate", resource: "repo:api/src/index.ts#L2-L2" },
     ],
   }));
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "frontmatter",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter source ids must be unique: duplicate",
   }]);
 
   const escaped = page().replace("Evidence.[^api-index]", "Literal \\[^api-index]");
-  await writePage(root, "architecture/design.md", escaped);
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", escaped);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter source is not cited by a footnote: api-index — cite the claim with [^api-index] in the body",
   }]);
 
@@ -364,21 +334,21 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
     "[Source](repo:api/src/index.ts#L1-L2)",
     "[Source](repo:api/src/index.ts#L1-L2) [Again](repo:api/src/index.ts#L1-L2)",
   );
-  await writePage(root, "architecture/design.md", duplicateLink);
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", duplicateLink);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Source footnote definition must contain exactly one repo resource: api-index — use exactly one [Source](repo:...) link in [^api-index]",
   }]);
 
-  await writePage(root, "architecture/design.md", page({ body: "Unknown source.[^unknown]\n" }));
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", page({ body: "Unknown source.[^unknown]\n" }));
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Source footnote reference is not declared in frontmatter sources: unknown — add { id: \"unknown\", resource: \"repo:...\" } to frontmatter sources",
   }, {
     code: "source-reference",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Source footnote reference has no definition: unknown — add [^unknown]: [Source](repo:...) matching the frontmatter resource",
   }]);
 
@@ -386,25 +356,25 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
     "[^api-index]: [Source](repo:api/src/index.ts#L1-L2)",
     "[^api-index]: [Source](repo:api/src/index.ts#L1-L1)",
   );
-  await writePage(root, "architecture/design.md", mismatch);
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", mismatch);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Source footnote resource does not match frontmatter source api-index: repo:api/src/index.ts#L1-L1 — set the footnote link equal to frontmatter resource repo:api/src/index.ts#L1-L2",
   }]);
 
   const unused = page().replace("Evidence.[^api-index]\n\n", "");
-  await writePage(root, "architecture/design.md", unused);
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", unused);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter source is not cited by a footnote: api-index — cite the claim with [^api-index] in the body",
   }]);
 
-  await writePage(root, "architecture/design.md", page({ body: "[Direct](repo:api/src/index.ts#L1-L2)\n" }));
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", page({ body: "[Direct](repo:api/src/index.ts#L1-L2)\n" }));
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Direct repo citation must use a declared source footnote: repo:api/src/index.ts#L1-L2 — cite with [^id] in body and define [^id]: [Source](repo:...) instead of linking repo: in prose",
   }]);
 
@@ -412,26 +382,20 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
     "  - id: api-index\n    resource: repo:api/src/index.ts#L1-L2",
     "  - api/src/index.ts#L1-L2",
   );
-  await writePage(root, "architecture/design.md", legacy);
-  assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
+  await writePage(root, "architecture.md", legacy);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "frontmatter",
-    page: "architecture/design.md",
+    page: "architecture.md",
     message: "Frontmatter sources must be a non-empty array of { id, resource } objects",
   }]);
 });
 
-test("returns precisely routed issues for missing pages, frontmatter, evidence, cross-links, and Mermaid", async () => {
+test("returns precisely routed issues for missing pages, frontmatter, evidence, and undeclared internal links", async () => {
   const root = await fixture();
-  const target = spec({
-    pages: [
-      { path: "overview/overview.md", pageType: "overview", findingIds: [] },
-      { path: "core/broken.md", pageType: "concept", findingIds: ["finding-api"] },
-      { path: "core/missing.md", pageType: "module", findingIds: ["finding-api"] },
-    ],
-    crossLinks: [{ fromPath: "overview/overview.md", toPath: "core/broken.md", purpose: "Required navigation" }],
-  });
-  await writePage(root, "overview/overview.md");
-  await writePage(root, "core/broken.md", [
+  const target = spec(["overview.md", "core/domain.md", "core/broken/concept.md", "core/missing/modules.md"]);
+  await writePage(root, "overview.md");
+  await writePage(root, "core/domain.md");
+  await writePage(root, "core/broken/concept.md", [
     "---",
     "type: Concept",
     "title: Broken",
@@ -455,28 +419,30 @@ test("returns precisely routed issues for missing pages, frontmatter, evidence, 
   const result = await validateWiki(root, target);
 
   assert.equal(result.ok, false);
-  assert.deepEqual(result.pages, ["core/broken.md", "overview/overview.md"]);
+  assert.deepEqual(result.pages, ["core/broken/concept.md", "core/domain.md", "overview.md"]);
   assert.deepEqual(result.issues, [
-    { code: "frontmatter", page: "core/broken.md", message: "Frontmatter requires a non-empty description" },
-    { code: "frontmatter", page: "core/broken.md", message: "Frontmatter tags must be a non-empty string array" },
-    { code: "source-reference", page: "core/broken.md", message: "frontmatter source broken-source line range exceeds file: repo:api/src/index.ts#L3-L3" },
-    { code: "internal-link", page: "core/broken.md", message: "Internal Markdown link target is not in the target Wiki: ./not-planned.md" },
-    { code: "missing-page", page: "core/missing.md", message: "Target page is missing: core/missing.md" },
-    { code: "cross-link", page: "overview/overview.md", message: "Declared cross-link is missing: overview/overview.md -> core/broken.md" },
+    { code: "frontmatter", page: "core/broken/concept.md", message: "Frontmatter requires a non-empty description" },
+    { code: "frontmatter", page: "core/broken/concept.md", message: "Frontmatter tags must be a non-empty string array" },
+    { code: "source-reference", page: "core/broken/concept.md", message: "frontmatter source broken-source line range exceeds file: repo:api/src/index.ts#L3-L3" },
+    { code: "internal-link", page: "core/broken/concept.md", message: "Internal Markdown link target is not in the target Wiki: ./not-planned.md" },
+    { code: "missing-page", page: "core/missing/modules.md", message: "Target page is missing: core/missing/modules.md" },
+    { code: "wiki-index", page: "core/broken/index.md", message: "Required Wiki index is missing: core/broken/index.md" },
     { code: "wiki-index", page: "core/index.md", message: "Required Wiki index is missing: core/index.md" },
+    { code: "wiki-index", page: "core/missing/index.md", message: "Required Wiki index is missing: core/missing/index.md" },
     { code: "wiki-index", page: "index.md", message: "Required Wiki index is missing: index.md" },
-    { code: "wiki-index", page: "overview/index.md", message: "Required Wiki index is missing: overview/index.md" },
   ]);
 });
 
 test("finalization removes obsolete Markdown, rebuilds exact indexes, and preserves assets", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md", page({ body: "[Architecture](../architecture/design.md)\n" }));
-  await writePage(root, "architecture/design.md");
+  await writeSpecPages(root, target, {
+    "overview.md": page({ body: "[Architecture](./architecture.md)\n" }),
+  });
   await writePage(root, "removed/old.md");
   await writePage(root, ".legacy.md");
   await writeFile(path.join(root, "wiki", "index.md"), "stale\n");
+  await mkdir(path.join(root, "wiki", "architecture"), { recursive: true });
   await writeFile(path.join(root, "wiki", "architecture", "index.md"), "stale\n");
   await writeFile(path.join(root, "wiki", "removed", "diagram.png"), "asset\n");
   await writeFile(path.join(root, "wiki", ".asset"), "hidden asset\n");
@@ -484,10 +450,10 @@ test("finalization removes obsolete Markdown, rebuilds exact indexes, and preser
   const result = await finalizeWiki(root, target);
 
   assert.deepEqual(result, {
-    pages: ["architecture/design.md", "overview/overview.md"],
+    pages: ["architecture.md", "core/domain.md", "overview.md"],
     obsoletePages: [".legacy.md", "removed/old.md"],
     removedPages: [".legacy.md", "removed/old.md"],
-    rebuiltIndexes: ["architecture/index.md", "index.md", "overview/index.md"],
+    rebuiltIndexes: ["core/index.md", "index.md"],
   });
   assert.equal(await readFile(path.join(root, "wiki", "removed", "diagram.png"), "utf8"), "asset\n");
   assert.equal(await readFile(path.join(root, "wiki", ".asset"), "utf8"), "hidden asset\n");
@@ -495,23 +461,22 @@ test("finalization removes obsolete Markdown, rebuilds exact indexes, and preser
   await assert.rejects(readFile(path.join(root, "wiki", "removed", "old.md"), "utf8"));
   assert.equal(
     await readFile(path.join(root, "wiki", "index.md"), "utf8"),
-    "---\nokf_version: \"0.2\"\n---\n\n# Wiki\n\n## Directories\n\n- [architecture domain](./architecture/index.md): Document the target\n- [overview domain](./overview/index.md): Document the target\n",
+    "---\nokf_version: \"0.2\"\n---\n\n# Wiki\n\n## Directories\n\n- [Example](./core/index.md): Example documentation\n\n## Pages\n\n- [Example](./architecture.md): Example documentation\n- [Example](./overview.md): Example documentation\n",
   );
   assert.equal(
-    await readFile(path.join(root, "wiki", "architecture", "index.md"), "utf8"),
-    "# architecture domain\n\nDocument the target\n\n## Pages\n\n- [Example](./design.md): Example documentation\n",
+    await readFile(path.join(root, "wiki", "core", "index.md"), "utf8"),
+    "# Example\n\nExample documentation\n\n## Pages\n\n- [Example](./domain.md): Example documentation\n",
   );
 });
 
 test("index materialization is idempotent and never removes concept pages", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
-  await writePage(root, "architecture/design.md");
+  await writeSpecPages(root, target);
   await writePage(root, "obsolete.md");
   await writeFile(path.join(root, "wiki", "index.md"), "stale\n");
 
-  const expected = ["architecture/index.md", "index.md", "overview/index.md"];
+  const expected = ["core/index.md", "index.md"];
   assert.deepEqual(await materializeWikiIndexes(root, target), expected);
   assert.equal(await readFile(path.join(root, "wiki", "obsolete.md"), "utf8"), page({ type: "Concept" }));
   const first = await readFile(path.join(root, "wiki", "index.md"), "utf8");
@@ -521,10 +486,8 @@ test("index materialization is idempotent and never removes concept pages", asyn
 
 test("concept directory indexes fall back to the directory name", async () => {
   const root = await fixture();
-  const target = spec({
-    pages: [{ path: "core/request/flows.md", pageType: "flow", findingIds: ["finding-api"] }],
-  });
-  await writePage(root, "core/request/flows.md");
+  const target = spec(["overview.md", "core/domain.md", "core/request/flows.md"]);
+  await writeSpecPages(root, target);
 
   await materializeWikiIndexes(root, target);
 
@@ -536,38 +499,19 @@ test("concept directory indexes fall back to the directory name", async () => {
 
 test("standard topology creates root, domain, and concept indexes", async () => {
   const root = await fixture();
-  const metadata = (pageType, pagePath, title = pagePath, purpose = "Document the target") => ({
-    pageType,
-    path: pagePath,
-    title,
-    purpose,
-    readerQuestions: [],
-    requiredFacets: [],
-    findingIds: [],
+  const target = spec([
+    "overview.md",
+    "architecture.md",
+    "payments/domain.md",
+    "payments/invoice/concept.md",
+    "payments/invoice/flows.md",
+    "payments/invoice/states.md",
+    "payments/invoice/data.md",
+  ]);
+  await writeSpecPages(root, target, {
+    "payments/domain.md": page({ title: "Payments", description: "Payment lifecycle" }),
+    "payments/invoice/concept.md": page({ title: "Invoice", description: "Invoice lifecycle" }),
   });
-  const target = {
-    version: 1,
-    overview: metadata("overview", "overview.md"),
-    architecture: metadata("architecture", "architecture.md"),
-    domains: [{
-      id: "payments",
-      title: "Payments",
-      purpose: "Payment lifecycle",
-      pages: [
-        metadata("domain", "payments/domain.md"),
-        metadata("concept", "payments/invoice/concept.md", "Invoice", "Invoice lifecycle"),
-        metadata("flow", "payments/invoice/flows.md"),
-        metadata("state", "payments/invoice/states.md"),
-        metadata("data", "payments/invoice/data.md"),
-      ],
-    }],
-    crossLinks: [],
-    sharedTerms: [],
-    omissions: [],
-  };
-  for (const targetPage of [target.overview, target.architecture, ...target.domains[0].pages]) {
-    await writePage(root, targetPage.path, page({ type: `${targetPage.pageType[0].toUpperCase()}${targetPage.pageType.slice(1)}` }));
-  }
 
   assert.deepEqual(await materializeWikiIndexes(root, target), [
     "index.md",
@@ -582,36 +526,38 @@ test("standard topology creates root, domain, and concept indexes", async () => 
 test("index projection renders all model-authored metadata as inert text", async () => {
   const root = await fixture();
   const target = spec();
-  const architecture = target.domains.find((domain) => domain.id === "architecture");
-  architecture.title = "<img src=x onerror=alert(1)>";
-  architecture.purpose = "[unsafe](javascript:alert(1))";
-  await writePage(root, "overview/overview.md");
-  await writePage(root, "architecture/design.md", page({
-    title: "<script>alert(1)</script>",
-    description: "<img src=x onerror=alert(1)>",
-  }));
+  await writeSpecPages(root, target, {
+    "architecture.md": page({
+      title: '"<script>alert(1)</script>"',
+      description: '"<img src=x onerror=alert(1)>"',
+    }),
+    "core/domain.md": page({
+      title: '"<img src=x onerror=alert(1)>"',
+      description: '"[unsafe](javascript:alert(1))"',
+    }),
+  });
 
   await materializeWikiIndexes(root, target);
 
   const rootIndex = await readFile(path.join(root, "wiki", "index.md"), "utf8");
-  const domainIndex = await readFile(path.join(root, "wiki", "architecture", "index.md"), "utf8");
+  const domainIndex = await readFile(path.join(root, "wiki", "core", "index.md"), "utf8");
   assert.equal(rootIndex.includes("<img"), false);
   assert.equal(domainIndex.includes("<script>"), false);
   assert.match(rootIndex, /&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.match(domainIndex, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(domainIndex, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(rootIndex, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.deepEqual((await validateWiki(root, target)).issues, []);
 });
 
 test("finalization is idempotent", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
-  await writePage(root, "architecture/design.md");
+  await writeSpecPages(root, target);
 
   const publicationAt = "2026-08-11T00:00:00.000Z";
   await finalizeWiki(root, target, "wiki", publicationAt);
   const firstIndex = await readFile(path.join(root, "wiki", "index.md"), "utf8");
-  const firstPage = await readFile(path.join(root, "wiki", "architecture", "design.md"), "utf8");
+  const firstPage = await readFile(path.join(root, "wiki", "architecture.md"), "utf8");
   const stamped = parsePage(firstPage).frontmatter;
   assert.deepEqual(stamped.generated, { by: "open-okf-wiki/1.0.0", at: publicationAt });
   assert.deepEqual(stamped.verified, { by: "process:open-okf-wiki", at: publicationAt });
@@ -624,12 +570,12 @@ test("finalization is idempotent", async () => {
   assert.deepEqual(second.obsoletePages, []);
   assert.deepEqual(second.removedPages, []);
   assert.equal(await readFile(path.join(root, "wiki", "index.md"), "utf8"), firstIndex);
-  assert.equal(await readFile(path.join(root, "wiki", "architecture", "design.md"), "utf8"), firstPage);
+  assert.equal(await readFile(path.join(root, "wiki", "architecture.md"), "utf8"), firstPage);
 
   const reverifiedAt = "2026-08-12T00:00:00.000Z";
   await finalizeWiki(root, target, "wiki", reverifiedAt);
   const reverified = parsePage(
-    await readFile(path.join(root, "wiki", "architecture", "design.md"), "utf8"),
+    await readFile(path.join(root, "wiki", "architecture.md"), "utf8"),
   ).frontmatter;
   assert.deepEqual(reverified.generated, { by: "open-okf-wiki/1.0.0", at: publicationAt });
   assert.deepEqual(reverified.verified, { by: "process:open-okf-wiki", at: reverifiedAt });
@@ -638,8 +584,9 @@ test("finalization is idempotent", async () => {
 test("failed validation performs no deletion", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md", "invalid page");
-  await writePage(root, "architecture/design.md");
+  await writePage(root, "overview.md", "invalid page");
+  await writePage(root, "architecture.md");
+  await writePage(root, "core/domain.md");
   await writePage(root, "obsolete.md");
   await writeFile(path.join(root, "wiki", "index.md"), "stale\n");
 
@@ -652,8 +599,7 @@ test("failed validation performs no deletion", async () => {
 test("finalizer refuses Wiki symlinks before deleting obsolete pages", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
-  await writePage(root, "architecture/design.md");
+  await writeSpecPages(root, target);
   await writePage(root, "obsolete.md");
   await materializeWikiIndexes(root, target);
   const outside = path.join(root, "outside.md");
@@ -670,17 +616,16 @@ test("finalizer refuses Wiki symlinks before deleting obsolete pages", async () 
 test("a partially failed finalization can be retried", async () => {
   const root = await fixture();
   const target = spec();
-  await writePage(root, "overview/overview.md");
-  await writePage(root, "architecture/design.md");
-  await mkdir(path.join(root, "wiki", "overview", "index.md"));
-  await writeFile(path.join(root, "wiki", "overview", "index.md", "asset.txt"), "collision\n");
+  await writeSpecPages(root, target);
+  await mkdir(path.join(root, "wiki", "core", "index.md"));
+  await writeFile(path.join(root, "wiki", "core", "index.md", "asset.txt"), "collision\n");
 
   await assert.rejects(finalizeWiki(root, target), /unexpected Wiki entry/);
-  await rm(path.join(root, "wiki", "overview", "index.md"), { recursive: true });
+  await rm(path.join(root, "wiki", "core", "index.md"), { recursive: true });
 
   const result = await finalizeWiki(root, target);
-  assert.deepEqual(result.pages, ["architecture/design.md", "overview/overview.md"]);
-  assert.equal(await readFile(path.join(root, "wiki", "overview", "index.md"), "utf8"), "# overview domain\n\nDocument the target\n\n## Pages\n\n- [Example](./overview.md): Example documentation\n");
+  assert.deepEqual(result.pages, ["architecture.md", "core/domain.md", "overview.md"]);
+  assert.equal(await readFile(path.join(root, "wiki", "core", "index.md"), "utf8"), "# Example\n\nExample documentation\n\n## Pages\n\n- [Example](./domain.md): Example documentation\n");
 });
 
 test("rejects an unsafe writer-requested page path before reading the Wiki tree", async () => {

@@ -6,7 +6,7 @@ import { okfSources, parsePage, stringifyPage } from "./frontmatter.js";
 import type { WikiValidation, WikiValidationIssue } from "./types.js";
 import { isRecord } from "./util.js";
 import { isReservedWikiPagePath, isSafeWikiPagePath } from "./wiki-path.js";
-import { wikiSpecPagePaths, wikiSpecPages, type WikiSpec, type WikiSpecPage } from "./wiki-spec.js";
+import { wikiSpecPagePaths, wikiSpecPages, wikiSpecPageType, type WikiSpec, type WikiSpecPage } from "./wiki-spec.js";
 import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
 import { validateWikiIndexes } from "./wiki-indexes.js";
 import type { WikiPinnedSourcePlan } from "./runtime-types.js";
@@ -111,18 +111,13 @@ export async function validateWikiCandidate(
   const obsoletePages = tree.markdown
     .filter((page) => !isReservedWikiPagePath(page) && !targetSet.has(page))
     .sort();
-  const bodies = new Map<string, string>();
   const indexablePages = new Set<string>();
 
   for (const page of targetPages) {
     const body = await validateTargetPage(roots, specPages.get(page)!, plannedTargets, "global", requiredSections, issues);
-    if (body !== undefined) {
-      bodies.set(page, body);
-      indexablePages.add(page);
-    }
+    if (body !== undefined) indexablePages.add(page);
   }
 
-  validateCrossLinks(spec, bodies, targetSet, issues);
   if (validateIndexes && !issues.some((entry) => entry.code === "spec-page")) {
     await validateWikiIndexes(roots, spec, targetPages, indexablePages, tree.markdown, issues);
   }
@@ -209,11 +204,9 @@ async function validateWikiPageContentWithRoots(
 ): Promise<WikiValidationIssue[]> {
   const issues: WikiValidationIssue[] = [];
   const targetPages = specPagePaths(spec);
-  const targetSet = new Set(targetPages);
   const plannedTargets = new Set([...targetPages, ...derivedIndexPaths(targetPages)]);
   const specPage = wikiSpecPages(spec).find((candidate) => candidate.path === page)!;
-  const body = await validatePageContent(roots, specPage, content, plannedTargets, "candidate", requiredSections, issues);
-  if (body !== undefined) validateCrossLinksFromPage(spec, page, body, targetSet, issues);
+  await validatePageContent(roots, specPage, content, plannedTargets, "candidate", requiredSections, issues);
   return issues;
 }
 
@@ -397,7 +390,7 @@ async function validatePageContent(
     return undefined;
   }
 
-  const sources = await validateFrontmatter(page, specPage.pageType, parsed.frontmatter, roots, mode, issues);
+  const sources = await validateFrontmatter(page, wikiSpecPageType(page)!, parsed.frontmatter, roots, mode, issues);
   await validateBody(page, parsed.body, roots, plannedTargets, sources, issues);
   validateRequiredSections(page, parsed.body, requiredSections, issues);
   return parsed.body;
@@ -754,36 +747,6 @@ function resolveInternalMarkdownLink(page: string, target: string): string | nul
   const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(page), decoded));
   if (resolved === ".." || resolved.startsWith("../") || path.posix.isAbsolute(resolved)) return null;
   return resolved;
-}
-
-function validateCrossLinks(
-  spec: WikiSpec,
-  bodies: ReadonlyMap<string, string>,
-  targetPages: ReadonlySet<string>,
-  issues: WikiValidationIssue[],
-): void {
-  for (const page of new Set((spec.crossLinks ?? []).map((link) => link.fromPath))) {
-    validateCrossLinksFromPage(spec, page, bodies.get(page) ?? "", targetPages, issues);
-  }
-}
-
-function validateCrossLinksFromPage(
-  spec: WikiSpec,
-  page: string,
-  body: string,
-  targetPages: ReadonlySet<string>,
-  issues: WikiValidationIssue[],
-): void {
-  for (const link of (spec.crossLinks ?? []).filter((candidate) => candidate.fromPath === page)) {
-    if (!targetPages.has(link.fromPath) || !targetPages.has(link.toPath)) {
-      issue(issues, "cross-link", `Declared cross-link references a page outside the target Wiki: ${link.fromPath} -> ${link.toPath}`);
-      continue;
-    }
-    const targets = markdownTargets(body).map((target) => resolveInternalMarkdownLink(link.fromPath, target));
-    if (!targets.includes(link.toPath)) {
-      issue(issues, "cross-link", `Declared cross-link is missing: ${link.fromPath} -> ${link.toPath}`, link.fromPath);
-    }
-  }
 }
 
 function sourceFootnotes(markdown: string): SourceFootnoteScan {

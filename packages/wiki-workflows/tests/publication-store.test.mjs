@@ -9,12 +9,7 @@ import { createWikiPublicationStore } from "../dist/publication-store.js";
 import { issueWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const finalSpec = {
-  version: 1,
-  overview: { pageType: "overview", path: "overview.md", title: "Overview", purpose: "Repository map", readerQuestions: [], requiredFacets: [], findingIds: [] },
-  domains: [{ id: "core", title: "Core", purpose: "Core", pages: [
-    { pageType: "domain", path: "core/domain.md", title: "Core", purpose: "Core", readerQuestions: [], requiredFacets: [], findingIds: [] },
-  ] }],
-  crossLinks: [], sharedTerms: [], omissions: [],
+  pages: ["overview.md", "core/domain.md"],
 };
 
 async function fixture(t, afterStep) {
@@ -91,13 +86,12 @@ test("published metadata carries a validated final WikiSpec and remains loadable
   await assert.rejects(createWikiPublicationStore({ workspace }).readPublishedMetadata(), /pages do not match/);
   await assert.rejects(createWikiPublicationStore({ workspace }).reconcile("with-spec"), /pages do not match/);
 
-  const invalid = structuredClone(finalSpec);
-  invalid.domains[0].pages[0].path = "wrong/domain.md";
+  const invalid = { pages: ["overview.md", "core/invoice/concept.md"] };
   const second = await createWikiPublicationStore({ workspace }).prepareCandidate("invalid-spec");
   await writeFile(path.join(second, "overview.md"), "changed\n");
   await assert.rejects(issueWikiPublicationSeal({
-    runId: "invalid-spec", executionToken: "execution-invalid-spec", candidateRoot: second, pages: ["overview.md", "wrong/domain.md"], spec: invalid,
-  }), /core\/domain.md/);
+    runId: "invalid-spec", executionToken: "execution-invalid-spec", candidateRoot: second, pages: ["overview.md", "core/invoice/concept.md"], spec: invalid,
+  }), /domain\.md/);
 });
 
 test("publication rejects a valid seal issued for a different Run before mutating the published Wiki", async (t) => {
@@ -287,10 +281,6 @@ test("reconcile rejects provenance and journal tampering even when page paths ar
     { ...metadata, sourceFingerprint: "tampered-source" },
     { ...metadata, summary: "tampered summary" },
     { ...metadata, finalTreeDigest: "0".repeat(64) },
-    {
-      ...metadata,
-      wikiSpec: { ...metadata.wikiSpec, overview: { ...metadata.wikiSpec.overview, title: "Tampered title" } },
-    },
   ];
   for (const tampered of tamperedMetadata) {
     await writeFile(metadataFile, JSON.stringify(tampered));

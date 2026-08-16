@@ -100,7 +100,6 @@ export class WikiTaskRuntime {
   private readonly maxDelegateBatches: number;
   private delegatedTasks = 0;
   private delegateBatches = 0;
-  private nextBatchId = 1;
   private stateFailure: unknown;
 
   constructor(private readonly options: WikiTaskRuntimeOptions) {
@@ -153,10 +152,10 @@ export class WikiTaskRuntime {
     }
 
     const batchId = requests[0]?.batchId;
-    if (batchId !== this.nextBatchId || requests.some((task) => task.batchId !== batchId)) throw new Error("Wiki delegate contracts must use the next durable batch identity");
+    if (batchId === undefined || requests.some((task) => task.batchId !== batchId)) throw new Error("Wiki delegate contracts must belong to one batch");
+    if (this.batches.has(batchId)) throw new Error(`Duplicate delegate batch: ${batchId}`);
     for (const task of requests) artifactNodeId(batchId, task.id);
     await this.options.transitions.batchQueued(requests);
-    this.nextBatchId += 1;
     const records = new Map(requests.map((task) => [task.id, createAsyncTask({
       task,
       phase: "queued",
@@ -412,7 +411,6 @@ export class WikiTaskRuntime {
   private restore(input: WikiTaskRuntimeState): void {
     const state = cloneRuntimeState(input);
     validateRestoredState(state);
-    this.nextBatchId = state.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1);
     this.delegatedTasks = state.batches.reduce((total, batch) => total + batch.tasks.length, 0);
     this.delegateBatches = state.batches.length;
     for (const savedBatch of state.batches) {
@@ -812,10 +810,6 @@ function partialResult(error: unknown): { markdown?: string; coverage?: string[]
     coverage: error.options.coverage,
     gaps: error.options.gaps,
   } : {};
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 async function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {

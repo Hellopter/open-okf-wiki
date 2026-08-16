@@ -276,6 +276,21 @@ export class WikiLeadRun {
     });
   }
 
+  /** Remove a still-queued batch so a failed start can mint again. */
+  async rollbackDelegateBatch(batchId: number): Promise<void> {
+    await this.serial(async () => {
+      await this.recover();
+      const batchIndex = this.state.delegates.batches.findIndex((batch) => batch.batchId === batchId);
+      if (batchIndex < 0) throw new Error(`Unknown delegate batch: ${batchId}`);
+      const batch = this.state.delegates.batches[batchIndex];
+      if (batch.tasks.some((task) => task.phase !== "queued" || task.attempt !== 0 || task.collected)) {
+        throw new Error(`Cannot roll back delegate batch ${batchId} after launch`);
+      }
+      const batches = this.state.delegates.batches.filter((_, index) => index !== batchIndex);
+      await this.commitState({ ...this.state, delegates: { batches } });
+    });
+  }
+
   readonly taskTransitions: WikiTaskRuntimeTransitions = {
     batchQueued: async (values) => await this.serial(async () => {
       await this.recover();
@@ -807,6 +822,7 @@ function boardInput(state: WikiLeadRunState): WikiBoardProjectionInput {
     reviews: state.reviews.map((review) => ({ verdict: review.verdict, reviewedPaths: review.reviewedPaths })),
     delegates: {
       batches: state.delegates.batches.map((batch) => ({
+        batchId: batch.batchId,
         tasks: batch.tasks.map((task) => ({
           id: task.task.id,
           role: task.task.role,

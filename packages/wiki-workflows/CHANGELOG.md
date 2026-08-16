@@ -11,8 +11,13 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   role brief, and allows read-only access to templates.
 - Candidate pages live in concept clusters (`<domain>/<concept>/`); type-bucket
   directories are rejected. Remaining work is projected to host-owned `board.md`.
+- Lead `wiki_plan` submits a page path list. Dispatch uses Remaining cluster
+  ids; collect uses the batch id shown on the board.
 
 ### Breaking architecture change
+
+- Plan and delegate envelopes are small. WikiSpec is a Candidate page list.
+  There is no migration from the previous fat Spec JSON.
 
 - Runs are isolated full generations. Every Run starts from an empty Candidate;
   the Published Wiki and final WikiSpec are provenance only.

@@ -1,4 +1,12 @@
-import { sameWikiCluster, wikiSpecPagePaths, wikiSpecRelativePath, type WikiSpec } from "./wiki-spec.js";
+import {
+  sameWikiCluster,
+  wikiSpecClusterId,
+  wikiSpecClusterPaths,
+  wikiSpecClusters,
+  wikiSpecPagePaths,
+  wikiSpecRelativePath,
+  type WikiSpec,
+} from "./wiki-spec.js";
 
 const FANOUT = { research: 4, write: 2, review: 2 } as const;
 
@@ -6,6 +14,7 @@ export interface WikiDispatchTaskInput {
   id?: string;
   role?: string;
   instruction?: string;
+  cluster?: string;
   writePaths?: readonly string[];
   reviewPaths?: readonly string[];
   contextRefs?: readonly string[];
@@ -68,7 +77,6 @@ export function assertDispatchable(input: WikiDispatchInput): void {
   }
 
   const spec = input.spec;
-  const declared = new Set((spec ? wikiSpecPagePaths(spec) : []).flatMap((page) => [page, `wiki/${page}`]));
   const known = input.knownContextRefs instanceof Set ? input.knownContextRefs : new Set(input.knownContextRefs ?? []);
   const batchWritePaths = new Set<string>();
   const pending = new Set(pendingWritePaths);
@@ -76,30 +84,48 @@ export function assertDispatchable(input: WikiDispatchInput): void {
   for (const task of tasks) {
     if (task.role === "write" || task.role === "review") {
       if (!spec) throw new Error(`Submit an accepted WikiSpec before delegating ${task.role} tasks`);
-      const paths = task.role === "write" ? task.writePaths ?? [] : task.reviewPaths ?? [];
-      if (!paths.length) throw new Error(`Delegate ${task.role} task ${task.id} requires paths`);
-      for (const page of paths) {
-        if (!declared.has(page)) {
-          throw new Error(`Delegated ${task.role} path is not declared by the current WikiSpec: ${page}`);
+      const cluster = dispatchCluster(task, spec);
+      const clusterPages = wikiSpecClusterPaths(spec, cluster);
+
+      if (task.role === "write") {
+        const overlapPages = task.cluster !== undefined && String(task.cluster).trim()
+          ? clusterPages
+          : (task.writePaths ?? []).map(wikiSpecRelativePath);
+        for (const page of overlapPages) {
+          const key = wikiSpecRelativePath(page);
+          if (batchWritePaths.has(key)) throw new Error(`Write path overlaps another task in this batch: ${page}`);
+          if (pending.has(key)) throw new Error(`Write path overlaps an existing non-terminal write: ${page}`);
+          batchWritePaths.add(key);
         }
-      }
-      if (!sameWikiCluster(paths)) {
-        throw new Error(`Delegated ${task.role} paths must belong to one Wiki cluster`);
       }
     }
 
     for (const ref of task.contextRefs ?? []) {
       if (!known.has(ref)) throw new Error(`Delegate task ${task.id} requests unknown context artifact: ${ref}`);
     }
-
-    if (task.role === "write") {
-      for (const page of task.writePaths ?? []) {
-        const key = wikiSpecRelativePath(page);
-        if (batchWritePaths.has(key)) throw new Error(`Write path overlaps another task in this batch: ${page}`);
-        if (pending.has(key)) throw new Error(`Write path overlaps an existing non-terminal write: ${page}`);
-        batchWritePaths.add(key);
-      }
-    }
   }
+}
+
+/** Resolve a write/review cluster id from the Lead-facing cluster field, or from internal path lists. */
+function dispatchCluster(task: WikiDispatchTaskInput, spec: WikiSpec): string {
+  const labeled = typeof task.cluster === "string" ? task.cluster.trim() : "";
+  if (labeled) {
+    if (!wikiSpecClusters(spec).includes(labeled) || !wikiSpecClusterPaths(spec, labeled).length) {
+      throw new Error(`Unknown Wiki cluster: ${labeled}`);
+    }
+    return labeled;
+  }
+
+  const paths = task.role === "write" ? task.writePaths ?? [] : task.reviewPaths ?? [];
+  if (!paths.length) throw new Error(`Delegate ${task.role} task ${task.id} requires a cluster`);
+  const clusterId = wikiSpecClusterId(paths[0]);
+  const declared = new Set(wikiSpecPagePaths(spec).flatMap((page) => [page, `wiki/${page}`]));
+  if (!clusterId || !sameWikiCluster(paths) || !wikiSpecClusters(spec).includes(clusterId) || !wikiSpecClusterPaths(spec, clusterId).length) {
+    throw new Error(`Unknown Wiki cluster: ${clusterId ?? paths[0]}`);
+  }
+  for (const page of paths) {
+    if (!declared.has(page)) throw new Error(`Unknown Wiki cluster: ${page}`);
+  }
+  return clusterId;
 }
 

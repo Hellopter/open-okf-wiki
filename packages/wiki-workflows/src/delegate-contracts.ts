@@ -317,6 +317,24 @@ export function projectWikiAgentOutcome(value: unknown): WikiAgentOutcome {
   };
 }
 
+/** Lead-visible batch snapshot: no contract identity or full artifact records. */
+export function projectWikiLeadSnapshot(snapshot: WikiDelegateBatchSnapshot): {
+  batchId: number;
+  status: WikiDelegateBatchSnapshot["status"];
+  pendingTaskIds: string[];
+  receipts: Array<WikiAgentOutcome & { outputs: { nodeId: string }[] }>;
+} {
+  return {
+    batchId: snapshot.batchId,
+    status: snapshot.status,
+    pendingTaskIds: [...snapshot.pendingTaskIds],
+    receipts: snapshot.receipts.map((receipt) => ({
+      ...projectWikiAgentOutcome(receipt),
+      outputs: receipt.outputs.map((output) => ({ nodeId: output.nodeId })),
+    })),
+  };
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
   return value as Record<string, unknown>;
