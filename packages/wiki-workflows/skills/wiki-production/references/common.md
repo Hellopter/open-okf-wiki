@@ -1,9 +1,10 @@
 # Common Rules
 
-Declared source roots are the only source of truth. Read only authorized source
-paths and write only authorized candidate paths. Never write the published
-`wiki/`, `.okf-wiki` control files, source trees, or files reached through a
-symlink escape.
+Declared source roots are the only source of truth. Use the scope paths from
+the task; do not read the workspace root unless it is the declared Source.
+Read only authorized source paths and write only authorized candidate paths.
+Never write the published `wiki/`, `.okf-wiki` control files, source trees, or
+files reached through a symlink escape.
 
 Research evidence uses `path#Lx-Ly`. Published page sources use
 `repo:<source>/<path>#Lx-Ly`. Every load-bearing claim needs a frontmatter

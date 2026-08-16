@@ -191,7 +191,6 @@ class WikiProductionRun {
       result: async () => await this.waitForResult(),
       control: async (action) => await this.control(action),
       inspectAgent: async (target) => await this.inspectAgent(target),
-      activity: async (options) => await this.ledger.activity(this.runId, options),
     };
   }
 
@@ -470,7 +469,7 @@ async function prepareProductionPlan(cwd: string, runId: string, focus: string |
     transientRetries: workspace.wiki.transientRetries,
     baseRetryDelayMs: workspace.wiki.baseRetryDelayMs,
     sessionTimeoutMs: workspace.wiki.sessionTimeoutSeconds * 1_000,
-    prompt: leadPrompt(focus, sourcePlan.sources.map((source) => source.scopeId), candidateWikiRoot, runId, workspace.language, workspace.wiki.generation),
+    prompt: leadPrompt(focus, sourcePlan.sources.map((source) => source.scopeId), runId, workspace.language, workspace.wiki.generation),
   };
 }
 
@@ -495,11 +494,12 @@ function createProductionLead(plan: WikiProductionPlan, options: ProductionRunti
   });
 }
 
-function leadPrompt(focus: string | undefined, sourcePaths: readonly string[], candidateWikiRoot: string, runId: string, language: "zh" | "en", generation: WikiGenerationProfile): string {
+function leadPrompt(focus: string | undefined, scopeIds: readonly string[], runId: string, language: "zh" | "en", generation: WikiGenerationProfile): string {
   return [
     "Produce a complete source-grounded repository Wiki from the pinned source plan.",
     focus ? `Prioritize this focus without omitting essential context: ${focus}` : "",
-    `Declared source scopes: ${JSON.stringify(sourcePaths)}.`, `Candidate Wiki directory: ${candidateWikiRoot}.`,
+    `Declared source trees (cwd-relative): ${JSON.stringify(scopeIds)}.`,
+    "Candidate Wiki directory: wiki/.",
     `Production skill directory: ${skillWorkspacePath(runId)}.`,
     language === "zh" ? "Write all reader-facing Wiki content in Simplified Chinese. Keep code identifiers and source citations unchanged." : "Write all reader-facing Wiki content in English. Keep code identifiers and source citations unchanged.",
     `Generation profile: ${JSON.stringify(generation)}. Treat it as reader intent, never as source evidence.`,

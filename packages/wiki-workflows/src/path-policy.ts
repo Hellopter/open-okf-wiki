@@ -99,7 +99,10 @@ export async function assertAllowedWorkspacePath(
   const permitted = permittedRoots
     .filter((root) => pathIsInside(path.resolve(root.logicalRoot), absolute))
     .sort((left, right) => path.resolve(right.logicalRoot).length - path.resolve(left.logicalRoot).length)[0];
-  if (!permitted) throw new Error(`Path is outside the permitted workspace scope: ${candidate}`);
+  if (!permitted) {
+    const roots = permittedRoots.map((root) => cwdRelativeRoot(workspaceRoot, root.logicalRoot));
+    throw new Error(`Path is outside the permitted workspace scope: ${candidate}. Permitted roots: ${roots.join(", ") || "(none)"}`);
+  }
 
   const permittedPhysical = permitted.physicalRoot ?? await realpath(permitted.logicalRoot).catch(() => path.resolve(permitted.logicalRoot));
   let existing = absolute;
@@ -169,4 +172,9 @@ export async function pathExists(location: string): Promise<boolean> {
 
 export function isMissingPath(error: unknown): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
+}
+
+export function cwdRelativeRoot(workspaceRoot: string, target: string): string {
+  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(target)).split(path.sep).join("/");
+  return relative === "" ? "." : relative;
 }

@@ -295,7 +295,7 @@ test("Lead projects duplicate task IDs independently by runtime batchId", async 
   const runtime = createPiLeadRuntime({
     createSession: async (options) => sessionFactory(async (tools) => {
       if (tools.some((tool) => tool.name === "wiki_delegate_start")) {
-        const task = { id: "same-id", role: "research", instruction: "research", sourceScopeIds: [], contextRefs: [] };
+        const task = { id: "same-id", role: "research", instruction: "research", sourceScopeIds: ["source"], contextRefs: [] };
         const first = await call(tools, "wiki_delegate_start", { tasks: [task] });
         const second = await call(tools, "wiki_delegate_start", { tasks: [task] });
         await call(tools, "wiki_delegate_collect", { batchId: first.details.batchId, until: "all", timeoutSeconds: 60 });
@@ -321,7 +321,7 @@ test("wiki_finish rejects terminal delegated receipts that were not collected", 
     createSession: async (options) => sessionFactory(async (tools) => {
       if (tools.some((tool) => tool.name === "wiki_delegate_start")) {
         await call(tools, "wiki_plan", { spec: spec() });
-        await call(tools, "wiki_delegate_start", { tasks: [{ id: "research", role: "research", instruction: "research", sourceScopeIds: [], contextRefs: [] }] });
+        await call(tools, "wiki_delegate_start", { tasks: [{ id: "research", role: "research", instruction: "research", sourceScopeIds: ["source"], contextRefs: [] }] });
         await terminal;
         await call(tools, "wiki_finish", { summary: "not collected" });
       } else {
@@ -495,7 +495,7 @@ test("leaf sessions expose one explicit Pi role skill and keep writer-only promp
 
   for (const [role, task] of [
     ["writer", writeTask("page")],
-    ["researcher", { id: "research", role: "research", instruction: "research", sourceScopeIds: [], contextRefs: [] }],
+    ["researcher", { id: "research", role: "research", instruction: "research", sourceScopeIds: ["source"], contextRefs: [] }],
     ["reviewer", { id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] }],
   ]) {
     const agent = new PiWikiLeafAgent({
@@ -534,6 +534,7 @@ test("leaf sessions expose one explicit Pi role skill and keep writer-only promp
   assert.match(prompts.writer, /references\/templates\/<pageType>\.md/);
   assert.match(prompts.writer, /^\/skill:wiki-production-writer /);
   assert.match(prompts.researcher, /^\/skill:wiki-production-researcher /);
+  assert.match(prompts.researcher, /Readable source trees \(cwd-relative\): source/);
   assert.doesNotMatch(prompts.researcher, /Write `brief\.md`/);
   assert.doesNotMatch(prompts.researcher, /type: Domain/);
   assert.match(prompts.reviewer, /^\/skill:wiki-production-reviewer /);
@@ -699,7 +700,7 @@ test("Pi tool budget rejects the first over-limit call before tool execution", a
       },
     } }),
   }, transactionalWriter);
-  await assert.rejects(agent.run(writeTask("budget"), leafContext(root, candidateWikiRoot)), (error) => error?.code === "session_tool_calls_exhausted");
+  await assert.rejects(agent.run({ ...writeTask("budget"), sourceScopeIds: ["source"] }, leafContext(root, candidateWikiRoot)), (error) => error?.code === "session_tool_calls_exhausted");
   assert.equal(secondError?.code, "session_tool_calls_exhausted");
   assert.deepEqual(secondError?.details, { limit: 1, toolCalls: 1 });
 });
@@ -797,7 +798,7 @@ test("Lead resumes a quota-paused Pi leaf in the exact session and can finish", 
         if (leadRuns === 1) {
           await call(options.customTools, "wiki_plan", { spec: spec() });
           const started = await call(options.customTools, "wiki_delegate_start", { tasks: [{
-            id: "research", role: "research", instruction: "Research runtime behavior", sourceScopeIds: [], contextRefs: [],
+            id: "research", role: "research", instruction: "Research runtime behavior", sourceScopeIds: ["source"], contextRefs: [],
           }] });
           await call(options.customTools, "wiki_delegate_collect", { batchId: started.details.batchId, until: "all", timeoutSeconds: 60 });
           return;
@@ -982,7 +983,7 @@ test("Pi leaf retries have one owner and cap 5xx at two sessions and requests", 
   };
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
-    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    runId: "run-1", sourceScopes: [], candidateWikiRoot, artifactStore: artifacts,
     agent: new PiWikiLeafAgent({ createSession, sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(), sleep: async () => {}, random: () => 0,
   });
   const result = await runtimeDelegate(runtime, [writeTask("server")]);
@@ -1017,7 +1018,7 @@ test("Pi leaf reports session context stats on task end", async (t) => {
   } });
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
-    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    runId: "run-1", sourceScopes: [], candidateWikiRoot, artifactStore: artifacts,
     agent: new PiWikiLeafAgent({ createSession, sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(),
     onTask: (event) => { events.push(event); },
   });
@@ -1269,7 +1270,7 @@ test("Pi leaf receives the configured Wiki language", async (t) => {
   } });
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
-    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    runId: "run-1", sourceScopes: [], candidateWikiRoot, artifactStore: artifacts,
     agent: new PiWikiLeafAgent({ createSession, language: "zh", sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(),
   });
 
@@ -1298,7 +1299,7 @@ test("Pi research leaf returns structured coverage without requiring the Wiki re
   } });
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
-    runId: "run-1", cwd: root, sourceScopes: { source: "source" }, candidateWikiRoot, artifactStore: artifacts,
+    runId: "run-1", sourceScopes: ["source"], candidateWikiRoot, artifactStore: artifacts,
     agent: new PiWikiLeafAgent({ createSession, language: "zh", sourcePlan: pinnedPlan(root) }), transitions: runtimeTransitions(),
   });
 
@@ -1338,7 +1339,7 @@ test("Pi leaf 429 honors Retry-After through the shared runtime gate with three 
   } });
   const artifacts = artifactStore();
   const runtime = new WikiTaskRuntime({
-    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    runId: "run-1", sourceScopes: [], candidateWikiRoot, artifactStore: artifacts,
     agent: new PiWikiLeafAgent({ createSession, sourcePlan: pinnedPlan(root) }, transactionalWriter), transitions: runtimeTransitions(), concurrency: 2,
     sleep: async (ms) => { sleeps.push(ms); }, random: () => 0, now: () => 0,
   });
@@ -1348,6 +1349,57 @@ test("Pi leaf 429 honors Retry-After through the shared runtime gate with three 
   assert.deepEqual(Object.fromEntries(attempts), { limited: 2, next: 1 });
   assert.equal(sessions, 3);
   assert.equal(requests, 3);
+});
+
+test("Pi leaf looks up declared source scopeIds, not absolute source paths", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  let tools;
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    skillRoot,
+    createSession: async (options) => {
+      tools = options.customTools;
+      return sessionFactory(async () => {
+        const read = await call(options.customTools, "read", { path: "source/a.ts" });
+        assert.match(JSON.stringify(read), /export const a/);
+        await assert.rejects(call(options.customTools, "read", { path: "." }), /outside the permitted workspace scope[\s\S]*source/);
+        await assert.rejects(call(options.customTools, "grep", { path: root, pattern: "export" }), /outside the permitted workspace scope[\s\S]*source/);
+        await assert.rejects(call(options.customTools, "find", { path: ".", pattern: "*.ts" }), /outside the permitted workspace scope[\s\S]*source/);
+        for (const params of [{ path: "." }, {}, { path: root }]) {
+          const listing = JSON.stringify(await call(options.customTools, "ls", params));
+          assert.match(listing, /source/);
+          assert.doesNotMatch(listing, /wiki/);
+          assert.doesNotMatch(listing, /\.okf-wiki/);
+        }
+        await call(options.customTools, "wiki_research_finish", { status: "complete", summary: "surveyed", coverage: ["source"], gaps: [] });
+      })(options);
+    },
+  });
+  await agent.run(
+    { id: "survey", role: "research", instruction: "Survey source", sourceScopeIds: ["source"], contextRefs: [] },
+    leafContext(root, candidateWikiRoot),
+  );
+  assert.ok(tools.some((tool) => tool.name === "read"));
+});
+
+test("Pi research leaf with empty sourceScopeIds and no artifacts fails closed", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let created = false;
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    createSession: async () => {
+      created = true;
+      throw new Error("session must not be created");
+    },
+  });
+  await assert.rejects(
+    agent.run(
+      { id: "empty", role: "research", instruction: "Survey nothing", sourceScopeIds: [], contextRefs: [] },
+      leafContext(root, candidateWikiRoot),
+    ),
+    /declared source roots or exact artifact paths/,
+  );
+  assert.equal(created, false);
 });
 
 function writeTask(id) {
@@ -1360,10 +1412,9 @@ function toolDefinition(tools, name) {
   return tool;
 }
 
-function leafContext(cwd, candidateWikiRoot) {
+function leafContext(_cwd, candidateWikiRoot) {
   return {
-    runId: "run-1", batch: 1, attempt: 1, cwd,
-    sourceRoots: { source: "source" },
+    runId: "run-1", batch: 1, attempt: 1,
     contextArtifacts: {},
     candidateWikiRoot, signal: new AbortController().signal,
   };

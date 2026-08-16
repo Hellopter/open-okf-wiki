@@ -159,8 +159,8 @@ teammate chat.
 
 The public module is intentionally small: `createProductionWikiProducer()`
 returns a producer whose `start()` method returns a `WikiRunHandle`; the handle
-exposes `view()`, `updates()`, `result()`, `control()`, `inspectAgent()`, and
-`activity()`. Pi
+exposes `view()`, `updates()`, `result()`, `control()`, and `inspectAgent()`.
+Agent inspection is a point query; there is no run-level activity log. Pi
 commands are a thin adapter over this interface.
 
 Each Workspace admits one non-terminal Run; different Workspaces may run in

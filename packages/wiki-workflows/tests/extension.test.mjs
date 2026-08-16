@@ -65,7 +65,6 @@ async function fixture(t, options = {}) {
         const agent = target.kind === "lead" ? current?.progress?.lead : undefined;
         return agent ? { runId: view.id, agent, process: [] } : undefined;
       },
-      async activity() { return { entries: [] }; },
     };
     handles.set(view.id, handle);
     return handle;

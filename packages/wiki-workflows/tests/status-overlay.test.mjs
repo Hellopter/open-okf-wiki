@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { formatLocalTime } from "../dist/time-format.js";
 import { openWikiStatusOverlay } from "../dist/ui/status-overlay.js";
 
 const lead = {
@@ -25,7 +24,6 @@ function handle(overrides = {}) {
   return {
     async view() { return view; },
     async inspectAgent(target) { return inspection(target); },
-    async activity() { return { entries: [], nextBefore: undefined }; },
     async *updates(_after, signal) { if (signal) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true })); },
     ...overrides,
   };
@@ -266,6 +264,8 @@ test("theme records semantic status, navigation, chrome, and context threshold t
 
 test("footers expose only actions available on the current page", async () => {
   const { component } = await componentFor();
+  const runPage = plain(component.render(80).join("\n"));
+  assert.doesNotMatch(runPage, /\bActivity\b/);
   const runFooter = plain(component.render(80).at(-1));
   assert.match(runFooter, /select.*open.*close.*pause.*cancel.*esc/i);
   assert.doesNotMatch(runFooter, /tab|older|tail/i);
@@ -275,16 +275,6 @@ test("footers expose only actions available on the current page", async () => {
   const agentFooter = plain(component.render(80).at(-1));
   assert.match(agentFooter, /scroll.*pages.*tail/i);
   assert.doesNotMatch(agentFooter, /select|pause|cancel|older|tab/i);
-
-  component.handleInput("\u001b[D");
-  component.handleInput("j");
-  component.handleInput("j");
-  component.handleInput("j");
-  component.handleInput("CONFIRM");
-  await new Promise((resolve) => setImmediate(resolve));
-  const activityFooter = plain(component.render(80).at(-1));
-  assert.match(activityFooter, /scroll.*filter.*older.*tail.*back/i);
-  assert.doesNotMatch(activityFooter, /select|pause|cancel|tab/i);
   component.dispose();
 });
 
@@ -411,46 +401,6 @@ test("process tab shows model messages and output wraps markdown instead of trun
   assert.match(outputText, /auth flow/);
   assert.ok(outputPage.every((line) => visibleWidth(line) <= 48));
   assert.ok(outputPage.filter((line) => /alpha-|word/.test(plain(line))).length >= 2);
-  component.dispose();
-});
-
-test("activity list shows tool success and failure without start events", async () => {
-  const recorded = recordingTheme();
-  const { component } = await componentFor(handle({
-    async activity() {
-      return {
-        entries: [
-          { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "read started", toolName: "read", completed: false },
-          { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "read", completed: true },
-          { sequence: 3, at: "2026-08-12T00:00:03.000Z", kind: "tool", severity: "error", message: "Path is not assigned", toolName: "write", completed: true },
-        ],
-        nextBefore: undefined,
-      };
-    },
-  }), 24, undefined, recorded.theme);
-  component.handleInput("j");
-  component.handleInput("j");
-  component.handleInput("j");
-  component.handleInput("CONFIRM");
-  await new Promise((resolve) => setImmediate(resolve));
-  const rendered = plain(component.render(80).join("\n"));
-  assert.match(rendered, new RegExp(`✓ ${formatLocalTime("2026-08-12T00:00:02.000Z")} {2}read(?:\\s|$)`));
-  assert.match(rendered, new RegExp(`✗ ${formatLocalTime("2026-08-12T00:00:03.000Z")} {2}write {2}Path is not assigned`));
-  assert.doesNotMatch(rendered, /read started|succeeded|write failed:/);
-  assert.ok(callFor(recorded.calls, "success", /✓/));
-  assert.ok(callFor(recorded.calls, "error", /Path is not assigned/));
-  component.dispose();
-});
-
-test("wide run preview uses activity context before Enter", async () => {
-  const { component } = await componentFor();
-  component.handleInput("j");
-  component.handleInput("j");
-  component.handleInput("j");
-  await new Promise((resolve) => setImmediate(resolve));
-  const rendered = plain(component.render(120).join("\n"));
-  assert.match(rendered, /Activity\s+\[all\]/);
-  assert.match(rendered, /context\s+—/);
   component.dispose();
 });
 
@@ -628,33 +578,6 @@ test("switching targets clears old inspection while the new request is pending",
   const pendingNarrow = component.render(80).join("\n");
   assert.doesNotMatch(pendingNarrow, /old leader summary/);
   assert.match(pendingNarrow, /Agent details are not available/);
-  component.dispose();
-});
-
-test("activity loads 50, pages older entries, deduplicates cursor, and filters", async () => {
-  const calls = [];
-  const pages = [
-    { entries: [{ sequence: 5, at: "2026-08-12T00:00:05Z", kind: "agent", severity: "info", target: { kind: "lead" }, message: "latest" }], nextBefore: 5 },
-    { entries: [{ sequence: 5, at: "2026-08-12T00:00:05Z", kind: "agent", severity: "info", target: { kind: "lead" }, message: "duplicate" }, { sequence: 4, at: "2026-08-12T00:00:04Z", kind: "failure", severity: "error", target: { kind: "task", batch: 2, taskId: "write-auth" }, message: "older" }], nextBefore: undefined },
-  ];
-  const subject = handle({ async activity(options) { calls.push(options); return pages.shift() ?? { entries: [], nextBefore: undefined }; } });
-  const { component } = await componentFor(subject);
-  component.handleInput("j");
-  component.handleInput("j");
-  component.handleInput("j");
-  component.handleInput("CONFIRM");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(calls[0].limit, 50);
-  assert.match(component.render(80).join("\n"), /latest/);
-  component.handleInput("l");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(calls[1].before, 5);
-  const rendered = component.render(80).join("\n");
-  assert.equal((rendered.match(/latest|duplicate/g) ?? []).length, 1);
-  assert.match(rendered, /older/);
-  component.handleInput("f");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls.at(-1).actor, { kind: "lead" });
   component.dispose();
 });
 

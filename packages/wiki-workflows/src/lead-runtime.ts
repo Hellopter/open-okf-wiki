@@ -136,7 +136,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         },
       };
       const artifactStore = createWikiArtifactStore({ workspace: request.sourcePlan.workspaceRoot });
-      const sourceScopes = Object.fromEntries(request.sourcePlan.sources.map((source) => [source.scopeId, source.absolutePath]));
+      const sourceScopes = request.sourcePlan.sources.map((source) => source.scopeId);
       const budgets = request.budgets ?? options.budgets;
       const roleModels = options.models;
       const runSessionDirectory = request.runSessionDirectory ?? options.runSessionDirectory ?? options.sessionDir;
@@ -200,7 +200,6 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
       };
       const tasks = new WikiTaskRuntime({
         runId: request.runId,
-        cwd: request.cwd,
         sourceScopes,
         candidateWikiRoot: request.candidateWikiRoot,
         artifactStore,
@@ -375,7 +374,8 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       policy.sourceRoots.set(ref.relativePath, { logicalRoot: file, physicalRoot: file });
       return { id, path: ref.relativePath, sha256: ref.sha256, sizeBytes: ref.sizeBytes };
     });
-    const declaredSources = [...Object.values(context.sourceRoots), ...artifactHandoffs.map((handoff) => handoff.path)];
+    const artifactRelativePaths = artifactHandoffs.map((handoff) => handoff.path);
+    const declaredSources = [...task.sourceScopeIds, ...artifactRelativePaths];
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
     let review: WikiReviewResult | undefined;
     let research: ResearchCompletion | undefined;
@@ -411,6 +411,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const sessionResult = await runPiSession(policy.workspaceRoot, tools, [
         task.instruction,
         leafLanguageInstruction(role, this.options.language),
+        `\nReadable source trees (cwd-relative): ${task.sourceScopeIds.join(", ") || "(none)"}`,
         task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
         task.reviewPaths?.length ? `\nExact required review paths: ${JSON.stringify(task.reviewPaths)}` : "",
         reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",

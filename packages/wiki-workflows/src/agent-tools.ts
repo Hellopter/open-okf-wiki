@@ -49,10 +49,10 @@ export function workflowTools(
   const reviewerIndexes = role === "reviewer" ? exactIndexPaths(activeWikiRoot, reviewIndexPaths) : undefined;
   const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, mergePaths(allowedPaths ?? reviewerPaths, reviewerIndexes), role === "lead");
   const readOnly = [
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "read"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "grep"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "find"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "ls"),
+    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createReadToolDefinition(policy.workspaceRoot), policy, readableRoots, "read"), policy, activeWikiRoot), "read"),
+    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createGrepToolDefinition(policy.workspaceRoot), policy, readableRoots, "grep"), policy, activeWikiRoot), "grep"),
+    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createFindToolDefinition(policy.workspaceRoot), policy, readableRoots, "find"), policy, activeWikiRoot), "find"),
+    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createLsToolDefinition(policy.workspaceRoot), policy, readableRoots, "ls"), policy, activeWikiRoot), "ls"),
   ];
   if (role === "lead") {
     if (!policy.candidateWikiRoot) throw new Error("Workflow configuration error: Lead requires a candidate Wiki root");
@@ -142,16 +142,22 @@ function readRootsForPolicy(
   writerPaths: ReadonlySet<string> | undefined,
   candidateWide = false,
 ): PermittedToolRoot[] {
-  const roots: PermittedToolRoot[] = [];
+  const assigned: PermittedToolRoot[] = [];
+  const declared = [...policy.sourceRoots.keys()];
   for (const sourcePath of requested ?? []) {
     const root = policy.sourceRoots.get(sourcePath);
-    if (!root) throw new Error(`Workflow configuration error: undeclared source root: ${sourcePath}`);
-    roots.push(root);
+    if (!root) {
+      throw new Error(`Workflow configuration error: undeclared source root: ${sourcePath}. Declared: ${declared.join(", ") || "(none)"}`);
+    }
+    assigned.push(root);
   }
-  for (const writerPath of writerPaths ?? []) roots.push(exactWorkspaceFileRoot(writerPath));
+  for (const writerPath of writerPaths ?? []) assigned.push(exactWorkspaceFileRoot(writerPath));
+  if (assigned.length === 0 && !candidateWide) {
+    throw new Error("Workflow configuration error: agent requests require declared source roots or exact artifact paths");
+  }
+  const roots = [...assigned];
   if (candidateWide) roots.push({ logicalRoot: path.resolve(activeWikiRoot) });
   if (policy.skillRoot) roots.push({ logicalRoot: path.resolve(policy.skillRoot) });
-  if (roots.length === 0) throw new Error("Workflow configuration error: agent requests require declared source roots or exact artifact paths");
   return roots;
 }
 
@@ -177,6 +183,44 @@ function guardWorkspaceTool(
       return await execute(toolCallId, params, signal, onUpdate, context);
     },
   } as ToolDefinition<any, any, any>;
+}
+
+/** Survey tools treat omitted path as cwd. Workspace root is not a Source unless a source logicalRoot is that root. */
+function guardSurveyTool(
+  definition: ToolDefinition<any, any, any>,
+  policy: WorkspaceToolPolicy,
+  permittedRoots: PermittedToolRoot[],
+  toolName: "read" | "grep" | "find" | "ls",
+): ToolDefinition<any, any, any> {
+  const execute = definition.execute;
+  return {
+    ...definition,
+    async execute(toolCallId, params, signal, onUpdate, context) {
+      const rawPath = valueAt(params, "path");
+      const surveyPath = typeof rawPath === "string" && rawPath.length > 0 ? rawPath : ".";
+      const gatedParams = { ...(params as Record<string, unknown>), path: surveyPath };
+      const absolute = insideWorkspace(policy.workspaceRoot, surveyPath);
+      const workspaceAbs = path.resolve(policy.workspaceRoot);
+      if (toolName === "ls" && absolute === workspaceAbs && !permittedRoots.some((root) => path.resolve(root.logicalRoot) === workspaceAbs)) {
+        return listDeclaredSourceDirectories(policy, permittedRoots);
+      }
+      await assertAllowedWorkspacePath(policy.workspaceRoot, permittedRoots, surveyPath, false);
+      return await execute(toolCallId, gatedParams, signal, onUpdate, context);
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+function listDeclaredSourceDirectories(
+  policy: WorkspaceToolPolicy,
+  permittedRoots: PermittedToolRoot[],
+): { content: Array<{ type: "text"; text: string }> } {
+  const permitted = new Set(permittedRoots.map((root) => path.resolve(root.logicalRoot)));
+  const names = [...policy.sourceRoots.entries()]
+    .filter(([scopeId, root]) => !scopeId.includes("/") && permitted.has(path.resolve(root.logicalRoot)))
+    .map(([scopeId]) => scopeId)
+    .sort((left, right) => left.localeCompare(right));
+  const text = names.length === 0 ? "(empty directory)" : names.map((name) => `${name}/`).join("\n");
+  return { content: [{ type: "text", text }] };
 }
 
 function valueAt(value: unknown, field: string): unknown {

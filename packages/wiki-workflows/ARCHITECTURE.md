@@ -42,7 +42,7 @@ Indexes are deterministic projections. Final governance issues an opaque Publica
 
 ## Durable Run state
 
-Each lifecycle change is one snapshot transaction containing the event, Run view, affected Agent records, task runtime state, and activity projection. A write-ahead transaction is persisted first and replayed idempotently after interruption. It owns lifecycle legality and active-Run release; callers never sequence state edits, event appends, and release themselves.
+Each lifecycle change is one snapshot transaction containing the event, Run view, affected Agent records, and task runtime state. Process tails project into `progress.recentActivity` for the live widget. There is no run-level activity log. A write-ahead transaction is persisted first and replayed idempotently after interruption. It owns lifecycle legality and active-Run release; callers never sequence state edits, event appends, and release themselves.
 
 Version-1 Run persistence is incompatible and never migrated. Opening it reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable.
 
@@ -50,7 +50,7 @@ Version-1 Run persistence is incompatible and never migrated. Opening it reports
 
 Observability is a projection, never a control plane. One pure semantic module interprets the strict event variants plus status, stage, health, liveness, activity, tone, marker, context pressure, and batch progress. Events have typed variant fields rather than an extensible data bag. CLI, live footer/widget, and overlay are media adapters over those semantics; the overlay does not depend on CLI rendering. They never reduce events into independent state.
 
-The overlay and Pi stream consume `updates()`, so an event is never rendered with a separately queried stale view. The overlay ignores non-advancing sequences and accepts the terminal update before its stream ends. Agent inspection and activity remain point queries.
+The overlay and Pi stream consume `updates()`, so an event is never rendered with a separately queried stale view. The overlay ignores non-advancing sequences and accepts the terminal update before its stream ends. Agent inspection is a point query; there is no run-level activity log.
 
 ## Failure ownership
 

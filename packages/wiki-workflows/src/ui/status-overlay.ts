@@ -1,7 +1,6 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Key, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type MarkdownTheme } from "@earendil-works/pi-tui";
 import {
-  activitySemantics,
   agentStatusSemantics,
   batchStatusSemantics,
   formatWikiContext,
@@ -14,19 +13,15 @@ import {
   type WikiTextSpan,
 } from "../observability.js";
 import type {
-  WikiActivityEntry,
-  WikiActivityPage,
   WikiAgentInspection,
   WikiAgentTarget,
   WikiRunHandle,
   WikiRunView,
 } from "../producer-types.js";
-import { formatLocalTime } from "../time-format.js";
 import { errorMessage } from "../util.js";
 
-type WikiOverlayKind = "run" | "agent" | "activity";
+type WikiOverlayKind = "run" | "agent";
 type InspectorTab = "overview" | "process" | "output";
-type ActivityFilter = "all" | "leader" | "tasks" | "errors";
 
 interface WikiOverlayState {
   kind: WikiOverlayKind;
@@ -36,22 +31,20 @@ interface WikiOverlayState {
   runId: string;
   target?: WikiAgentTarget;
   tab: InspectorTab;
-  filter: ActivityFilter;
   /** User-toggled batch expansion. Undefined keeps the default open set. */
   openBatches?: number[];
 }
 
 type WikiOverlayAction =
-  | { type: "up" | "down" | "forward" | "back" | "toggleTail" | "filter" }
+  | { type: "up" | "down" | "forward" | "back" | "toggleTail" }
   | { type: "page"; direction: 1 | -1 };
 
-type OverlayHandle = Pick<WikiRunHandle, "view" | "updates" | "inspectAgent" | "activity">;
-type NavTarget = { kind: "agent"; target: WikiAgentTarget } | { kind: "activity" } | { kind: "batch"; batch: number };
+type OverlayHandle = Pick<WikiRunHandle, "view" | "updates" | "inspectAgent">;
+type NavTarget = { kind: "agent"; target: WikiAgentTarget } | { kind: "batch"; batch: number };
 type NavRow = { spans: WikiTextSpan[]; target?: NavTarget };
 
 const INSPECTOR_TOP = Number.MAX_SAFE_INTEGER;
 const PAGE = 10;
-const ACTIVITY_PAGE = 50;
 const DEFAULT_VIEWPORT = 24;
 const OVERLAY_MAX_HEIGHT_PERCENT = 88;
 const OVERLAY_MAX_HEIGHT = `${OVERLAY_MAX_HEIGHT_PERCENT}%`;
@@ -76,7 +69,6 @@ function initialWikiOverlayState(input: { runId: string; initialTarget?: WikiAge
     runId: input.runId,
     target: input.initialTarget,
     tab: input.process ? "process" : "overview",
-    filter: "all",
   };
 }
 
@@ -89,10 +81,6 @@ function reduceWikiOverlay(state: WikiOverlayState, action: WikiOverlayAction, i
   if (action.type === "back" && state.kind === "agent" && state.tab !== "overview") return cycleAgentTab(state, -1);
   if (action.type === "back" && state.kind !== "run") return { ...state, kind: "run", target: undefined, fromBottom: INSPECTOR_TOP };
   if (action.type === "toggleTail" && state.kind !== "run") return { ...state, fromBottom: 0 };
-  if (action.type === "filter" && state.kind === "activity") {
-    const filters: ActivityFilter[] = ["all", "leader", "tasks", "errors"];
-    return { ...state, filter: filters[(filters.indexOf(state.filter) + 1) % filters.length]!, fromBottom: INSPECTOR_TOP };
-  }
   return state;
 }
 
@@ -127,9 +115,6 @@ function createStatusOverlay(args: {
   let view = args.view;
   let state = initialWikiOverlayState({ runId: view.id, initialTarget: args.initialTarget, process: args.process });
   let inspection: WikiAgentInspection | undefined;
-  let activityEntries: WikiActivityEntry[] = [];
-  let activityBefore: number | undefined;
-  let activityExhausted = false;
   let warning: string | undefined;
   let busy: string | undefined;
   let cached: { width: number; viewport: number; lines: string[] } | undefined;
@@ -157,43 +142,7 @@ function createStatusOverlay(args: {
     invalidate(); args.tui.requestRender();
   };
 
-  const loadActivity = async (append: boolean): Promise<void> => {
-    if (append && activityExhausted) return;
-    const token = ++generation;
-    try {
-      let before = append ? activityBefore : undefined;
-      let page: WikiActivityPage;
-      do {
-        page = await args.handle.activity({
-          ...(before !== undefined ? { before } : {}),
-          limit: ACTIVITY_PAGE,
-          ...(state.filter === "leader" ? { actor: { kind: "lead" } as const } : {}),
-          ...(state.filter === "errors" ? { severity: "error" as const } : {}),
-        });
-        before = page.nextBefore;
-      } while (state.filter === "tasks" && page.entries.every((entry) => entry.target?.kind !== "task") && before !== undefined);
-      if (closed || token !== generation) return;
-      applyActivityPage(page, append);
-      warning = undefined;
-    } catch (error) {
-      if (token === generation) warning = errorMessage(error);
-    }
-    invalidate(); args.tui.requestRender();
-  };
-
-  const applyActivityPage = (page: WikiActivityPage, append: boolean): void => {
-    const incoming = state.filter === "tasks" ? page.entries.filter((entry) => entry.target?.kind === "task") : page.entries;
-    const merged = append ? [...activityEntries, ...incoming] : incoming;
-    activityEntries = [...new Map(merged.map((entry) => [entry.sequence, entry])).values()];
-    activityBefore = page.nextBefore;
-    activityExhausted = page.nextBefore === undefined;
-  };
-
-  const loadSelected = async (): Promise<void> => {
-    if (selected()?.kind === "activity") await loadActivity(false);
-    else await loadAgent();
-  };
-  void loadSelected();
+  void loadAgent();
 
   const refresh = async (): Promise<void> => {
     if (closed || refreshing) return;
@@ -202,7 +151,7 @@ function createStatusOverlay(args: {
       view = await args.handle.view();
       state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
       now = Date.now();
-      await loadSelected();
+      await loadAgent();
     } catch (error) { warning = errorMessage(error); }
     finally { refreshing = false; invalidate(); args.tui.requestRender(); }
   };
@@ -212,7 +161,7 @@ function createStatusOverlay(args: {
     view = next;
     state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
     now = Date.now();
-    await loadSelected();
+    await loadAgent();
     invalidate(); args.tui.requestRender();
   });
   const tick = setInterval(() => {
@@ -229,14 +178,13 @@ function createStatusOverlay(args: {
     if (action.type === "forward" && state.kind === "run") {
       const item = selected();
       if (item?.kind === "agent") state = { ...state, kind: "agent", target: item.target, tab: "overview", fromBottom: INSPECTOR_TOP };
-      else if (item?.kind === "activity") state = { ...state, kind: "activity", fromBottom: INSPECTOR_TOP };
       else if (item?.kind === "batch") state = toggleBatch(state, view, item.batch);
     } else {
       state = reduceWikiOverlay(state, action, nav().length);
     }
-    if (action.type === "filter" || before !== selectedKey(selected())) {
+    if (before !== selectedKey(selected())) {
       inspection = undefined;
-      void loadSelected();
+      void loadAgent();
     }
     invalidate(); args.tui.requestRender();
   };
@@ -258,13 +206,11 @@ function createStatusOverlay(args: {
       if (closed) return;
       if (args.keybindings.matches(data, "tui.select.up") || matchesKey(data, "k")) return apply({ type: "up" });
       if (args.keybindings.matches(data, "tui.select.down") || matchesKey(data, "j")) return apply({ type: "down" });
-      if (args.keybindings.matches(data, "tui.select.pageUp")) { if (state.kind === "activity") void loadActivity(true); return apply({ type: "page", direction: -1 }); }
+      if (args.keybindings.matches(data, "tui.select.pageUp")) return apply({ type: "page", direction: -1 });
       if (args.keybindings.matches(data, "tui.select.pageDown")) return apply({ type: "page", direction: 1 });
       if (args.keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.right)) return apply({ type: "forward" });
       if (args.keybindings.matches(data, "tui.select.cancel") || matchesKey(data, Key.left)) { if (state.kind === "run") finish(); else apply({ type: "back" }); return; }
       if (matchesKey(data, "t")) return apply({ type: "toggleTail" });
-      if (matchesKey(data, "f")) return apply({ type: "filter" });
-      if (matchesKey(data, "l") && state.kind === "activity") { void loadActivity(true); return; }
       if (state.kind === "run" && matchesKey(data, "p") && (view.status === "running" || view.status === "paused")) {
         void control(view.status === "paused" ? "resume" : "pause");
       }
@@ -278,9 +224,9 @@ function createStatusOverlay(args: {
       const current = selected();
       const matched = matchingInspection(current, inspection);
       const bodyRows = Math.max(FIXED_BODY_ROWS + 1, viewport - FRAME_CHROME_ROWS);
-      const body = renderBody(state, view, current, matched, activityEntries, activityExhausted, width, bodyRows, args.theme, now, warning, busy);
+      const body = renderBody(state, view, current, matched, width, bodyRows, args.theme, now, warning, busy);
       const footer = overlayFooter(state, view.status, language);
-      const stats = contextLine(state, current, matched, language, args.theme);
+      const stats = contextLine(current, matched, language, args.theme);
       const framed = frameWikiOverlay({ width, title: styledTitle(view, args.theme), body, stats, footer, theme: args.theme, viewport, fromBottom: state.fromBottom, fixedTop: FIXED_BODY_ROWS });
       if (state.fromBottom > framed.maxScroll) state = { ...state, fromBottom: framed.maxScroll };
       cached = { width, viewport, lines: framed.lines };
@@ -313,7 +259,6 @@ function navigationRows(view: WikiRunView, state?: Pick<WikiOverlayState, "openB
       }
     }
   }
-  rows.push({ spans: [{ text: "Activity", role: "primary" }], target: { kind: "activity" } });
   return rows;
 }
 
@@ -321,7 +266,7 @@ function statusLabel(presentation: WikiStatusSemantics, label: string): WikiText
   return [{ text: presentation.marker, role: presentation.tone }, { text: label, role: "primary" }];
 }
 
-function renderBody(state: WikiOverlayState, view: WikiRunView, selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, activity: WikiActivityEntry[], exhausted: boolean, width: number, bodyRows: number, theme: unknown, now: number, warning?: string, busy?: string): string[] {
+function renderBody(state: WikiOverlayState, view: WikiRunView, selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, width: number, bodyRows: number, theme: unknown, now: number, warning?: string, busy?: string): string[] {
   const elapsed = runElapsed(view, now);
   const header = `${stageRail(view, theme)}${elapsed ? paint(theme, "dim", `  [${elapsed}]`) : ""}`;
   const health = selected?.kind === "agent" && selectedAgent(view, selected.target, inspection)?.health === "degraded"
@@ -335,10 +280,10 @@ function renderBody(state: WikiOverlayState, view: WikiRunView, selected: NavTar
   const navigation = navigationWindow(navigationLines(view, state, theme), contentRows);
   if (state.kind === "run" && width >= 100) {
     const rightWidth = Math.max(1, contentWidth - NAV_WIDTH - visibleWidth(COLUMN_SEPARATOR));
-    return [...fixed, ...columns(navigation, inspectorLines(selected, inspection, activity, exhausted, state, view, now, theme, rightWidth), contentWidth, contentRows, theme)];
+    return [...fixed, ...columns(navigation, inspectorLines(selected, inspection, state, view, now, theme, rightWidth), contentWidth, contentRows, theme)];
   }
   if (state.kind === "run") return [...fixed, ...navigation.map((line) => renderNavRow(line, contentWidth, theme))];
-  return [...fixed, ...inspectorLines(selected, inspection, activity, exhausted, state, view, now, theme, contentWidth)];
+  return [...fixed, ...inspectorLines(selected, inspection, state, view, now, theme, contentWidth)];
 }
 
 type NavigationLine = { text: string; selected: boolean };
@@ -362,21 +307,12 @@ function navigationWindow(lines: NavigationLine[], rows: number): NavigationLine
 function inspectorLines(
   selected: NavTarget | undefined,
   inspection: WikiAgentInspection | undefined,
-  activity: WikiActivityEntry[],
-  exhausted: boolean,
   state: WikiOverlayState,
   view: WikiRunView,
   now: number,
   theme: unknown,
   width: number,
 ): string[] {
-  if (state.kind === "activity" || selected?.kind === "activity") {
-    return wrapLines([
-      strong(theme, `Activity  [${state.filter}]`, "accent"),
-      ...activity.filter((entry) => entry.kind !== "tool" || entry.completed).map((entry) => renderActivity(entry, theme)),
-      paint(theme, "dim", exhausted ? "No earlier activity." : "l / PageUp  load earlier"),
-    ], width);
-  }
   if (selected?.kind === "batch") {
     return wrapLines(batchInspectorLines(view, selected.batch, theme), width);
   }
@@ -394,15 +330,6 @@ function inspectorLines(
     return [...wrapLines(heading, width), ...renderOutput(output, width, theme)];
   }
   return wrapLines([...heading, ...projectWikiAgentLines(inspection, state.tab).map((line) => styleAgentLine(line, theme))], width);
-}
-
-function renderActivity(entry: WikiActivityEntry, theme: unknown): string {
-  const semantics = activitySemantics(entry);
-  const icon = semantics.marker;
-  const color: ThemeColor = semantics.tone;
-  const text = entry.kind === "tool" ? [entry.toolName, entry.message].filter(Boolean).join("  ")
-    : entry.message;
-  return `${paint(theme, color, icon)} ${paint(theme, "dim", formatLocalTime(entry.at))}  ${paint(theme, color === "muted" ? "text" : color, text)}`;
 }
 
 function batchInspectorLines(view: WikiRunView, batchId: number, theme: unknown): string[] {
@@ -574,8 +501,8 @@ function textRoleColor(role: WikiTextRole): ThemeColor {
   }
 }
 
-function contextLine(state: WikiOverlayState, selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, language: "zh" | "en", theme: unknown): string {
-  if (state.kind === "activity" || selected?.kind === "activity" || selected?.kind === "batch") return paint(theme, "muted", "context  —");
+function contextLine(selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, language: "zh" | "en", theme: unknown): string {
+  if (selected?.kind === "batch") return paint(theme, "muted", "context  —");
   const stats = formatWikiContext(inspection?.agent.usage);
   if (!stats) return paint(theme, "muted", language === "zh" ? "context  等待遥测" : "context  waiting for telemetry");
   const percent = inspection?.agent.usage?.contextPercent;
@@ -593,9 +520,6 @@ function overlayFooter(state: WikiOverlayState, status: WikiRunView["status"], l
   if (state.kind === "agent") return language === "zh"
     ? `↑↓ 滚动  ←→ 页面  t 追尾  esc`
     : `↑↓ scroll  ←→ pages  t tail  esc`;
-  if (state.kind === "activity") return language === "zh"
-    ? `↑↓ 滚动  f 过滤  l 更早  t 追尾  ← 返回  esc`
-    : `↑↓ scroll  f filter  l older  t tail  ← back  esc`;
   const controls = active
     ? status === "paused" ? language === "zh" ? "  r 恢复  x 取消" : "  r resume  x cancel" : language === "zh" ? "  p 暂停  x 取消" : "  p pause  x cancel"
     : "";
@@ -618,7 +542,6 @@ function titleBorderLine(title: string, inner: number, border: (text: string) =>
 function viewportRows(tui: OverlayTui): number { const rows = tui.terminal?.rows; return wikiOverlayMaxHeight(typeof rows === "number" && rows > 6 ? rows : DEFAULT_VIEWPORT); }
 function selectedKey(value: NavTarget | undefined): string {
   if (!value) return "";
-  if (value.kind === "activity") return "activity";
   if (value.kind === "batch") return `batch:${value.batch}`;
   return JSON.stringify(value.target);
 }

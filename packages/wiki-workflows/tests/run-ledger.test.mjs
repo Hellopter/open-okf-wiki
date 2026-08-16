@@ -94,19 +94,18 @@ test("pending transaction recovery is idempotent and restores its exact update",
   await assert.rejects(readFile(path.join(workspace, "runs", "run-1", "pending-transaction.json"), "utf8"), { code: "ENOENT" });
 });
 
-test("terminal pending recovery commits snapshot, event, activity and active-marker release together", async (t) => {
+test("terminal pending recovery commits snapshot, event and active-marker release together", async (t) => {
   const workspace = await root(t);
   const stable = createWikiRunLedger(workspace);
   await started(stable, workspace);
   let crashed = false;
   const crashing = createWikiRunLedger(workspace, { fault(point) {
-    if (!crashed && point === "afterActivity") { crashed = true; throw new Error("terminal crash"); }
+    if (!crashed && point === "afterEvent") { crashed = true; throw new Error("terminal crash"); }
   } });
   await assert.rejects(crashing.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:01.000Z" }), /terminal crash/);
   const recovered = createWikiRunLedger(workspace);
   assert.equal((await recovered.read("run-1")).status, "cancelled");
   assert.equal((await recovered.updates("run-1")).at(-1).event.type, "cancelled");
-  assert.equal((await recovered.activity("run-1")).entries[0].message, "Wiki run cancelled");
   await recovered.create({ id: "run-2", cwd: workspace, at: "2026-01-01T00:00:02.000Z" });
 });
 

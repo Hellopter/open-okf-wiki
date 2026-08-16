@@ -168,7 +168,7 @@ test("successful publication keeps provenance and run history while removing tra
   assert.match(await readFile(path.join(root, artifact.relativePath), "utf8"), /handoff/);
   const eventRecords = await readdir(path.join(runRoot, "events"));
   assert.match(await readFile(path.join(runRoot, "events", eventRecords.at(-1)), "utf8"), /"completed"/);
-  assert.ok((await readFile(path.join(runRoot, "activity.jsonl"), "utf8")).length > 0);
+  await assert.rejects(readFile(path.join(runRoot, "activity.jsonl"), "utf8"), { code: "ENOENT" });
   const published = await readFile(path.join(root, "wiki", "overview.md"), "utf8");
   assert.match(published, /generated:/);
   assert.match(published, /verified:/);

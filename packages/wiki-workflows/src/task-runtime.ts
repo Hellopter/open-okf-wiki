@@ -42,8 +42,6 @@ export interface WikiLeafTaskContext {
   runId: string;
   batch: number;
   attempt: number;
-  cwd: string;
-  sourceRoots: Record<string, string>;
   contextArtifacts: Record<string, WikiArtifactRef>;
   sessionFile?: string;
   candidateWikiRoot?: string;
@@ -68,8 +66,7 @@ export interface WikiLeafAgent {
 
 export interface WikiTaskRuntimeOptions {
   runId: string;
-  cwd: string;
-  sourceScopes: Readonly<Record<string, string>>;
+  sourceScopes: readonly string[];
   contextArtifacts?: Readonly<Record<string, WikiArtifactRef>>;
   candidateWikiRoot?: string;
   artifactStore: WikiArtifactStore;
@@ -573,8 +570,6 @@ export class WikiTaskRuntime {
       runId: this.options.runId,
       batch,
       attempt,
-      cwd: this.options.cwd,
-      sourceRoots: Object.fromEntries(task.sourceScopeIds.map((id) => [id, this.options.sourceScopes[id]])),
       contextArtifacts: Object.fromEntries(task.contextRefs.map((id) => [id, this.contextArtifacts[id]])),
       sessionFile,
       candidateWikiRoot: this.options.candidateWikiRoot,
@@ -765,7 +760,7 @@ function validateBatch(tasks: readonly WikiDelegateContract[], options: WikiTask
     ids.add(task.id);
     if (!task.instruction.trim()) throw new Error(`Delegate task ${task.id} requires an instruction`);
     for (const scope of task.sourceScopeIds) {
-      if (!Object.hasOwn(options.sourceScopes, scope)) throw new Error(`Delegate task ${task.id} requests undeclared source scope: ${scope}`);
+      if (!options.sourceScopes.includes(scope)) throw new Error(`Delegate task ${task.id} requests undeclared source scope: ${scope}`);
     }
     if (task.role === "write" && !task.writePaths?.length) throw new Error(`Write task ${task.id} requires writePaths`);
     if (task.role === "review" && !task.reviewPaths?.length) throw new Error(`Review task ${task.id} requires reviewPaths`);

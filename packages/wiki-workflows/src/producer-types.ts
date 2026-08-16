@@ -114,7 +114,7 @@ export interface WikiAgentSnapshot {
   summary?: string;
 }
 
-export type WikiActivityKind = "stage" | "agent" | "tool" | "batch" | "retry" | "compaction" | "warning" | "failure";
+export type WikiActivityKind = "agent" | "tool" | "retry" | "compaction" | "warning" | "failure";
 
 export interface WikiActivityEntry {
   sequence: number;
@@ -204,11 +204,6 @@ export interface WikiAgentOutcome {
   };
 }
 
-export interface WikiActivityPage {
-  entries: WikiActivityEntry[];
-  nextBefore?: number;
-}
-
 export interface WikiRunView {
   id: string;
   cwd: string;
@@ -251,7 +246,6 @@ export interface WikiRunHandle {
   result(): Promise<WikiProducerResult>;
   control(action: WikiRunControl): Promise<WikiRunView>;
   inspectAgent(target: WikiAgentTarget): Promise<WikiAgentInspection | undefined>;
-  activity(options?: { before?: number; limit?: number; actor?: WikiAgentTarget; severity?: WikiActivityEntry["severity"] }): Promise<WikiActivityPage>;
 }
 
 /** Complete public producer interface. Implementations are intentionally opaque. */

@@ -29,7 +29,7 @@ function runtime(agent, values = {}) {
   const { onStateChanged, restoredState, ...options } = values;
   const durable = normalizeState(restoredState ?? { batches: [] });
   const subject = new WikiTaskRuntime({
-    runId: "run-1", cwd: "/workspace", sourceScopes: { api: "api" }, contextArtifacts: {},
+    runId: "run-1", sourceScopes: ["api"], contextArtifacts: {},
     artifactStore: store(), agent, sleep: async () => {}, random: () => 0,
     restoredState: durable,
     transitions: memoryTransitions(durable, onStateChanged),
@@ -101,7 +101,7 @@ test("durable queued contract commit completes before an Agent can launch", asyn
   const queued = new Promise((resolve) => { releaseQueue = resolve; });
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
-    runId: "run-1", cwd: "/workspace", sourceScopes: { api: "api" }, artifactStore: store(),
+    runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
     agent: { async run() { launched = true; return { summary: "ok", markdown: "ok" }; } },
     transitions: { ...transitions, async batchQueued(contracts) { await queued; await transitions.batchQueued(contracts); } },
   });
@@ -117,7 +117,7 @@ test("durable queued contract commit completes before an Agent can launch", asyn
 test("durable transition failure is consumed and surfaced by collect", async () => {
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
-    runId: "run-1", cwd: "/workspace", sourceScopes: { api: "api" }, artifactStore: store(),
+    runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
     agent: { async run() { return { summary: "ok", markdown: "ok" }; } },
     transitions: { ...transitions, async taskSettled() { throw new Error("durable settle failed"); } },
   });
@@ -772,8 +772,7 @@ test("duplicate task ids produce independent batch-qualified artifact handles", 
   let consumedHandles;
   const r = new WikiTaskRuntime({
     runId: "run-1",
-    cwd: workspace,
-    sourceScopes: { api: "api" },
+    sourceScopes: ["api"],
     artifactStore,
     transitions: memoryTransitions(durable),
     agent: { async run(value, context) {

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { workflowTools, workspaceToolPolicy } from "../dist/agent-tools.js";
+import { pinnedWorkspaceToolPolicy } from "../dist/path-policy.js";
 import { materializeProductionSkill, skillWorkspacePath } from "../dist/skill-store.js";
 
 async function workspace(t) {
@@ -55,3 +56,103 @@ test("writer-capable tools require a transactional page writer", async (t) => {
   assert.throws(() => workflowTools(policy, "lead", undefined, ["source"], undefined, undefined), /transactional WikiPageWriter/);
   assert.throws(() => workflowTools(policy, "writer", ["wiki/page.md"], ["source"], undefined, undefined), /transactional WikiPageWriter/);
 });
+
+test("production source scopeIds construct tools and gate the Workspace root", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const sourceAbs = path.join(root, "source");
+  const policy = pinnedWorkspaceToolPolicy(pinnedPlan(root, sourceAbs), candidateWikiRoot, skillRoot);
+  assert.throws(() => workflowTools(policy, "researcher", undefined, [sourceAbs]), /undeclared source root: .*Declared: source/);
+  const researcher = workflowTools(policy, "researcher", undefined, ["source"]);
+  const read = await call(researcher, "read", { path: "source/a.ts" });
+  assert.match(JSON.stringify(read), /export const a/);
+
+  for (const [name, params] of [
+    ["read", { path: "." }],
+    ["read", { path: root }],
+    ["read", {}],
+    ["grep", { path: ".", pattern: "export" }],
+    ["grep", { path: root, pattern: "export" }],
+    ["grep", { pattern: "export" }],
+    ["find", { path: ".", pattern: "*.ts" }],
+    ["find", { path: root, pattern: "*.ts" }],
+    ["find", { pattern: "*.ts" }],
+  ]) {
+    await assert.rejects(call(researcher, name, params), /outside the permitted workspace scope[\s\S]*source/);
+  }
+
+  for (const params of [{ path: "." }, {}, { path: root }]) {
+    const listing = JSON.stringify(await call(researcher, "ls", params));
+    assert.match(listing, /source/);
+    assert.doesNotMatch(listing, /wiki/);
+    assert.doesNotMatch(listing, /\.okf-wiki/);
+  }
+});
+
+test("implicit Workspace source allows ls and reads at the repo root", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await implicitWorkspace(t);
+  const policy = pinnedWorkspaceToolPolicy(implicitPinnedPlan(root), candidateWikiRoot, skillRoot);
+  const researcher = workflowTools(policy, "researcher", undefined, ["."]);
+  const listing = JSON.stringify(await call(researcher, "ls", { path: "." }));
+  assert.match(listing, /a\.ts/);
+  const read = await call(researcher, "read", { path: "a.ts" });
+  assert.match(JSON.stringify(read), /export const a/);
+});
+
+test("research with no source scopes and no artifacts fails closed", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const policy = pinnedWorkspaceToolPolicy(pinnedPlan(root, path.join(root, "source")), candidateWikiRoot, skillRoot);
+  assert.throws(() => workflowTools(policy, "researcher", undefined, []), /declared source roots or exact artifact paths/);
+});
+
+function pinnedPlan(root, sourceAbs) {
+  return {
+    workspaceRoot: root,
+    workspaceRealPath: root,
+    configPath: path.join(root, "workspace.yaml"),
+    defaultSourceIgnores: true,
+    excludes: [],
+    fingerprint: "a".repeat(64),
+    sources: [{
+      scopeId: "source",
+      logicalPath: "source",
+      absolutePath: sourceAbs,
+      realPath: sourceAbs,
+      repositoryRoot: sourceAbs,
+      repositoryIdentity: "test-source",
+      head: "0".repeat(40),
+      dirtyFingerprint: "b".repeat(64),
+    }],
+  };
+}
+
+function implicitPinnedPlan(root) {
+  return {
+    workspaceRoot: root,
+    workspaceRealPath: root,
+    configPath: path.join(root, "workspace.yaml"),
+    defaultSourceIgnores: true,
+    excludes: [],
+    fingerprint: "a".repeat(64),
+    sources: [{
+      scopeId: ".",
+      logicalPath: ".",
+      absolutePath: root,
+      realPath: root,
+      repositoryRoot: root,
+      repositoryIdentity: "test-self",
+      head: "0".repeat(40),
+      dirtyFingerprint: "b".repeat(64),
+    }],
+  };
+}
+
+async function implicitWorkspace(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-implicit-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "a.ts"), "export const a = true;\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  const candidateWikiRoot = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
+  await mkdir(candidateWikiRoot, { recursive: true });
+  const skillRoot = await materializeProductionSkill(root, "run-1");
+  return { root, candidateWikiRoot, skillRoot };
+}

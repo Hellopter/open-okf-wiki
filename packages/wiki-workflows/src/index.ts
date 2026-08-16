@@ -4,7 +4,6 @@ export {
   type WikiActiveTool,
   type WikiActivityEntry,
   type WikiActivityKind,
-  type WikiActivityPage,
   type WikiAgentActivity,
   type WikiAgentInspection,
   type WikiAgentOutcome,
