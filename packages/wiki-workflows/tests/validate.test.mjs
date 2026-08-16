@@ -7,13 +7,12 @@ import test from "node:test";
 import { parsePage } from "../dist/frontmatter.js";
 import {
   canonicalizeWikiPageContent,
-  finalizeWiki,
-  materializeWikiIndexes,
-  materializeValidatedWikiIndexes,
   validateWiki,
   validateWikiPage,
   validateWikiPageContent,
-} from "../dist/validate.js";
+} from "../dist/lead/validate.js";
+import { materializeWikiIndexes } from "../dist/lead/indexes.js";
+import { finalizeWiki, materializeValidatedWikiIndexes } from "../dist/lead/finalize.js";
 
 const temporaryDirectories = [];
 

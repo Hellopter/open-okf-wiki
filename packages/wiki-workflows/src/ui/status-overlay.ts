@@ -7,12 +7,13 @@ import {
   projectWikiAgentLines,
   runStatusSemantics,
   stageSemantics,
-  wikiTaskClusterLabel,
+  wikiContextPressureTone,
+  wikiTaskIdentity,
   type WikiStatusSemantics,
   type WikiTextLine,
   type WikiTextRole,
   type WikiTextSpan,
-} from "../observability.js";
+} from "./observability.js";
 import type {
   WikiAgentInspection,
   WikiAgentTarget,
@@ -43,6 +44,13 @@ type WikiOverlayAction =
 type OverlayHandle = Pick<WikiRunHandle, "view" | "updates" | "inspectAgent">;
 type NavTarget = { kind: "agent"; target: WikiAgentTarget } | { kind: "batch"; batch: number };
 type NavRow = { spans: WikiTextSpan[]; target?: NavTarget };
+type CachedAgentInspection = {
+  inspection: WikiAgentInspection;
+  telemetry: string;
+  transcript: boolean;
+  handoff: boolean;
+};
+type LoadReason = "select" | "tab" | "update" | "refresh";
 
 const INSPECTOR_TOP = Number.MAX_SAFE_INTEGER;
 const PAGE = 10;
@@ -124,18 +132,48 @@ function createStatusOverlay(args: {
   let refreshing = false;
   let now = Date.now();
   const controller = new AbortController();
+  const inspectionCache = new Map<string, CachedAgentInspection>();
   const invalidate = () => { cached = undefined; };
   const nav = () => navigationRows(view, state).flatMap((row) => row.target ? [row.target] : []);
   const selected = () => state.target ? { kind: "agent" as const, target: state.target } : nav()[state.cursor];
 
-  const loadAgent = async (): Promise<void> => {
+  const loadAgent = async (reason: LoadReason = "select"): Promise<void> => {
     const item = selected();
-    if (item?.kind !== "agent") { inspection = undefined; return; }
+    if (item?.kind !== "agent") {
+      generation += 1;
+      inspection = undefined;
+      return;
+    }
+    const key = selectedKey(item);
+    const cachedInspection = inspectionCache.get(key);
+    const wantTranscript = state.tab === "process";
+    const wantHandoff = state.tab === "output";
+    const telemetry = telemetryFingerprint(view, item.target, cachedInspection?.inspection);
+    const reusable = Boolean(
+      cachedInspection
+      && cachedInspection.telemetry === telemetry
+      && (!wantTranscript || cachedInspection.transcript)
+      && (!wantHandoff || cachedInspection.handoff),
+    );
+    if (reusable && reason === "update" && cachedInspection) {
+      inspection = cachedInspection.inspection;
+      return;
+    }
+    if (reason === "select" && cachedInspection) inspection = cachedInspection.inspection;
     const token = ++generation;
     try {
-      const next = await args.handle.inspectAgent(item.target);
+      const next = await args.handle.inspectAgent(item.target, { transcript: wantTranscript, handoff: wantHandoff });
       if (closed || token !== generation) return;
-      inspection = next;
+      const merged = mergeInspection(cachedInspection?.inspection, next);
+      if (merged) {
+        inspectionCache.set(key, {
+          inspection: merged,
+          telemetry: telemetryFingerprint(view, item.target, merged),
+          transcript: Boolean(wantTranscript || cachedInspection?.transcript || merged.messages),
+          handoff: Boolean(wantHandoff || cachedInspection?.handoff || merged.handoff !== undefined),
+        });
+      }
+      inspection = merged;
       warning = undefined;
     } catch (error) {
       if (token === generation) warning = errorMessage(error);
@@ -143,7 +181,21 @@ function createStatusOverlay(args: {
     invalidate(); args.tui.requestRender();
   };
 
-  void loadAgent();
+  const shouldInspectOnUpdate = (): boolean => {
+    if (state.kind !== "agent") return false;
+    const item = selected();
+    if (item?.kind !== "agent") return false;
+    if (state.tab !== "process" && state.tab !== "output") return false;
+    const cachedInspection = inspectionCache.get(selectedKey(item));
+    const telemetry = telemetryFingerprint(view, item.target, cachedInspection?.inspection);
+    if (!cachedInspection) return true;
+    if (cachedInspection.telemetry !== telemetry) return true;
+    if (state.tab === "process" && !cachedInspection.transcript) return true;
+    if (state.tab === "output" && !cachedInspection.handoff) return true;
+    return false;
+  };
+
+  void loadAgent("select");
 
   const refresh = async (): Promise<void> => {
     if (closed || refreshing) return;
@@ -152,17 +204,17 @@ function createStatusOverlay(args: {
       view = await args.handle.view();
       state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
       now = Date.now();
-      await loadAgent();
+      await loadAgent("refresh");
     } catch (error) { warning = errorMessage(error); }
     finally { refreshing = false; invalidate(); args.tui.requestRender(); }
   };
 
-  subscribeUpdates(args.handle, view.lastEventSequence, controller.signal, async (next) => {
+  subscribeUpdates(args.handle, view.lastEventSequence, controller.signal, (next) => {
     if (next.lastEventSequence <= view.lastEventSequence) return;
     view = next;
     state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
     now = Date.now();
-    await loadAgent();
+    if (shouldInspectOnUpdate()) void loadAgent("update");
     invalidate(); args.tui.requestRender();
   });
   const tick = setInterval(() => {
@@ -176,6 +228,7 @@ function createStatusOverlay(args: {
 
   const apply = (action: WikiOverlayAction): void => {
     const before = selectedKey(selected());
+    const beforeTab = state.tab;
     if (action.type === "forward" && state.kind === "run") {
       const item = selected();
       if (item?.kind === "agent") state = { ...state, kind: "agent", target: item.target, tab: "overview", fromBottom: INSPECTOR_TOP };
@@ -183,9 +236,13 @@ function createStatusOverlay(args: {
     } else {
       state = reduceWikiOverlay(state, action, nav().length);
     }
-    if (before !== selectedKey(selected())) {
-      inspection = undefined;
-      void loadAgent();
+    const after = selectedKey(selected());
+    if (before !== after) {
+      const item = selected();
+      inspection = item?.kind === "agent" ? inspectionCache.get(after)?.inspection : undefined;
+      void loadAgent("select");
+    } else if (state.kind === "agent" && state.tab !== beforeTab && (state.tab === "process" || state.tab === "output")) {
+      void loadAgent("tab");
     }
     invalidate(); args.tui.requestRender();
   };
@@ -267,9 +324,8 @@ function statusLabel(presentation: WikiStatusSemantics, label: string): WikiText
   return [{ text: presentation.marker, role: presentation.tone }, { text: label, role: "primary" }];
 }
 
-function taskIdentity(task: { id: string; writePaths?: readonly string[]; reviewPaths?: readonly string[] }): string {
-  const cluster = wikiTaskClusterLabel(task);
-  return cluster && cluster !== task.id ? `${cluster}  ${task.id}` : task.id;
+function taskIdentity(task: { id: string }): string {
+  return wikiTaskIdentity(task);
 }
 
 function renderBody(state: WikiOverlayState, view: WikiRunView, selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, width: number, bodyRows: number, theme: unknown, now: number, warning?: string, busy?: string): string[] {
@@ -419,6 +475,42 @@ function matchingInspection(selected: NavTarget | undefined, inspection: WikiAge
   return selected?.kind === "agent" && inspection && sameTarget(inspection.agent.target, selected.target) ? inspection : undefined;
 }
 
+function mergeInspection(previous: WikiAgentInspection | undefined, next: WikiAgentInspection | undefined): WikiAgentInspection | undefined {
+  if (!next) return undefined;
+  if (!previous || !sameTarget(previous.agent.target, next.agent.target)) return next;
+  return {
+    ...previous,
+    ...next,
+    messages: next.messages ?? previous.messages,
+    handoff: next.handoff ?? previous.handoff,
+    handoffPath: next.handoffPath ?? previous.handoffPath,
+    outcome: next.outcome ?? previous.outcome,
+  };
+}
+
+function viewAgent(view: WikiRunView, target: WikiAgentTarget) {
+  if (target.kind === "lead") return view.progress?.lead;
+  const batches = view.progress?.batches ?? (view.progress?.currentBatch ? [view.progress.currentBatch] : []);
+  return batches.find((batch) => batch.batch === target.batch)?.tasks.find((task) => task.id === target.taskId);
+}
+
+function processSequence(view: WikiRunView, target: WikiAgentTarget, inspection: WikiAgentInspection | undefined): number {
+  let maxSeq = -1;
+  for (const entry of inspection?.process ?? []) maxSeq = Math.max(maxSeq, entry.sequence);
+  for (const entry of view.progress?.recentActivity ?? []) {
+    if (entry.target && sameTarget(entry.target, target)) maxSeq = Math.max(maxSeq, entry.sequence);
+  }
+  return maxSeq;
+}
+
+function telemetryFingerprint(view: WikiRunView, target: WikiAgentTarget, inspection: WikiAgentInspection | undefined): string {
+  const agent = viewAgent(view, target);
+  const updatedAt = agent && "updatedAt" in agent ? agent.updatedAt ?? "" : "";
+  const lastActivityAt = agent && "lastActivityAt" in agent ? agent.lastActivityAt ?? "" : "";
+  const health = agent?.health ?? "";
+  return `${updatedAt}\0${lastActivityAt}\0${health}\0${processSequence(view, target, inspection)}`;
+}
+
 function sameTarget(left: WikiAgentTarget, right: WikiAgentTarget): boolean {
   return left.kind === right.kind && (left.kind === "lead" || right.kind === "task" && left.batch === right.batch && left.taskId === right.taskId);
 }
@@ -511,8 +603,8 @@ function contextLine(selected: NavTarget | undefined, inspection: WikiAgentInspe
   if (selected?.kind === "batch") return paint(theme, "muted", "context  —");
   const stats = formatWikiContext(inspection?.agent.usage);
   if (!stats) return paint(theme, "muted", language === "zh" ? "context  等待遥测" : "context  waiting for telemetry");
-  const percent = inspection?.agent.usage?.contextPercent;
-  const color: ThemeColor = percent !== undefined && percent > 90 ? "error" : percent !== undefined && percent > 70 ? "warning" : "text";
+  const tone = wikiContextPressureTone(inspection?.agent.usage?.contextPercent);
+  const color: ThemeColor = tone ? textRoleColor(tone) : "text";
   return `${paint(theme, "muted", "context  ")}${paint(theme, color, stats)}`;
 }
 
@@ -572,4 +664,4 @@ function strong(theme: unknown, text: string, color: ThemeColor): string {
   if (typeof value?.bold !== "function") return painted;
   try { return String(value.bold.call(value, painted)); } catch { return painted; }
 }
-function subscribeUpdates(handle: Pick<WikiRunHandle, "updates">, after: number, signal: AbortSignal, onUpdate: (view: WikiRunView) => Promise<void>): void { void (async () => { try { for await (const update of handle.updates(after, signal)) { if (signal.aborted) return; await onUpdate(update.view); } } catch { /* durable stream may end */ } })(); }
+function subscribeUpdates(handle: Pick<WikiRunHandle, "updates">, after: number, signal: AbortSignal, onUpdate: (view: WikiRunView) => void): void { void (async () => { try { for await (const update of handle.updates(after, signal)) { if (signal.aborted) return; onUpdate(update.view); } } catch { /* durable stream may end */ } })(); }

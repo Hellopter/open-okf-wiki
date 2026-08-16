@@ -1,25 +1,25 @@
-import { createHash, randomUUID } from "node:crypto";
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { claimText, ensureDirectory, removePath, renamePath, writeText } from "./files.js";
+import { ensureDirectory, removePath, renamePath, withExclusiveLock, writeText } from "./files.js";
 import { stableStringify } from "./util.js";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
-import { parseWikiSpec, wikiSpecPagePaths, type WikiSpec } from "./wiki-spec.js";
+import { parseWikiSpec, wikiSpecPagePaths, type WikiSpec } from "./lead.js";
 import { digestWikiTree, verifyWikiPublicationSeal, type WikiPublicationSeal } from "./wiki-publication-seal.js";
+import { UnsupportedWikiRunVersionError, WIKI_FORMAT } from "./run-ledger.js";
 
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const PUBLICATION_LEASE_INITIALIZATION_GRACE_MS = 1_000;
 
 export type WikiPublishStep = "prepared" | "backed_up" | "installed" | "committed" | "rolled_back";
 
 interface WikiPublishJournal {
-  version: 2;
+  version: typeof WIKI_FORMAT;
   runId: string;
   state: WikiPublishStep;
   hadPublishedWiki: boolean;
   preparedAt: string;
   updatedAt: string;
-  publishedMetadata: WikiPublishedMetadataV2;
+  publishedMetadata: WikiPublishedMetadata;
   metadataDigest: string;
 }
 
@@ -45,16 +45,8 @@ export interface WikiPublicationResult {
   summary: string;
 }
 
-export interface WikiPublishedMetadataV1 {
-  version: 1;
-  runId: string;
-  publishedAt: string;
-  wikiSpec: WikiSpec;
-  [key: string]: unknown;
-}
-
-export interface WikiPublishedMetadataV2 extends WikiPublicationResult {
-  version: 2;
+export interface WikiPublishedMetadata extends WikiPublicationResult {
+  version: typeof WIKI_FORMAT;
   runId: string;
   publishedAt: string;
   pages: string[];
@@ -62,15 +54,13 @@ export interface WikiPublishedMetadataV2 extends WikiPublicationResult {
   wikiSpec: WikiSpec;
 }
 
-export type WikiPublishedMetadata = WikiPublishedMetadataV1 | WikiPublishedMetadataV2;
-
 export interface WikiPublicationStore {
   /** Create this Run's completely empty candidate before publication begins. */
   prepareCandidate(runId: string): Promise<string>;
   /** Resume an existing candidate, or prepare it when this run has not written yet. */
   ensureCandidate(runId: string): Promise<string>;
   /** Atomically replace published `wiki/` using a recoverable rename journal. */
-  publish(runId: string, result: WikiPublicationResult, seal: WikiPublicationSeal): Promise<WikiPublishedPublication>;
+  publish(runId: string, seal: WikiPublicationSeal): Promise<WikiPublishedPublication>;
   /** Recover publication and project the terminal fact needed by Run reconciliation. */
   reconcile(runId: string): Promise<WikiPublicationReconciliation>;
   /** Archive a committed journal after the Run terminal transition is durable. */
@@ -79,15 +69,6 @@ export interface WikiPublicationStore {
   /** Load versioned provenance for the currently published Wiki. */
   readPublishedMetadata(): Promise<WikiPublishedMetadata | undefined>;
 }
-
-interface PublicationLeaseRecord {
-  version: 1;
-  pid: number;
-  token: string;
-  acquiredAt: string;
-}
-
-const workspacePublicationOwners = new Map<string, Promise<void>>();
 
 export interface WikiPublicationStoreOptions {
   workspace: string;
@@ -113,7 +94,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
 
   const locked = async <T>(operation: () => Promise<T>): Promise<T> => {
     await ensureInternalRoot(okfRoot);
-    return await withWorkspacePublicationLease(workspace, publicationLeaseFile, operation);
+    return await withExclusiveLock(publicationLeaseFile, operation);
   };
 
   const pathsFor = (runId: string) => {
@@ -145,9 +126,8 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
       const value = JSON.parse(await readFile(publishedMetadataFile, "utf8")) as unknown;
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid published Wiki metadata");
       const metadata = value as Record<string, unknown>;
-      if (metadata.version === 1) return parsePublishedMetadataV1(metadata);
-      if (metadata.version === 2) return parsePublishedMetadataV2(metadata);
-      throw new Error("Unsupported published Wiki metadata version");
+      if (metadata.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(publishedMetadataFile, metadata.version);
+      return parsePublishedMetadata(metadata);
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
@@ -245,7 +225,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
       });
     },
 
-    async publish(runId, result, seal): Promise<WikiPublishedPublication> {
+    async publish(runId, seal): Promise<WikiPublishedPublication> {
       return await locked(async () => {
         await ensureWikiWorkspaceInternalIgnore(workspace);
         await ensureInternalRoot(okfRoot);
@@ -259,17 +239,17 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
         const verified = await verifyWikiPublicationSeal(seal);
         assertSealMatchesPublication(verified, runId, paths.candidate);
         const timestamp = now();
-        const normalizedMetadata: WikiPublishedMetadataV2 = {
-          version: 2,
+        const normalizedMetadata: WikiPublishedMetadata = {
+          version: WIKI_FORMAT,
           runId,
           publishedAt: timestamp,
-          ...parsePublicationResult(result),
+          ...parsePublicationResult({ sourceFingerprint: verified.sourceFingerprint, summary: verified.summary }),
           pages: wikiSpecPagePaths(verified.spec),
           finalTreeDigest: verified.finalTreeDigest,
           wikiSpec: verified.spec,
         };
         let journal: WikiPublishJournal = {
-          version: 2,
+          version: WIKI_FORMAT,
           runId,
           state: "prepared",
           hadPublishedWiki: await exists(publishedWiki),
@@ -319,7 +299,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
         const journal = await readJournal(runId);
         if (!journal || journal.state !== "committed") throw new Error(`Committed Wiki publication for run ${runId} has no committed journal`);
         const provenance = await readPublishedMetadata();
-        if (!provenance || provenance.version !== 2
+        if (!provenance || provenance.version !== WIKI_FORMAT
           || publicationMetadataDigest(provenance) !== journal.metadataDigest
           || stableStringify(provenance) !== stableStringify(journal.publishedMetadata)) {
           throw new Error(`Committed Wiki publication for run ${runId} has inconsistent published provenance`);
@@ -448,7 +428,7 @@ async function writeJournal(location: string, journal: WikiPublishJournal): Prom
   await writeText(location, `${JSON.stringify(journal)}\n`);
 }
 
-function parsePublicationMetadata(value: unknown): Pick<WikiPublishedMetadataV2, "sourceFingerprint" | "summary" | "pages" | "finalTreeDigest" | "wikiSpec"> {
+function parsePublicationMetadata(value: unknown): Pick<WikiPublishedMetadata, "sourceFingerprint" | "summary" | "pages" | "finalTreeDigest" | "wikiSpec"> {
   const metadata = recordValue(value, "Wiki publication metadata");
   const wikiSpec = parseWikiSpec(metadata.wikiSpec);
   const pages = stringList(metadata.pages, "Wiki publication pages");
@@ -479,24 +459,13 @@ function parsePublicationResult(value: unknown): WikiPublicationResult {
   return { sourceFingerprint: result.sourceFingerprint, summary: result.summary };
 }
 
-function parsePublishedMetadataV1(metadata: Record<string, unknown>): WikiPublishedMetadataV1 {
-  assertPublishedIdentity(metadata);
-  return {
-    ...structuredClone(metadata),
-    version: 1,
-    runId: metadata.runId as string,
-    publishedAt: metadata.publishedAt as string,
-    wikiSpec: parseWikiSpec(metadata.wikiSpec),
-  };
-}
-
-function parsePublishedMetadataV2(metadata: Record<string, unknown>): WikiPublishedMetadataV2 {
-  exactKeys(metadata, ["version", "runId", "publishedAt", "sourceFingerprint", "summary", "pages", "finalTreeDigest", "wikiSpec"], "published Wiki metadata v2");
-  if (metadata.version !== 2) throw new Error("Invalid published Wiki metadata v2");
+function parsePublishedMetadata(metadata: Record<string, unknown>): WikiPublishedMetadata {
+  exactKeys(metadata, ["version", "runId", "publishedAt", "sourceFingerprint", "summary", "pages", "finalTreeDigest", "wikiSpec"], "published Wiki metadata");
+  if (metadata.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError("published.json", metadata.version);
   assertPublishedIdentity(metadata);
   return {
     ...parsePublicationMetadata(metadata),
-    version: 2,
+    version: WIKI_FORMAT,
     runId: metadata.runId as string,
     publishedAt: metadata.publishedAt as string,
   };
@@ -536,26 +505,27 @@ function sameOrderedStrings(left: readonly string[], right: readonly string[]): 
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function publicationMetadataDigest(metadata: WikiPublishedMetadataV2): string {
+function publicationMetadataDigest(metadata: WikiPublishedMetadata): string {
   return createHash("sha256").update(stableStringify(metadata)).digest("hex");
 }
 
 function parsePublishJournal(value: unknown, runId: string): WikiPublishJournal {
   const journal = recordValue(value, `Wiki publish journal for run ${runId}`);
   exactKeys(journal, ["version", "runId", "state", "hadPublishedWiki", "preparedAt", "updatedAt", "publishedMetadata", "metadataDigest"], "Wiki publish journal");
-  if (journal.version !== 2 || journal.runId !== runId
+  if (journal.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/publish.json`, journal.version);
+  if (journal.runId !== runId
     || !["prepared", "backed_up", "installed", "committed", "rolled_back"].includes(String(journal.state))
     || typeof journal.hadPublishedWiki !== "boolean"
     || typeof journal.preparedAt !== "string" || typeof journal.updatedAt !== "string") {
     throw new Error(`Invalid Wiki publish journal for run ${runId}`);
   }
-  const publishedMetadata = parsePublishedMetadataV2(recordValue(journal.publishedMetadata, "Wiki publication journal metadata"));
+  const publishedMetadata = parsePublishedMetadata(recordValue(journal.publishedMetadata, "Wiki publication journal metadata"));
   const metadataDigest = digestValue(journal.metadataDigest, "Wiki publication metadata digest");
   if (publishedMetadata.runId !== runId || metadataDigest !== publicationMetadataDigest(publishedMetadata)) {
     throw new Error(`Invalid Wiki publish journal metadata for run ${runId}`);
   }
   return {
-    version: 2,
+    version: WIKI_FORMAT,
     runId,
     state: journal.state as WikiPublishStep,
     hadPublishedWiki: journal.hadPublishedWiki,
@@ -585,89 +555,6 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[], 
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   if (!sameOrderedStrings(actual, wanted)) throw new Error(`${label} has unknown or missing fields`);
-}
-
-async function withWorkspacePublicationLease<T>(
-  workspace: string,
-  leaseFile: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const key = await realpath(workspace);
-  const previous = workspacePublicationOwners.get(key) ?? Promise.resolve();
-  const task = previous.catch(() => {}).then(async () => {
-    const release = await acquirePublicationLease(leaseFile);
-    try { return await operation(); } finally { await release(); }
-  });
-  const tail = task.then(() => undefined, () => undefined);
-  workspacePublicationOwners.set(key, tail);
-  try { return await task; } finally {
-    if (workspacePublicationOwners.get(key) === tail) workspacePublicationOwners.delete(key);
-  }
-}
-
-async function acquirePublicationLease(location: string): Promise<() => Promise<void>> {
-  const token = randomUUID();
-  const record: PublicationLeaseRecord = { version: 1, pid: process.pid, token, acquiredAt: new Date().toISOString() };
-  for (;;) {
-    try {
-      await claimText(location, `${JSON.stringify(record)}\n`);
-      return async () => {
-        const current = await readPublicationLease(location);
-        if (current?.token === token) await removePath(location, { force: true });
-      };
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-    }
-    const observedText = await readFile(location, "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (observedText === undefined) continue;
-    const observed = parsePublicationLease(observedText);
-    if (!observed && await publicationLeaseIsInitializing(location)) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      continue;
-    }
-    if (!observed || !processIsAlive(observed.pid)) {
-      const currentText = await readFile(location, "utf8").catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return undefined;
-        throw error;
-      });
-      if (currentText === observedText) await removePath(location, { force: true });
-      continue;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
-async function publicationLeaseIsInitializing(location: string): Promise<boolean> {
-  try { return Date.now() - (await lstat(location)).mtimeMs < PUBLICATION_LEASE_INITIALIZATION_GRACE_MS; }
-  catch (error) { if (isMissing(error)) return false; throw error; }
-}
-
-async function readPublicationLease(location: string): Promise<PublicationLeaseRecord | undefined> {
-  try { return parsePublicationLease(await readFile(location, "utf8")); }
-  catch (error) { if (isMissing(error)) return undefined; throw error; }
-}
-
-function parsePublicationLease(text: string): PublicationLeaseRecord | undefined {
-  try {
-    const value = JSON.parse(text) as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-    const record = value as Partial<PublicationLeaseRecord>;
-    if (record.version !== 1 || !Number.isInteger(record.pid) || (record.pid ?? 0) < 1
-      || typeof record.token !== "string" || !record.token || typeof record.acquiredAt !== "string") return undefined;
-    return { version: 1, pid: record.pid!, token: record.token, acquiredAt: record.acquiredAt };
-  } catch { return undefined; }
-}
-
-function processIsAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EEXIST");
 }
 
 function assertRunId(runId: string): void {

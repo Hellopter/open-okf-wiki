@@ -21,32 +21,35 @@ import {
   WikiTaskPauseError,
   type WikiDelegateContract,
   type WikiDelegateGap,
-  type WikiDelegateTask,
 } from "./delegate-contracts.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
-import type { WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
+import type { WikiLeadObservation, WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
 import type { WikiExecutionBudgets } from "./producer-types.js";
 import { PiSessionObserver, readSessionUsage, type PiSessionObserverOptions } from "./pi-session-observer.js";
 import { WikiTaskRuntime, WikiWritePathLease, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
 import {
+  createWikiDelegateCancelTool,
+  createWikiDelegateCollectTool,
+  createWikiDelegateStartTool,
+  createWikiFinishTool,
+  createWikiPlanTool,
+  createWikiReviewFinishTool,
+  derivedIndexPaths,
   parseWikiSpec,
-  wikiPlanParameters,
-  wikiSpecClusterPaths,
+  wikiLeadMayWrite,
   wikiSpecPagePaths,
+  WikiLeadRun,
   type WikiSpec,
-} from "./wiki-spec.js";
-import { wikiLeadMayWrite } from "./wiki-board.js";
-import { assertDispatchable } from "./wiki-dispatch.js";
+} from "./lead.js";
 import { wikiToolRejected } from "./wiki-tool-error.js";
-import { derivedIndexPaths } from "./wiki-validate.js";
 import type { WikiReviewResult } from "./delegate-contracts.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { WikiAgentRole, WikiGenerationProfile } from "./workspace.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
-import { WikiLeadRun } from "./wiki-lead-run.js";
 import { decideWikiAgentAttempt } from "./agent-attempt-policy.js";
 import { pinnedWorkspaceToolPolicy } from "./path-policy.js";
+import { createWikiRunLedger } from "./run-ledger.js";
 
 const PI_SESSION_REQUEST_RETRIES = 0;
 const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
@@ -66,8 +69,6 @@ export interface PiWikiLeadAgentOptions {
   /** Exact Pi session file to reopen. */
   sessionFile?: string;
   budgets?: WikiExecutionBudgets;
-  /** Single Pi skill exposed to this session. */
-  skillName?: string;
   skillPath?: string;
   sourcePlan?: WikiPinnedSourcePlan;
 }
@@ -110,6 +111,20 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
   };
   return {
     async run(request) {
+      return await runLeadSession(request, options, sessionOptions, (observation) => request.record(observation));
+    },
+  };
+}
+
+async function runLeadSession(
+  request: Parameters<WikiLeadRuntime["run"]>[0],
+  options: CreatePiLeadRuntimeOptions,
+  sessionOptions: PiWikiLeadAgentOptions,
+  observe: (observation: WikiLeadObservation) => void | Promise<void>,
+): Promise<Awaited<ReturnType<WikiLeadRuntime["run"]>>> {
+      const transientRetries = options.transientRetries ?? 1;
+      const baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
+      const ledger = createWikiRunLedger(path.join(request.sourcePlan.workspaceRoot, ".okf-wiki"));
       const leadRun = await WikiLeadRun.open({
         workspace: request.sourcePlan.workspaceRoot,
         runId: request.runId,
@@ -118,11 +133,8 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         requiredSections: request.generation.templates.requiredSections,
         sourcePlan: request.sourcePlan,
         language: request.language,
-        executionFence: {
-          runStateFile: path.join(request.sourcePlan.workspaceRoot, ".okf-wiki", "runs", request.runId, "run-state.json"),
-          attempt: request.attempt,
-          executionToken: request.executionToken,
-        },
+        assertActive: () => ledger.assertActive(request.runId, { attempt: request.attempt, executionToken: request.executionToken }),
+        executionToken: request.executionToken,
       });
       let specRecord = leadRun.specRecord;
       const controller = new AbortController();
@@ -156,7 +168,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         if (event.phase === "queued") {
           projection.set(taskId, { id: taskId, role: event.task.role, status: "queued" });
           const tasks = [...projection.values()];
-          await request.record({ kind: "batch", phase: "queued", batch: event.batchId, tasks });
+          await observe({ kind: "batch", phase: "queued", batch: event.batchId, tasks });
           return;
         }
         const current = projection.get(taskId) ?? { id: taskId, role: event.task.role, status: "queued" as const };
@@ -166,14 +178,14 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           current.updatedAt = current.startedAt;
           applyTelemetry(current, event.telemetry);
           projection.set(taskId, current);
-          await request.record({ kind: "batch", phase: "started", batch: event.batchId, tasks: [...projection.values()], taskId });
+          await observe({ kind: "batch", phase: "started", batch: event.batchId, tasks: [...projection.values()], taskId });
           return;
         }
         if (event.phase === "update" && event.telemetry) {
           applyTelemetry(current, event.telemetry);
           projection.set(taskId, current);
-          await request.record({ kind: "telemetry", target: event.telemetry.target, telemetry: event.telemetry });
-          await request.record({ kind: "batch", phase: "updated", batch: event.batchId, tasks: [...projection.values()], taskId });
+          await observe({ kind: "telemetry", target: event.telemetry.target, telemetry: event.telemetry });
+          await observe({ kind: "batch", phase: "updated", batch: event.batchId, tasks: [...projection.values()], taskId });
           return;
         }
         current.status = event.receipt?.status ?? "failed";
@@ -184,7 +196,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         applyTelemetry(current, event.telemetry);
         projection.set(taskId, current);
         if (event.receipt) {
-          await request.record({
+          await observe({
             kind: "task_settled",
             batch: event.batchId,
             taskId,
@@ -199,7 +211,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             ...(event.telemetry ? { telemetry: event.telemetry } : {}),
           });
         }
-        await request.record({ kind: "batch", phase: "completed", batch: event.batchId, tasks: [...projection.values()], taskId });
+        await observe({ kind: "batch", phase: "completed", batch: event.batchId, tasks: [...projection.values()], taskId });
       };
       const tasks = new WikiTaskRuntime({
         runId: request.runId,
@@ -225,7 +237,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         random: options.random,
         now: options.now,
         onTask,
-        reportObservability: async (input) => await request.record({ kind: "health", ...input }),
+        reportObservability: async (input) => await observe({ kind: "health", ...input }),
       });
       const policy = pinnedWorkspaceToolPolicy(request.sourcePlan, request.candidateWikiRoot, request.skillRoot);
       await tasks.resume(controller.signal);
@@ -233,7 +245,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
       let pause: WikiTaskPauseError | undefined;
       const leadTools = withExecutionModes([
         ...workflowTools(policy, "lead", undefined, request.sourcePlan.sources.map((source) => source.scopeId), undefined, pageWriter),
-        planTool(async (input) => {
+        createWikiPlanTool(async (input) => {
           const spec = parseWikiSpec(input);
           specRecord = await leadRun.saveSpec(spec, specRecord?.revision ?? 0);
           return withBoard(request.runId, leadRun.compactionObserved, {
@@ -242,15 +254,10 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             directWriteAllowed: wikiLeadMayWrite(spec, leadRun.compactionObserved),
           });
         }),
-        delegateStartTool(async (delegated) => {
+        createWikiDelegateStartTool(async (delegated) => {
           try {
-            assertDispatchable({
-              tasks: delegated.map((task) => ({ ...task, contextRefs: [] })),
-              spec: specRecord?.spec,
-            });
-            const expanded = expandDelegateClusterTasks(delegated, specRecord?.spec);
-            if (expanded.some((task) => task.role === "review")) writeLease.assertReviewAllowed();
-            const queued = await leadRun.queueDelegateBatch(expanded);
+            if (delegated.some((task) => task.role === "review")) writeLease.assertReviewAllowed();
+            const queued = await leadRun.dispatch(delegated);
             try {
               return withBoard(request.runId, leadRun.compactionObserved, await tasks.start(queued.contracts, controller.signal));
             } catch (error) {
@@ -261,7 +268,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             rejectWikiTool("wiki_delegate_start", error);
           }
         }),
-        delegateCollectTool(async (batchId, collectOptions) => {
+        createWikiDelegateCollectTool(async (batchId, collectOptions) => {
           try {
             return withBoard(
               request.runId,
@@ -276,12 +283,12 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             throw error;
           }
         }),
-        delegateCancelTool(async (batchId, taskIds, reason) => withBoard(
+        createWikiDelegateCancelTool(async (batchId, taskIds, reason) => withBoard(
           request.runId,
           leadRun.compactionObserved,
           projectWikiLeadSnapshot(await leadRun.presentSnapshot(await tasks.cancel(batchId, taskIds, reason))),
         )),
-        finishTool(async (summary) => {
+        createWikiFinishTool(async (summary) => {
           if (finishSummary) throw new Error("wiki_finish may be accepted only once");
           if (!summary.trim()) throw new Error("wiki_finish requires a summary");
           if (!specRecord) throw new Error("wiki_finish requires an accepted WikiSpec");
@@ -294,12 +301,12 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             }
             throw error;
           }
-          await leadRun.assertPublishable(wikiSpecPagePaths(specRecord.spec).map(addWikiPrefix), requiredReviewCoverage);
+          await leadRun.finish(undefined, requiredReviewCoverage);
           finishSummary = boundedDelegateSummary(summary);
           return withBoard(request.runId, leadRun.compactionObserved, { accepted: true });
         }),
       ]);
-      await request.record({ kind: "progress", message: "Wiki Lead is deciding adaptive research and writing tasks" });
+      await observe({ kind: "progress", message: "Wiki Lead is deciding adaptive research and writing tasks" });
       try {
         const maxAttempts = transientRetries + 1;
         const attemptBase = Math.max(request.attempt, request.leadSessionAttempt ?? options.leadSessionAttempt ?? request.attempt);
@@ -320,8 +327,8 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
               budgets,
             }, async (telemetry) => {
               if (telemetry.activity === "compacting") await leadRun.observeCompaction();
-              await request.record({ kind: "telemetry", target: telemetry.target, telemetry });
-            }, { target: { kind: "lead" }, attempt, now: options.now, onHealth: async (input) => await request.record({ kind: "health", ...input }) });
+              await observe({ kind: "telemetry", target: telemetry.target, telemetry });
+            }, { target: { kind: "lead" }, attempt, now: options.now, onHealth: async (input) => await observe({ kind: "health", ...input }) });
             break;
           } catch (error) {
             if (pause) break;
@@ -361,7 +368,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
                 completed: false,
               }],
             };
-            await request.record({ kind: "telemetry", target: retryTelemetry.target, telemetry: retryTelemetry });
+            await observe({ kind: "telemetry", target: retryTelemetry.target, telemetry: retryTelemetry });
             await (options.sleep ?? retrySleep)(delay, controller.signal);
           }
         }
@@ -372,14 +379,12 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         const retryAt = pause.retryAfterMs === undefined
           ? undefined
           : new Date((options.now ?? Date.now)() + pause.retryAfterMs).toISOString();
-        await request.record({ kind: "progress", message: "Wiki Lead paused by provider" });
+        await observe({ kind: "progress", message: "Wiki Lead paused by provider" });
         return { kind: "pause", reason: pause.reason, summary: pause.message, retryAt };
       }
       if (!finishSummary) throw new Error("Lead agent completed without wiki_finish");
-      await request.record({ kind: "progress", message: "Wiki Lead finished" });
+      await observe({ kind: "progress", message: "Wiki Lead finished" });
       return { kind: "complete", summary: finishSummary };
-    },
-  };
 }
 
 /** Pi Adapter for one delegated leaf; TaskRuntime owns retries and artifact acceptance. */
@@ -413,7 +418,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       : [];
     const tools = withExecutionModes([
       ...workflowTools(policy, role, task.writePaths, declaredSources, task.reviewPaths, this.pageWriter, reviewIndexes),
-      ...(role === "reviewer" ? [reviewFinishTool((result) => {
+      ...(role === "reviewer" ? [createWikiReviewFinishTool((result) => {
         if (review) throw new Error("wiki_review_finish may be accepted only once");
         const assigned = new Set(task.reviewPaths ?? []);
         if (result.reviewedPaths.length !== assigned.size || result.reviewedPaths.some((page) => !assigned.has(page))) {
@@ -500,171 +505,6 @@ function withExecutionModes(tools: ToolDefinition<any, any, any>[]): ToolDefinit
   } as ToolDefinition<any, any, any>));
 }
 
-const delegateTaskBase = {
-  id: Type.String({ minLength: 1, maxLength: 128 }),
-  instruction: Type.String({ minLength: 1 }),
-  sourceScopeIds: Type.Array(Type.String()),
-  contextRefs: Type.Array(Type.String()),
-};
-
-interface WikiLeadDelegateTask {
-  id: string;
-  role: "research" | "write" | "review";
-  instruction: string;
-  cluster?: string;
-  sourceScopeIds: string[];
-  contextRefs: string[];
-}
-
-const delegateTaskSchema = Type.Union([
-  Type.Object({
-    ...delegateTaskBase,
-    role: StringEnum(["research"]),
-  }, { additionalProperties: false }),
-  Type.Object({
-    ...delegateTaskBase,
-    role: StringEnum(["write"]),
-    cluster: Type.String({ minLength: 1 }),
-  }, { additionalProperties: false }),
-  Type.Object({
-    ...delegateTaskBase,
-    role: StringEnum(["review"]),
-    cluster: Type.String({ minLength: 1 }),
-  }, { additionalProperties: false }),
-]);
-
-function planTool(save: (spec: unknown) => Promise<unknown>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_plan",
-    label: "Submit Wiki plan",
-    description: "Submit the WikiSpec page path list before any page is written or reviewed. A revision invalidates prior reviews.",
-    promptSnippet: "Submit the WikiSpec page path list before writing or reviewing pages",
-    promptGuidelines: [
-      "Call wiki_plan before writing pages.",
-      "wiki_plan pages are wiki-relative paths such as overview.md and core/domain.md.",
-      "The host derives pageType and cluster identity from those paths.",
-      "Do not send version, frontmatter, or page objects.",
-    ],
-    parameters: wikiPlanParameters,
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      try {
-        return toolResult(await save(params));
-      } catch (error) {
-        rejectWikiTool("wiki_plan", error);
-      }
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-function delegateStartTool(start: (tasks: WikiLeadDelegateTask[]) => Promise<unknown>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_delegate_start",
-    label: "Start Wiki tasks",
-    description: "Start one bounded asynchronous batch of Wiki research, writing, or review tasks and return its batch ID immediately.",
-    promptSnippet: "Start one bounded asynchronous research, write, or review batch",
-    promptGuidelines: [
-      "Each instruction must state its goal, scope, expected artifact or page, and stop condition.",
-      "When chaining delegated work, populate contextRefs from the exact nodeId values in prior receipt.outputs entries.",
-      "Do not mix write and review tasks in one wiki_delegate_start batch.",
-      "write and review tasks require a current Spec cluster id; the host expands it to wiki/... paths.",
-    ],
-    parameters: Type.Object({ tasks: Type.Array(delegateTaskSchema, { minItems: 1 }) }, { additionalProperties: false }),
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      const result = await start((params as { tasks: WikiLeadDelegateTask[] }).tasks);
-      return toolResult(result);
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-function delegateCollectTool(
-  collect: (batchId: number, options: { until: "any" | "all"; timeoutSeconds: number }) => Promise<unknown>,
-): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_delegate_collect",
-    label: "Collect Wiki tasks",
-    description: "Collect completed receipts from an asynchronous Wiki task batch, optionally waiting for any or all pending tasks.",
-    promptSnippet: "Collect receipts from a started Wiki task batch",
-    promptGuidelines: ["Use timeoutSeconds 0 for a non-blocking status check."],
-    parameters: Type.Object({
-      batchId: Type.Integer({ minimum: 1 }),
-      until: StringEnum(["any", "all"]),
-      timeoutSeconds: Type.Integer({ minimum: 0, maximum: 60 }),
-    }, { additionalProperties: false }),
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      try {
-        const input = params as { batchId: number; until: "any" | "all"; timeoutSeconds: number };
-        return toolResult(await collect(input.batchId, { until: input.until, timeoutSeconds: input.timeoutSeconds }));
-      } catch (error) {
-        rejectWikiTool("wiki_delegate_collect", error);
-      }
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-function delegateCancelTool(
-  cancel: (batchId: number, taskIds?: string[], reason?: string) => Promise<unknown>,
-): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_delegate_cancel",
-    label: "Cancel Wiki tasks",
-    description: "Cancel pending tasks in an asynchronous Wiki batch, or cancel the whole batch when taskIds is omitted.",
-    promptSnippet: "Cancel no-longer-useful Wiki tasks",
-    parameters: Type.Object({
-      batchId: Type.Integer({ minimum: 1 }),
-      taskIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
-      reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
-    }, { additionalProperties: false }),
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      try {
-        const input = params as { batchId: number; taskIds?: string[]; reason?: string };
-        return toolResult(await cancel(input.batchId, input.taskIds, input.reason));
-      } catch (error) {
-        rejectWikiTool("wiki_delegate_cancel", error);
-      }
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-function finishTool(finish: (summary: string) => unknown | Promise<unknown>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_finish",
-    label: "Finish Wiki workflow",
-    description: "Finish after the candidate Wiki is complete and sufficiently grounded.",
-    promptSnippet: "Finish after the candidate Wiki is complete and reviewed",
-    promptGuidelines: [
-      "Call wiki_finish only after an accepted WikiSpec and current passing independent reviews.",
-      "wiki_finish summary must be 1-1024 characters.",
-    ],
-    parameters: Type.Object({
-      summary: Type.String({
-        minLength: 1,
-        maxLength: 1024,
-        description: "Concise completion summary for the accepted Wiki",
-      }),
-    }, { additionalProperties: false }),
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      try {
-        return toolResult(await finish((params as { summary: string }).summary));
-      } catch (error) {
-        rejectWikiTool("wiki_finish", error);
-      }
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-const reviewFindingSchema = Type.Object({
-  path: Type.String({ minLength: 1, description: "Assigned candidate path for this finding" }),
-  severity: StringEnum(["critical", "major", "minor"], { description: "Finding severity" }),
-  message: Type.String({ minLength: 1, description: "What is wrong on the page" }),
-  evidence: Type.Array(Type.String({ minLength: 1 }), { description: "Source locators supporting the finding" }),
-  suggestion: Type.String({ minLength: 1, description: "Concrete repair the writer should make" }),
-}, { additionalProperties: false });
-
 interface ResearchCompletion {
   status: "complete" | "incomplete";
   summary: string;
@@ -692,32 +532,6 @@ function researchFinishTool(finish: (result: ResearchCompletion) => void): ToolD
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       finish(params as ResearchCompletion);
-      return toolResult({ accepted: true });
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-function reviewFinishTool(finish: (result: WikiReviewResult) => void): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_review_finish",
-    label: "Finish Wiki review",
-    description: "Submit the independent structured verdict for every assigned candidate path and required profile review item.",
-    promptSnippet: "Submit the independent structured review verdict",
-    promptGuidelines: [
-      "wiki_review_finish reviewedPaths must exactly match the assigned reviewPaths.",
-    ],
-    parameters: Type.Object({
-      verdict: StringEnum(["pass", "changes_requested"], { description: "Independent review verdict for the assigned paths" }),
-      reviewedPaths: Type.Array(Type.String({ minLength: 1 }), {
-        minItems: 1,
-        description: "Exact assigned reviewPaths that were reviewed",
-      }),
-      findings: Type.Array(reviewFindingSchema, { description: "Issues found on assigned paths" }),
-      profileCoverage: Type.Array(Type.String({ minLength: 1 }), { description: "Generation-profile review items covered" }),
-    }, { additionalProperties: false }),
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      finish(params as WikiReviewResult);
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;
@@ -768,21 +582,6 @@ function withBoard<T extends object>(runId: string, compactionObserved: boolean,
     board: runBoardPath(runId),
     ...(compactionObserved ? { note: "Read board.md before dispatching or finishing" } : {}),
   };
-}
-
-function expandDelegateClusterTasks(tasks: readonly WikiLeadDelegateTask[], spec: WikiSpec | undefined): WikiDelegateTask[] {
-  return tasks.map((task) => {
-    const base = {
-      id: task.id,
-      instruction: task.instruction,
-      sourceScopeIds: [...task.sourceScopeIds],
-      contextRefs: [...task.contextRefs],
-    };
-    if (task.role === "research") return { ...base, role: "research" as const };
-    const paths = wikiSpecClusterPaths(spec!, task.cluster!).map(addWikiPrefix);
-    if (task.role === "write") return { ...base, role: "write" as const, writePaths: paths };
-    return { ...base, role: "review" as const, reviewPaths: paths };
-  });
 }
 
 function rejectWikiTool(tool: string, error: unknown): never {

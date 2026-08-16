@@ -8,7 +8,7 @@ import {
   renderWikiRuns,
   wikiCliHelp,
 } from "../dist/cli.js";
-import { formatWikiContext, projectWikiAgentLines } from "../dist/observability.js";
+import { formatWikiContext, projectWikiAgentLines } from "../dist/ui/observability.js";
 
 test("parses the compact Wiki command surface", () => {
   assert.deepEqual(parseWikiCliCommand(""), { action: "run" });
@@ -261,14 +261,16 @@ test("process tab shows tool outcomes without start or complete verbs", () => {
   const rendered = renderWikiAgent(inspection, "process");
   assert.equal(rendered, [
     "Wiki run-1  ·  lead  ·  process",
+    "◆ read",
     "✓ read · 1s  src/a.ts",
     "✗ write · 1s  Path is not assigned",
     "✓ compaction · 0s  Context compaction completed",
   ].join("\n"));
   assert.doesNotMatch(rendered, /read started|read succeeded|write failed:/);
   const lines = projectWikiAgentLines(inspection, "process");
-  assert.equal(lines[1].find((span) => span.text === "✓ ")?.role, "success");
-  assert.equal(lines[2].find((span) => span.text.includes("Path is not assigned"))?.role, "error");
+  assert.equal(lines[1].find((span) => span.text === "◆ ")?.role, "accent");
+  assert.equal(lines[2].find((span) => span.text === "✓ ")?.role, "success");
+  assert.equal(lines[3].find((span) => span.text.includes("Path is not assigned"))?.role, "error");
 });
 
 test("process tab shows model messages on their own lines", () => {

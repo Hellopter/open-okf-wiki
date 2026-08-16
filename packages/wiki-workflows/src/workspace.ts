@@ -1,6 +1,7 @@
 import { link, lstat, mkdir, open, readFile, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
+import { withExclusiveLock } from "./files.js";
 import { git, repositoryRoot, type GitResult } from "./git.js";
 import { errorMessage } from "./failures.js";
 
@@ -11,7 +12,6 @@ const WIKI_INTERNAL_DIRECTORY_IGNORE = ".okf-wiki/";
 const SOURCE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const RESERVED_WORKSPACE_DIRECTORIES = new Set(["wiki", ".okf-wiki"]);
 const WINDOWS_RESERVED_SOURCE_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
-const LOCK_WAIT_MS = 5_000;
 
 /** Applied to source discovery by default. Users can use each source's .gitignore for additions. */
 export const DEFAULT_SOURCE_IGNORES = [
@@ -603,52 +603,7 @@ async function pathEntry(location: string) {
 }
 
 async function withWorkspaceLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
-  const lockPath = path.join(root, WORKSPACE_LOCK_FILE);
-  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  while (true) {
-    try {
-      const lock = await open(lockPath, "wx");
-      try {
-        await lock.writeFile(JSON.stringify({ version: 1, pid: process.pid, token, updatedAt: Date.now() }), "utf8");
-        await lock.sync();
-      } finally {
-        await lock.close();
-      }
-      break;
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-      if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for Wiki workspace lock; remove stale lock manually if no writer is active: ${lockPath}`);
-      }
-      await delay(25);
-    }
-  }
-
-  try {
-    return await operation();
-  } finally {
-    await releaseWorkspaceLock(lockPath, token);
-  }
-}
-
-async function releaseWorkspaceLock(lockPath: string, token: string): Promise<void> {
-  const current = await readWorkspaceLock(lockPath);
-  if (current?.token === token) await rm(lockPath, { force: true });
-}
-
-async function readWorkspaceLock(lockPath: string): Promise<{ pid: number; token: string; updatedAt: number } | undefined> {
-  try {
-    const value = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown; token?: unknown; updatedAt?: unknown };
-    if (Number.isInteger(value.pid) && typeof value.token === "string" && typeof value.updatedAt === "number") {
-      return value as { pid: number; token: string; updatedAt: number };
-    }
-    const modified = (await lstat(lockPath)).mtimeMs;
-    return { pid: -1, token: "invalid", updatedAt: modified };
-  } catch (error) {
-    if (isMissing(error)) return undefined;
-    throw error;
-  }
+  return await withExclusiveLock(path.join(root, WORKSPACE_LOCK_FILE), operation);
 }
 
 async function removeEmptyDirectory(directory: string): Promise<void> {
@@ -659,10 +614,6 @@ async function removeEmptyDirectory(directory: string): Promise<void> {
       throw error;
     }
   }
-}
-
-async function delay(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 /** Keep private workflow handoffs out of a workspace's generated Wiki commits. */

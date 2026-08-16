@@ -1,15 +1,15 @@
 import { lstat, readFile, readdir, realpath, stat, unlink } from "node:fs/promises";
 import path from "node:path";
-import { WikiValidationInfrastructureError, errorMessage } from "./failures.js";
-import { inside, readText } from "./files.js";
-import { okfSources, parsePage, stringifyPage } from "./frontmatter.js";
-import type { WikiValidation, WikiValidationIssue } from "./types.js";
-import { isRecord } from "./util.js";
-import { isReservedWikiPagePath, isSafeWikiPagePath } from "./wiki-path.js";
-import { wikiSpecPagePaths, wikiSpecPages, wikiSpecPageType, type WikiSpec, type WikiSpecPage } from "./wiki-spec.js";
-import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
-import { validateWikiIndexes } from "./wiki-indexes.js";
-import type { WikiPinnedSourcePlan } from "./runtime-types.js";
+import { WikiValidationInfrastructureError, errorMessage } from "../failures.js";
+import { inside, readText } from "../files.js";
+import { okfSources, parsePage, stringifyPage } from "../frontmatter.js";
+import type { WikiValidation, WikiValidationIssue } from "../types.js";
+import { isRecord } from "../util.js";
+import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
+import { wikiSpecPagePaths, wikiSpecPages, wikiSpecPageType, type WikiSpec, type WikiSpecPage } from "./spec.js";
+import { loadWikiWorkspace, type ResolvedWikiSource } from "../workspace.js";
+import { validateWikiIndexes } from "./indexes.js";
+import type { WikiPinnedSourcePlan } from "../runtime-types.js";
 
 const SOURCE_REFERENCE = /^([^\\/#][^#\\]*?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
 const REPOSITORY_CITATION = /^repo:(.+)$/;

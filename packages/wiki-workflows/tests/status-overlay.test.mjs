@@ -655,7 +655,7 @@ test("completed batches stay collapsed until expanded and then inspect their tas
   }
 });
 
-test("navigation and batch inspector show a cluster label when paths are already on the snapshot", async () => {
+test("navigation and batch inspector show a cluster label from the task id", async () => {
   const clustered = {
     ...view,
     progress: {
@@ -663,8 +663,8 @@ test("navigation and batch inspector show a cluster label when paths are already
       currentBatch: {
         batch: 2, status: "running", completed: 0, total: 2,
         tasks: [
-          { id: "write-runtime", role: "write", status: "running", writePaths: ["wiki/core/runtime/concept.md"] },
-          { id: "review-runtime", role: "review", status: "queued", reviewPaths: ["wiki/core/runtime/flows.md"] },
+          { id: "wiki/core/runtime/concept.md", role: "write", status: "running" },
+          { id: "wiki/core/runtime/flows.md", role: "review", status: "queued" },
         ],
       },
     },
@@ -672,12 +672,12 @@ test("navigation and batch inspector show a cluster label when paths are already
   const { component } = await componentFor(handle({ async view() { return clustered; } }));
   await new Promise((resolve) => setImmediate(resolve));
   const nav = plain(component.render(80).join("\n"));
-  assert.match(nav, /write  core\/runtime  write-runtime/);
-  assert.match(nav, /review  core\/runtime  review-runtime/);
+  assert.match(nav, /write  core\/runtime  wiki\/core\/runtime\/concept\.md/);
+  assert.match(nav, /review  core\/runtime  wiki\/core\/runtime\/flows\.md/);
   component.handleInput("j");
   await new Promise((resolve) => setImmediate(resolve));
   const inspector = plain(component.render(120).join("\n"));
-  assert.match(inspector, /write  core\/runtime  write-runtime/);
+  assert.match(inspector, /write  core\/runtime  wiki\/core\/runtime\/concept\.md/);
   component.dispose();
 });
 
@@ -700,5 +700,125 @@ test("overlay ignores stale updates and renders the terminal transaction view", 
   const rendered = plain(component.render(80).join("\n"));
   assert.match(rendered, /wiki run-1  succeeded/);
   assert.doesNotMatch(rendered, /wiki run-1  failed/);
+  component.dispose();
+});
+
+function pushableUpdates() {
+  const queued = [];
+  let wake;
+  const subscribe = async function* (_after, signal) {
+    try {
+      while (!signal?.aborted) {
+        if (queued.length === 0) {
+          await new Promise((resolve) => {
+            wake = resolve;
+            signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        while (queued.length > 0 && !signal?.aborted) yield queued.shift();
+      }
+    } finally {
+      wake = undefined;
+    }
+  };
+  return {
+    subscribe,
+    push(nextView) {
+      queued.push({
+        event: { version: 1, runId: nextView.id, sequence: nextView.lastEventSequence, at: nextView.updatedAt, type: "progress", message: "tick" },
+        view: nextView,
+      });
+      const notify = wake;
+      wake = undefined;
+      notify?.();
+    },
+  };
+}
+
+async function flush() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+test("run-list and overview updates refresh the navigator without re-inspecting an unchanged agent", async () => {
+  const inspected = [];
+  const stream = pushableUpdates();
+  const subject = handle({
+    async inspectAgent(target, options) {
+      inspected.push({ target, options });
+      return inspection(target);
+    },
+    updates: stream.subscribe,
+  });
+  const { component } = await componentFor(subject);
+  await flush();
+  assert.deepEqual(inspected, [{ target: { kind: "lead" }, options: { transcript: false, handoff: false } }]);
+
+  stream.push({
+    ...view,
+    lastEventSequence: 3,
+    updatedAt: "2026-08-12T00:00:04Z",
+    progress: { ...view.progress, lead: { ...lead, activity: "streaming" } },
+  });
+  await flush();
+  assert.equal(inspected.length, 1);
+  assert.match(plain(component.render(80).join("\n")), /streaming/);
+
+  component.handleInput("CONFIRM");
+  await flush();
+  assert.equal(inspected.length, 1);
+  assert.match(plain(component.render(80).join("\n")), /\[Overview\]/);
+
+  stream.push({
+    ...view,
+    lastEventSequence: 4,
+    updatedAt: "2026-08-12T00:00:05Z",
+    progress: { ...view.progress, lead: { ...lead, activity: "synthesizing", lastActivityAt: "2026-08-12T00:00:05Z" } },
+  });
+  await flush();
+  assert.equal(inspected.length, 1);
+  component.dispose();
+});
+
+test("process and output tabs inspect lazily and only re-inspect selected telemetry changes", async () => {
+  const inspected = [];
+  const stream = pushableUpdates();
+  const subject = handle({
+    async inspectAgent(target, options) {
+      inspected.push({ target, options });
+      return inspection(target);
+    },
+    updates: stream.subscribe,
+  });
+  const { component } = await componentFor(subject, 24, { kind: "lead" });
+  await flush();
+  assert.deepEqual(inspected, [{ target: { kind: "lead" }, options: { transcript: false, handoff: false } }]);
+
+  component.handleInput("\u001b[C");
+  await flush();
+  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: true, handoff: false } });
+  const afterProcessTab = inspected.length;
+
+  stream.push({ ...view, lastEventSequence: 3, updatedAt: "2026-08-12T00:00:04Z" });
+  await flush();
+  assert.equal(inspected.length, afterProcessTab);
+
+  stream.push({
+    ...view,
+    lastEventSequence: 4,
+    updatedAt: "2026-08-12T00:00:05Z",
+    progress: {
+      ...view.progress,
+      lead: { ...lead, lastActivityAt: "2026-08-12T00:00:09Z", health: "degraded" },
+      currentBatch: { ...view.progress.currentBatch, tasks: [{ id: "write-auth", role: "write", status: "running", updatedAt: "2026-08-12T00:00:09Z" }] },
+    },
+  });
+  await flush();
+  assert.equal(inspected.length, afterProcessTab + 1);
+  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: true, handoff: false } });
+
+  component.handleInput("\u001b[C");
+  await flush();
+  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: false, handoff: true } });
   component.dispose();
 });

@@ -1,4 +1,4 @@
-import { wikiSpecClusterId, wikiSpecClusterPaths, wikiSpecClusters, wikiSpecDomainIds, wikiSpecRelativePath, type WikiSpec } from "./wiki-spec.js";
+import { wikiSpecClusterId, wikiSpecClusterPaths, wikiSpecClusters, wikiSpecDomainIds, wikiSpecRelativePath, type WikiSpec } from "./spec.js";
 
 export type WikiBoardClusterStatus =
   | "unplanned"

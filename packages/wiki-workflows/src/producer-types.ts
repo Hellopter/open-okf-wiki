@@ -239,13 +239,18 @@ export interface WikiRunPause {
   retryAt?: string;
 }
 
+export interface WikiInspectOptions {
+  transcript?: boolean;
+  handoff?: boolean;
+}
+
 export interface WikiRunHandle {
   readonly id: string;
   view(): Promise<WikiRunView>;
   updates(after?: number, signal?: AbortSignal): AsyncIterable<WikiRunUpdate>;
   result(): Promise<WikiProducerResult>;
   control(action: WikiRunControl): Promise<WikiRunView>;
-  inspectAgent(target: WikiAgentTarget): Promise<WikiAgentInspection | undefined>;
+  inspectAgent(target: WikiAgentTarget, options?: WikiInspectOptions): Promise<WikiAgentInspection | undefined>;
 }
 
 /** Complete public producer interface. Implementations are intentionally opaque. */

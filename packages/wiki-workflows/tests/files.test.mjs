@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { appendText, claimText, ensureDirectory, removePath, renamePath, writeFileDurable, writeText } from "../dist/files.js";
+import { appendText, claimText, ensureDirectory, removePath, renamePath, withExclusiveLock, writeFileDurable, writeText } from "../dist/files.js";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-files-"));
@@ -100,3 +100,57 @@ test("durable directory creation syncs every new parent entry and tolerates conc
   await writeFileDurable(binary, bytes);
   assert.deepEqual(await readFile(binary), Buffer.from(bytes));
 });
+
+test("exclusive lock serializes locally, waits on a live owner, and reclaims a dead lease", async (t) => {
+  const root = await fixture(t);
+  const lockPath = path.join(root, "critical.lock");
+  const order = [];
+  let releaseFirst;
+  const firstHeld = new Promise((resolve) => { releaseFirst = resolve; });
+  const first = withExclusiveLock(lockPath, async () => {
+    order.push("first-enter");
+    await firstHeld;
+    order.push("first-leave");
+    return "first";
+  });
+  await waitUntil(() => order.includes("first-enter"));
+  let secondDone = false;
+  const second = withExclusiveLock(lockPath, async () => {
+    order.push("second");
+    secondDone = true;
+    return "second";
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(secondDone, false);
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
+  assert.deepEqual(order, ["first-enter", "first-leave", "second"]);
+  await assert.rejects(readFile(lockPath), { code: "ENOENT" });
+
+  await writeFile(lockPath, "");
+  let acquiredWhileInitializing = false;
+  const initializing = withExclusiveLock(lockPath, async () => {
+    acquiredWhileInitializing = true;
+    return "reclaimed";
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(acquiredWhileInitializing, false, "a fresh partial lease must not be reclaimed as stale");
+  await writeFile(lockPath, JSON.stringify({
+    version: 1, pid: 999_999_999, token: "dead-owner", acquiredAt: "2026-08-16T00:00:00.000Z",
+  }));
+  assert.equal(await initializing, "reclaimed");
+  await assert.rejects(readFile(lockPath), { code: "ENOENT" });
+
+  await assert.rejects(withExclusiveLock(lockPath, async () => {
+    throw new Error("critical-section-failed");
+  }), /critical-section-failed/);
+  await assert.rejects(readFile(lockPath), { code: "ENOENT" });
+});
+
+async function waitUntil(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for exclusive lock");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

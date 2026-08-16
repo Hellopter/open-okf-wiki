@@ -14,6 +14,14 @@ const UPDATE_COALESCE_MS = 250;
 const MAX_SUMMARY_CHARS = 240;
 const MAX_PATH_CHARS = 300;
 const MAX_PROCESS_ENTRIES = 200;
+const MAX_DELIVERY_QUEUE = 48;
+
+type DeliveryClass = "coalesce" | "lifecycle";
+
+interface QueuedTelemetry {
+  class: DeliveryClass;
+  telemetry: WikiAgentTelemetry;
+}
 
 export interface PiSessionObserverOptions {
   target: WikiAgentTarget;
@@ -23,6 +31,7 @@ export interface PiSessionObserverOptions {
   report: (telemetry: WikiAgentTelemetry) => void | Promise<void>;
   onHealth?: (input: { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string }) => void | Promise<void>;
   now?: () => number;
+  heartbeatMs?: number;
 }
 
 /** Wiki-specific projection of Pi lifecycle events. It never retains message or tool result bodies. */
@@ -38,7 +47,11 @@ export class PiSessionObserver {
   private dirty = false;
   private updateTimer?: NodeJS.Timeout;
   private heartbeatTimer?: NodeJS.Timeout;
-  private delivery = Promise.resolve();
+  private readonly queue: QueuedTelemetry[] = [];
+  private pumping = false;
+  private deliveryIdle = Promise.resolve();
+  private lastQueuedProcessSignature?: string;
+  private lastQueuedFingerprint?: string;
   private healthDelivery = Promise.resolve();
   private unsubscribe?: () => void;
   private degraded = false;
@@ -60,8 +73,8 @@ export class PiSessionObserver {
     this.emit(true);
     this.heartbeatTimer = setInterval(() => {
       this.lastHeartbeatAt = this.iso();
-      this.emit(true, false);
-    }, HEARTBEAT_MS);
+      this.emit(true, false, true);
+    }, this.options.heartbeatMs ?? HEARTBEAT_MS);
     this.heartbeatTimer.unref?.();
   }
 
@@ -117,12 +130,27 @@ export class PiSessionObserver {
         };
         this.activeTools.set(event.toolCallId, tool);
         this.activity = toolActivity(event.toolName);
+        this.addProcess({
+          at,
+          kind: "tool",
+          severity: "info",
+          message: "",
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          summary: tool.summary,
+          completed: false,
+        });
         this.emit(true);
         return;
       }
       case "tool_execution_update": {
+        const summary = safeToolSummary(event.toolName, event.args, this.options.workspaceRoot);
         const tool = this.activeTools.get(event.toolCallId);
-        if (tool) tool.summary = safeToolSummary(event.toolName, event.args, this.options.workspaceRoot);
+        if (tool) tool.summary = summary;
+        this.patchProcess(
+          (entry) => entry.kind === "tool" && entry.toolCallId === event.toolCallId && !entry.completed,
+          { summary },
+        );
         this.emit(false);
         return;
       }
@@ -134,17 +162,21 @@ export class PiSessionObserver {
           : isDelegateTool(event.toolName) ? "synthesizing"
           : event.toolName === "wiki_finish" ? "finishing"
           : "waiting_model";
-        this.addProcess({
-          at,
-          kind: "tool",
-          severity: event.isError ? "error" : "info",
+        const existing = this.findProcess((entry) => entry.kind === "tool" && entry.toolCallId === event.toolCallId && !entry.completed);
+        const startedAt = tool?.startedAt ?? existing?.at;
+        const startedMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+        const completed = {
+          kind: "tool" as const,
+          severity: event.isError ? "error" as const : "info" as const,
           message: event.isError ? toolErrorReason(event.result) ?? "failed" : "",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
-          summary: tool?.summary,
-          durationMs: tool ? Math.max(0, this.now() - Date.parse(tool.startedAt)) : undefined,
+          summary: tool?.summary ?? existing?.summary,
+          durationMs: Number.isFinite(startedMs) ? Math.max(0, this.now() - startedMs) : undefined,
           completed: true,
-        });
+        };
+        if (existing) Object.assign(existing, completed);
+        else this.addProcess({ at, ...completed });
         this.emit(true);
         return;
       }
@@ -153,17 +185,20 @@ export class PiSessionObserver {
         this.addProcess({ at, kind: "compaction", severity: "info", message: `Context compaction started (${event.reason})`, completed: false });
         this.emit(true);
         return;
-      case "compaction_end":
+      case "compaction_end": {
         this.activity = this.activeTools.size > 0 ? "using_tool" : "waiting_model";
-        this.addProcess({
-          at,
-          kind: "compaction",
-          severity: event.aborted || event.errorMessage ? "warning" : "info",
+        const completed = {
+          kind: "compaction" as const,
+          severity: event.aborted || event.errorMessage ? "warning" as const : "info" as const,
           message: event.aborted ? "Context compaction aborted" : event.errorMessage ? "Context compaction failed" : "Context compaction completed",
           completed: true,
-        });
+        };
+        if (!this.patchProcess((entry) => entry.kind === "compaction" && !entry.completed, completed)) {
+          this.addProcess({ at, ...completed });
+        }
         this.emit(true);
         return;
+      }
       case "turn_end":
         this.activity = "waiting_model";
         this.emit(true, true);
@@ -194,13 +229,13 @@ export class PiSessionObserver {
     }
   }
 
-  private emit(immediate: boolean, includeUsage = false): void {
+  private emit(immediate: boolean, includeUsage = false, coalesce = !immediate): void {
     this.dirty = true;
     if (!immediate) {
       if (!this.updateTimer) {
         this.updateTimer = setTimeout(() => {
           this.updateTimer = undefined;
-          this.emit(true);
+          this.emit(true, false, true);
         }, UPDATE_COALESCE_MS);
         this.updateTimer.unref?.();
       }
@@ -209,6 +244,8 @@ export class PiSessionObserver {
     if (this.updateTimer) clearTimeout(this.updateTimer);
     this.updateTimer = undefined;
     this.dirty = false;
+    const processSignature = processUiSignature(this.process);
+    const includeProcess = processSignature !== this.lastQueuedProcessSignature;
     const telemetry: WikiAgentTelemetry = {
       target: this.options.target,
       attempt: this.options.attempt,
@@ -218,15 +255,70 @@ export class PiSessionObserver {
       lastActivityAt: this.lastActivityAt,
       lastHeartbeatAt: this.lastHeartbeatAt,
       deadlineAt: this.deadlineAt,
-      process: this.process.map((entry) => ({ ...entry })),
+      ...(includeProcess ? { process: this.process.map((entry) => ({ ...entry })) } : {}),
       ...(includeUsage ? { usage: readSessionUsage(this.session) } : {}),
       ...(this.session.sessionFile ? { sessionFile: this.session.sessionFile } : {}),
     };
-    this.delivery = this.delivery.then(async () => await this.deliver(telemetry));
+    const fingerprint = telemetryUiFingerprint(telemetry, processSignature);
+    if (coalesce && fingerprint === this.lastQueuedFingerprint) return;
+    if (!this.enqueue(telemetry, coalesce ? "coalesce" : "lifecycle")) return;
+    this.lastQueuedFingerprint = fingerprint;
+    if (includeProcess) this.lastQueuedProcessSignature = processSignature;
+  }
+
+  private enqueue(telemetry: WikiAgentTelemetry, deliveryClass: DeliveryClass): boolean {
+    if (deliveryClass === "coalesce") {
+      const existing = this.queue.findIndex((item) => item.class === "coalesce");
+      if (existing >= 0) this.queue.splice(existing, 1);
+    }
+    if (this.queue.length >= MAX_DELIVERY_QUEUE) {
+      for (let index = this.queue.length - 1; index >= 0 && this.queue.length >= MAX_DELIVERY_QUEUE; index -= 1) {
+        if (this.queue[index].class === "coalesce") this.queue.splice(index, 1);
+      }
+    }
+    if (this.queue.length >= MAX_DELIVERY_QUEUE) {
+      this.saturateQueue();
+      return false;
+    }
+    this.queue.push({ class: deliveryClass, telemetry });
+    void this.pump();
+    return true;
+  }
+
+  private saturateQueue(): void {
+    if (this.degraded) return;
+    this.degraded = true;
+    this.reportHealth({
+      target: this.options.target,
+      status: "degraded",
+      at: this.iso(),
+      message: "Telemetry delivery queue saturated",
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    let settle!: () => void;
+    this.deliveryIdle = new Promise<void>((resolve) => { settle = resolve; });
+    try {
+      while (this.queue.length > 0) {
+        const item = this.queue.shift();
+        if (item) await this.deliver(item.telemetry);
+      }
+    } finally {
+      this.pumping = false;
+      settle();
+      if (this.queue.length > 0) void this.pump();
+    }
   }
 
   private async flush(): Promise<void> {
-    await this.delivery;
+    for (;;) {
+      await this.deliveryIdle;
+      if (this.queue.length === 0 && !this.pumping) break;
+      if (!this.pumping) void this.pump();
+    }
     await this.healthDelivery;
   }
 
@@ -264,6 +356,21 @@ export class PiSessionObserver {
     if (this.process.length > MAX_PROCESS_ENTRIES) this.process.splice(0, this.process.length - MAX_PROCESS_ENTRIES);
   }
 
+  private findProcess(match: (entry: WikiActivityEntry) => boolean): WikiActivityEntry | undefined {
+    for (let index = this.process.length - 1; index >= 0; index--) {
+      const entry = this.process[index];
+      if (match(entry)) return entry;
+    }
+    return undefined;
+  }
+
+  private patchProcess(match: (entry: WikiActivityEntry) => boolean, patch: Partial<WikiActivityEntry>): boolean {
+    const entry = this.findProcess(match);
+    if (!entry) return false;
+    Object.assign(entry, patch);
+    return true;
+  }
+
   private markActivity(): string {
     this.lastActivityAt = this.iso();
     return this.lastActivityAt;
@@ -276,6 +383,25 @@ export class PiSessionObserver {
   private iso(value = this.now()): string {
     return new Date(value).toISOString();
   }
+}
+
+function processUiSignature(process: readonly WikiActivityEntry[]): string {
+  return process.map((entry) => `${entry.sequence}\0${entry.completed ?? ""}\0${entry.summary ?? ""}\0${entry.message}`).join("\n");
+}
+
+function telemetryUiFingerprint(telemetry: WikiAgentTelemetry, processSignature: string): string {
+  const tools = (telemetry.activeTools ?? [])
+    .map((tool) => `${tool.id ?? ""}\0${tool.name}\0${tool.summary ?? ""}`)
+    .join("\n");
+  return [
+    telemetry.activity ?? "",
+    tools,
+    telemetry.lastActivityAt ?? "",
+    telemetry.lastHeartbeatAt ?? "",
+    processSignature,
+    telemetry.usage ? "u" : "",
+    telemetry.sessionFile ?? "",
+  ].join("\0");
 }
 
 function toolActivity(name: string): WikiAgentActivity {

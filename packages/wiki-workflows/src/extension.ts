@@ -8,10 +8,10 @@ import {
   wikiCliHelp,
   type WikiCliCommand,
 } from "./cli.js";
-import { projectWikiRunEvent } from "./observability.js";
+import { projectWikiRunEvent } from "./ui/observability.js";
 import { createConfiguredWikiProducer } from "./production-run.js";
 import type { WikiAgentTarget, WikiProducer, WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
-import { formatLocalDateTime } from "./time-format.js";
+import { formatLocalDateTime } from "./ui/time-format.js";
 import { themeWikiLiveText, wikiFooterStatus, wikiWidgetLines } from "./ui/live-surface.js";
 import { openWikiStatusOverlay } from "./ui/status-overlay.js";
 import { errorMessage } from "./util.js";

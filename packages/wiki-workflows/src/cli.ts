@@ -3,14 +3,12 @@ import type {
   WikiAgentTarget,
   WikiRunProgress,
   WikiRunView,
-  WikiTaskSnapshot,
 } from "./producer-types.js";
 import {
-  agentStatusSemantics,
   projectWikiAgentLines,
   projectWikiRunObservability,
-} from "./observability.js";
-import { formatLocalDateTime } from "./time-format.js";
+} from "./ui/observability.js";
+import { formatLocalDateTime } from "./ui/time-format.js";
 
 export type WikiCliCommand =
   | { action: "run"; focus?: string }
@@ -122,13 +120,9 @@ function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string 
   const lines: string[] = [`Wiki ${run.id}  ${semantics.status.marker} ${semantics.status.label}${elapsedPart}`];
 
   const stageSegments = [`stage  ${semantics.stage?.label ?? progress.stage}`];
-  const currentBatch = progress.currentBatch;
-  const batch = currentBatch?.batch;
-  const completed = currentBatch?.completed;
-  const total = currentBatch?.total;
-  if (batch !== undefined) stageSegments.push(`batch ${batch}`);
-  if (completed !== undefined && total !== undefined) {
-    const running = currentBatch?.tasks.filter((task) => task.status === "running").length ?? 0;
+  if (semantics.batch) {
+    stageSegments.push(`batch ${semantics.batch.batch}`);
+    const { completed, total, running } = semantics.batch;
     stageSegments.push(`${completed}/${total} done${running > 0 ? `, ${running} running` : ""}`);
   }
   lines.push(stageSegments.join(" · "));
@@ -143,32 +137,19 @@ function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string 
 
   if (run.error) lines.push(`error  ${run.error}`);
 
-  const tasks = currentBatch?.tasks ?? [];
-  if (tasks.length > 0) {
+  if (semantics.batch && semantics.batch.tasks.length > 0) {
     lines.push("");
-    for (const task of tasks) lines.push(renderTaskLine(task));
+    for (const task of semantics.batch.tasks) {
+      const attempt = task.attempts !== undefined ? `  [attempt ${task.attempts}]` : "";
+      const activity = task.activity ? `  ·  ${task.activity}` : "";
+      lines.push(`  ${task.marker} ${task.role}  ${task.id}${attempt}${activity}`);
+    }
   }
 
   const last = textValue(progress.lastMessage);
   if (last) lines.push(`last  ${last}`);
 
   return lines.join("\n");
-}
-
-function renderTaskLine(task: WikiTaskSnapshot): string {
-  const attempt = task.attempts !== undefined ? `  [attempt ${task.attempts}]` : "";
-  const activity = task.status === "running" ? renderTaskActivity(task) : undefined;
-  return `  ${agentStatusSemantics(task.status).marker} ${task.role}  ${task.id}${attempt}${activity ? `  ·  ${activity}` : ""}`;
-}
-
-function renderTaskActivity(task: WikiTaskSnapshot): string | undefined {
-  if (task.activeTool?.name) return `${task.activeTool.name}…`;
-  switch (task.activity) {
-    case "responding": return "responding…";
-    case "tool": return "tool…";
-    case "compacting": return "compacting…";
-    default: return undefined;
-  }
 }
 
 function formatElapsed(start: string, end: string): string | undefined {

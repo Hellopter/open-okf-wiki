@@ -20,7 +20,7 @@ import {
   workspaceToolPolicy,
 } from "./path-policy.js";
 import { boundToolExecutionResult } from "./tool-budget.js";
-import { isSafeWikiPagePath } from "./wiki-path.js";
+import { isSafeWikiPagePath } from "./lead.js";
 
 export type WikiToolRole = "lead" | "researcher" | "writer" | "reviewer";
 
@@ -257,9 +257,8 @@ function remapCandidateWikiPath(
   definition: ToolDefinition<any, any, any>,
   policy: WorkspaceToolPolicy,
   activeWikiRoot: string,
-  enabled = true,
 ): ToolDefinition<any, any, any> {
-  if (!policy.candidateWikiRoot || !enabled) return definition;
+  if (!policy.candidateWikiRoot) return definition;
   const execute = definition.execute;
   return {
     ...definition,

@@ -8,6 +8,8 @@ import {
   digestProductionSkillTree,
   materializeProductionSkill,
   packagedProductionSkillRoot,
+  pin,
+  reopen,
   skillWorkspacePath,
 } from "../dist/skill-store.js";
 
@@ -27,24 +29,26 @@ test("packaged production skill contains required files and not the host skill",
   assert.doesNotMatch(production, /\/wiki init/);
 });
 
-test("materialize copies the production skill into the run directory", async (t) => {
+test("pin copies the production skill into the run directory", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
-  const skillRoot = await materializeProductionSkill(workspace, "run-1");
-  assert.equal(skillRoot, path.resolve(workspace, skillWorkspacePath("run-1")));
-  const skill = await readFile(path.join(skillRoot, "SKILL.md"), "utf8");
+  const pinned = await pin(workspace, "run-1");
+  assert.equal(pinned.root, path.resolve(workspace, skillWorkspacePath("run-1")));
+  assert.match(pinned.digest, /^[a-f0-9]{64}$/);
+  const skill = await readFile(path.join(pinned.root, "SKILL.md"), "utf8");
   assert.match(skill, /wiki_plan/);
   assert.doesNotMatch(skill, /\/wiki init/);
-  await readFile(path.join(skillRoot, "references", "templates", "overview.md"), "utf8");
+  await readFile(path.join(pinned.root, "references", "templates", "overview.md"), "utf8");
 });
 
-test("materialize replaces a stale copy and fails when the source tree is incomplete", async (t) => {
+test("pin replaces a stale copy and fails when the source tree is incomplete", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
-  const first = await materializeProductionSkill(workspace, "run-2");
-  await writeFile(path.join(first, "STALE.md"), "stale\n");
-  const second = await materializeProductionSkill(workspace, "run-2");
-  await assert.rejects(readFile(path.join(second, "STALE.md"), "utf8"), { code: "ENOENT" });
+  const first = await pin(workspace, "run-2");
+  await writeFile(path.join(first.root, "STALE.md"), "stale\n");
+  const second = await pin(workspace, "run-2");
+  await assert.rejects(readFile(path.join(second.root, "STALE.md"), "utf8"), { code: "ENOENT" });
+  assert.equal(second.digest, first.digest);
 
   const broken = path.join(workspace, "broken-skill");
   await mkdir(broken);
@@ -52,42 +56,53 @@ test("materialize replaces a stale copy and fails when the source tree is incomp
   await assert.rejects(materializeProductionSkill(workspace, "run-3", broken), /missing briefs\/researcher.md/);
 });
 
-test("resume preserves the run skill snapshot and rejects a missing snapshot", async (t) => {
+test("reopen verifies the pinned digest and rejects a missing snapshot", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
-  const skillRoot = await materializeProductionSkill(workspace, "run-4");
-  await writeFile(path.join(skillRoot, "SNAPSHOT.md"), "pinned\n");
-  const restored = await materializeProductionSkill(workspace, "run-4", undefined, "resume");
-  assert.equal(await readFile(path.join(restored, "SNAPSHOT.md"), "utf8"), "pinned\n");
-  await rm(skillRoot, { recursive: true, force: true });
-  await assert.rejects(materializeProductionSkill(workspace, "run-4", undefined, "resume"), /missing SKILL\.md/);
+  const pinned = await pin(workspace, "run-4");
+  const restored = await reopen(workspace, "run-4", pinned.digest);
+  assert.equal(restored.root, pinned.root);
+  assert.equal(restored.digest, pinned.digest);
+  await rm(pinned.root, { recursive: true, force: true });
+  await assert.rejects(reopen(workspace, "run-4", pinned.digest), /missing SKILL\.md/);
+});
+
+test("reopen fails closed when the pinned skill digest no longer matches", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
+  t.after(async () => await rm(workspace, { recursive: true, force: true }));
+  const pinned = await pin(workspace, "run-mismatch");
+  await assert.rejects(reopen(workspace, "run-mismatch", "a".repeat(64)), /production skill changed/);
+  await assert.rejects(reopen(workspace, "run-mismatch", "not-a-digest"), /digest is invalid/);
+  await writeFile(path.join(pinned.root, "SNAPSHOT.md"), "tampered\n");
+  await assert.rejects(reopen(workspace, "run-mismatch", pinned.digest), /production skill changed/);
 });
 
 test("skill digest pins every file, dot entry, and empty directory and rejects symlinks", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
-  const skillRoot = await materializeProductionSkill(workspace, "digest-run");
-  const initial = await digestProductionSkillTree(skillRoot);
-  assert.match(initial, /^[a-f0-9]{64}$/);
-  assert.equal(await digestProductionSkillTree(await materializeProductionSkill(workspace, "digest-run", undefined, "resume")), initial);
+  const pinned = await pin(workspace, "digest-run");
+  assert.match(pinned.digest, /^[a-f0-9]{64}$/);
+  assert.equal((await reopen(workspace, "digest-run", pinned.digest)).digest, pinned.digest);
 
-  await writeFile(path.join(skillRoot, ".pinned"), "one\n");
-  const withDotfile = await digestProductionSkillTree(skillRoot);
-  assert.notEqual(withDotfile, initial);
-  await mkdir(path.join(skillRoot, ".empty"));
-  const withEmptyDirectory = await digestProductionSkillTree(skillRoot);
+  await writeFile(path.join(pinned.root, ".pinned"), "one\n");
+  const withDotfile = await digestProductionSkillTree(pinned.root);
+  assert.notEqual(withDotfile, pinned.digest);
+  await assert.rejects(reopen(workspace, "digest-run", pinned.digest), /production skill changed/);
+  await mkdir(path.join(pinned.root, ".empty"));
+  const withEmptyDirectory = await digestProductionSkillTree(pinned.root);
   assert.notEqual(withEmptyDirectory, withDotfile);
-  await writeFile(path.join(skillRoot, "SNAPSHOT.md"), "changed\n");
-  assert.notEqual(await digestProductionSkillTree(skillRoot), withEmptyDirectory);
+  await writeFile(path.join(pinned.root, "SNAPSHOT.md"), "changed\n");
+  assert.notEqual(await digestProductionSkillTree(pinned.root), withEmptyDirectory);
 
-  await symlink(path.join(skillRoot, "SKILL.md"), path.join(skillRoot, "linked-skill"));
-  await assert.rejects(digestProductionSkillTree(skillRoot), /symbolic link/);
+  await symlink(path.join(pinned.root, "SKILL.md"), path.join(pinned.root, "linked-skill"));
+  await assert.rejects(digestProductionSkillTree(pinned.root), /symbolic link/);
+  await assert.rejects(reopen(workspace, "digest-run", pinned.digest), /symbolic link/);
 });
 
 test("briefs point to the shared and assigned production references", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "wiki-skill-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
-  const skillRoot = await materializeProductionSkill(workspace, "run-5");
+  const { root: skillRoot } = await pin(workspace, "run-5");
   const researcher = await readFile(path.join(skillRoot, "briefs", "researcher.md"), "utf8");
   const writer = await readFile(path.join(skillRoot, "briefs", "writer.md"), "utf8");
   const reviewer = await readFile(path.join(skillRoot, "briefs", "reviewer.md"), "utf8");

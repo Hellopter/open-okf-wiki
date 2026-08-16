@@ -4,9 +4,10 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createConfiguredWikiProducer } from "../dist/production-run.js";
-import { WikiLeadRun } from "../dist/wiki-lead-run.js";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
+import { WikiLeadRun } from "../dist/lead.js";
+import { createConfiguredWikiProducer } from "../dist/production-run.js";
+import { createWikiRunLedger } from "../dist/run-ledger.js";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-production-v2-"));
@@ -20,13 +21,21 @@ async function fixture(t) {
 const spec = () => ({ pages: ["overview.md", "runtime/domain.md"] });
 const markdown = (type, title) => ["---", `type: ${type}`, `title: ${title}`, "description: Runtime", "sources:", "  - id: runtime", "    resource: repo:src/index.ts#L1-L1", "---", "", "Runtime.[^runtime]", "", "[^runtime]: [Source](repo:src/index.ts#L1-L1)", ""].join("\n");
 
+function leadFence(request) {
+  const ledger = createWikiRunLedger(path.join(request.cwd, ".okf-wiki"));
+  return {
+    assertActive: () => ledger.assertActive(request.runId, { attempt: request.attempt, executionToken: request.executionToken }),
+    executionToken: request.executionToken,
+  };
+}
+
 async function writeComplete(request) {
   const lead = await WikiLeadRun.open({ workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot, policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-    executionFence: { runStateFile: path.join(request.cwd, ".okf-wiki", "runs", request.runId, "run-state.json"), attempt: request.attempt, executionToken: request.executionToken } });
+    ...leadFence(request) });
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: markdown("Overview", "Overview"), actor: "lead" });
   await lead.replacePage({ path: "wiki/runtime/domain.md", content: markdown("Domain", "Runtime"), actor: "lead" });
-  const { batchId, contracts } = await lead.queueDelegateBatch([
+  const { batchId, contracts } = await lead.dispatch([
     { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
     { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/runtime/domain.md"] },
   ]);
@@ -62,11 +71,11 @@ test("invalid full candidate fails deterministic validation and leaves published
   await writeFile(path.join(root, "wiki", "sentinel.md"), "published\n");
   const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
     const lead = await WikiLeadRun.open({ workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot, policy: request.generation,
-      executionFence: { runStateFile: path.join(request.cwd, ".okf-wiki", "runs", request.runId, "run-state.json"), attempt: request.attempt, executionToken: request.executionToken } });
+      ...leadFence(request) });
     await lead.saveSpec(spec());
     await mkdir(path.join(request.candidateWikiRoot, "runtime"), { recursive: true });
     await writeFile(path.join(request.candidateWikiRoot, "overview.md"), "# invalid\n");
-    await lead.queueDelegateBatch([
+    await lead.dispatch([
       { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
       { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/runtime/domain.md"] },
     ]);

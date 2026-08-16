@@ -244,19 +244,19 @@ content may share a content-addressed blob.
 - The materialized production skill is a complete, fsynced Run snapshot. Its
   exact tree digest is pinned in the Run plan and verified on resume.
 
-Published provenance readers accept metadata versions 1 and 2. New
-publications write version 2, including the source fingerprint, summary, sealed
-WikiSpec, tree digest, and page set. The active publication journal binds that
-canonical metadata with a digest. Once the matching Run terminal transition is
-durable, acknowledgement archives the journal under
+The current format is 1; anything else fails closed. New publications write
+version 1, including the source fingerprint, summary, sealed WikiSpec, tree
+digest, and page set. The active publication journal binds that canonical
+metadata with a digest. Once the matching Run terminal transition is durable,
+acknowledgement archives the journal under
 `.okf-wiki/publications/<run-id>.json`; archived journals remain auditable but
 are excluded from later recovery. Run and publication filesystem transitions
 fsync both file contents and changed directory entries before advancing their
 durable state.
 
-Version-1 Run persistence is not migrated. Preserve needed evidence and remove
-stale `.okf-wiki/` Run state manually; the Published Wiki is independent of that
-state. A successful current-version Run removes its transient Candidate,
+Preserve needed evidence and remove stale `.okf-wiki/` Run state manually; the
+Published Wiki is independent of that state. A successful current-version Run
+removes its transient Candidate,
 session, transaction, publication preimage, and materialized skill after
 publication. It retains content-addressed artifacts, the per-Run artifact
 manifest and receipts, Run state, published provenance, and the acknowledged

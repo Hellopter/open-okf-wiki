@@ -194,3 +194,113 @@ function isUnsupportedDirectorySync(error: unknown): boolean {
   const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
   return code === "EINVAL" || code === "ENOTSUP" || code === "EISDIR" || code === "EPERM";
 }
+
+const LOCK_POLL_MS = 20;
+const LOCK_INITIALIZATION_GRACE_MS = 1_000;
+const lockQueues = new Map<string, Promise<void>>();
+
+interface ExclusiveLockRecord {
+  version: 1;
+  pid: number;
+  token: string;
+  acquiredAt: string;
+}
+
+/** Process-local serialize plus a wx filesystem lease with pid/token ownership and stale reclaim. */
+export async function withExclusiveLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+  const key = path.resolve(lockPath);
+  const previous = lockQueues.get(key) ?? Promise.resolve();
+  const task = previous.catch(() => undefined).then(async () => {
+    await ensureDirectory(path.dirname(lockPath));
+    return await withFilesystemLease(lockPath, fn);
+  });
+  const tail = task.then(() => undefined, () => undefined);
+  lockQueues.set(key, tail);
+  try { return await task; }
+  finally { if (lockQueues.get(key) === tail) lockQueues.delete(key); }
+}
+
+async function withFilesystemLease<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+  const token = randomUUID();
+  const record: ExclusiveLockRecord = {
+    version: 1,
+    pid: process.pid,
+    token,
+    acquiredAt: new Date().toISOString(),
+  };
+  for (;;) {
+    try {
+      await claimText(lockPath, `${JSON.stringify(record)}\n`);
+      break;
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+    const observedText = await readLockText(lockPath);
+    if (observedText === undefined) continue;
+    const observed = parseExclusiveLock(observedText);
+    if (!observed && await lockIsInitializing(lockPath)) {
+      await delay(LOCK_POLL_MS);
+      continue;
+    }
+    if (!observed || !processIsAlive(observed.pid)) {
+      const currentText = await readLockText(lockPath);
+      if (currentText === observedText) await removePath(lockPath, { force: true });
+      continue;
+    }
+    await delay(LOCK_POLL_MS);
+  }
+  try { return await fn(); }
+  finally {
+    const current = parseExclusiveLock(await readLockText(lockPath));
+    if (current?.token === token) await removePath(lockPath, { force: true });
+  }
+}
+
+async function readLockText(lockPath: string): Promise<string | undefined> {
+  try { return await readFile(lockPath, "utf8"); }
+  catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+}
+
+function parseExclusiveLock(text: string | undefined): { pid: number; token?: string } | undefined {
+  if (text === undefined) return undefined;
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as { pid?: unknown; token?: unknown };
+    if (!Number.isInteger(record.pid) || (record.pid as number) < 1) return undefined;
+    return {
+      pid: record.pid as number,
+      ...(typeof record.token === "string" && record.token ? { token: record.token } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function lockIsInitializing(lockPath: string): Promise<boolean> {
+  try { return Date.now() - (await lstat(lockPath)).mtimeMs < LOCK_INITIALIZATION_GRACE_MS; }
+  catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EEXIST");
+}
+
+function isMissing(error: unknown): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

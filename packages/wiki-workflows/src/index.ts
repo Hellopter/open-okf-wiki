@@ -12,6 +12,7 @@ export {
   type WikiAgentTarget,
   type WikiContextStats,
   type WikiDelegationBatchSummary,
+  type WikiInspectOptions,
   type WikiExecutionBudgets,
   type WikiProducerRequest,
   type WikiProducer,

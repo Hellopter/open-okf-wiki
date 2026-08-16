@@ -113,7 +113,7 @@ export type WikiLeadObservation =
 export interface WikiLeadExecutionRequest extends WikiRunAdapterContext, WikiProductionPlan {
   attempt: number;
   executionToken: string;
-  record(observation: WikiLeadObservation): Promise<void>;
+  record(observation: WikiLeadObservation): void | Promise<void>;
 }
 
 export type WikiLeadOutcome =

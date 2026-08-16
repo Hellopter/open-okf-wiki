@@ -5,16 +5,31 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { WikiLeadRun } from "../dist/lead.js";
 import { createWikiPublicationStore } from "../dist/publication-store.js";
-import { issueWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
+import { verifyWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const finalSpec = {
   pages: ["overview.md", "core/domain.md"],
 };
 
+const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
+
+function page(type, title, body = "new") {
+  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: repo:source/a.ts#L1-L1", "---", "", `${body}.[^source-a]`, "", "[^source-a]: [Source](repo:source/a.ts#L1-L1)", ""].join("\n");
+}
+
 async function fixture(t, afterStep) {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-publish-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
+  await mkdir(path.join(workspace, "source"));
+  await writeFile(path.join(workspace, "source", "a.ts"), "export const a = true;\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: path.join(workspace, "source") });
+  await writeFile(path.join(workspace, "workspace.yaml"), [
+    "version: 1", "language: en", "defaultSourceIgnores: true", "wiki:", "  exclude: []",
+    "sources:", "  - path: source", "    origin:", "      type: link", `      localPath: ${JSON.stringify(path.join(workspace, "source"))}`, "",
+  ].join("\n"));
   const wiki = path.join(workspace, "wiki");
   await mkdir(path.join(wiki, "assets"), { recursive: true });
   await writeFile(path.join(wiki, "overview.md"), "old\n", "utf8");
@@ -22,19 +37,40 @@ async function fixture(t, afterStep) {
   return { workspace, store: createWikiPublicationStore({ workspace, afterStep }) };
 }
 
-async function publish(store, runId, candidate, result = {}) {
-  const seal = await issueWikiPublicationSeal({
-    runId,
+async function sealCandidate(workspace, runId, candidate, extra = {}) {
+  const run = await WikiLeadRun.open({
+    workspace, runId, candidateWikiRoot: candidate, policy,
+    assertActive: async () => {},
     executionToken: `execution-${runId}`,
-    candidateRoot: candidate,
-    pages: ["overview.md", "core/domain.md"],
-    spec: finalSpec,
   });
-  return await store.publish(runId, {
-    sourceFingerprint: "source-sha256",
-    summary: "complete",
-    ...result,
-  }, seal);
+  await run.saveSpec(finalSpec);
+  await run.replacePage({ path: "wiki/overview.md", content: page("Overview", "Overview", extra.body ?? "new"), actor: "lead" });
+  await run.replacePage({ path: "wiki/core/domain.md", content: page("Domain", "Core", extra.body ?? "new"), actor: "lead" });
+  const { contracts } = await run.dispatch([
+    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+  ]);
+  for (const contract of contracts) {
+    await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(contract.batchId, contract.id, {
+      attempt: 1,
+      receipt: {
+        id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: [], gaps: [], attempts: 1,
+        contractId: contract.contractId, contractDigest: contract.contractDigest,
+        review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
+      },
+    });
+  }
+  return await run.sealForPublication({
+    requiredProfileCoverage: [],
+    sourceFingerprint: extra.sourceFingerprint ?? "source-sha256",
+    summary: extra.summary ?? "complete",
+  });
+}
+
+async function publish(store, workspace, runId, candidate, extra = {}) {
+  const seal = await sealCandidate(workspace, runId, candidate, extra);
+  return await store.publish(runId, seal);
 }
 
 function deferred() {
@@ -58,14 +94,14 @@ test("candidate is isolated and completely empty", async (t) => {
   await writeFile(path.join(candidate, "overview.md"), "new\n", "utf8");
   assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "old\n");
 
-  const publication = await publish(store, "run-1", candidate);
+  const publication = await publish(store, workspace, "run-1", candidate);
   assert.equal(publication.state, "published");
-  assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "new\n");
+  assert.match(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), /new\./);
   const metadata = JSON.parse(await readFile(path.join(workspace, ".okf-wiki", "published.json"), "utf8"));
-  assert.equal(metadata.version, 2);
+  assert.equal(metadata.version, 1);
   assert.equal(metadata.sourceFingerprint, "source-sha256");
   assert.equal(metadata.summary, "complete");
-  assert.deepEqual(metadata.pages, ["overview.md", "core/domain.md"]);
+  assert.deepEqual([...metadata.pages].sort(), ["core/domain.md", "overview.md"]);
   assert.match(metadata.finalTreeDigest, /^[a-f0-9]{64}$/);
 });
 
@@ -73,10 +109,10 @@ test("published metadata carries a validated final WikiSpec and remains loadable
   const { workspace, store } = await fixture(t);
   const candidate = await store.prepareCandidate("with-spec");
   await writeFile(path.join(candidate, "overview.md"), "new\n", "utf8");
-  await publish(store, "with-spec", candidate);
+  await publish(store, workspace, "with-spec", candidate);
   const resumed = await createWikiPublicationStore({ workspace }).readPublishedMetadata();
-  assert.deepEqual(resumed.wikiSpec, finalSpec);
-  assert.equal(resumed.version, 2);
+  assert.deepEqual([...resumed.wikiSpec.pages].sort(), [...finalSpec.pages].sort());
+  assert.equal(resumed.version, 1);
   assert.equal(resumed.sourceFingerprint, "source-sha256");
 
   const metadataFile = path.join(workspace, ".okf-wiki", "published.json");
@@ -86,42 +122,41 @@ test("published metadata carries a validated final WikiSpec and remains loadable
   await assert.rejects(createWikiPublicationStore({ workspace }).readPublishedMetadata(), /pages do not match/);
   await assert.rejects(createWikiPublicationStore({ workspace }).reconcile("with-spec"), /pages do not match/);
 
-  const invalid = { pages: ["overview.md", "core/invoice/concept.md"] };
   const second = await createWikiPublicationStore({ workspace }).prepareCandidate("invalid-spec");
-  await writeFile(path.join(second, "overview.md"), "changed\n");
-  await assert.rejects(issueWikiPublicationSeal({
-    runId: "invalid-spec", executionToken: "execution-invalid-spec", candidateRoot: second, pages: ["overview.md", "core/invoice/concept.md"], spec: invalid,
-  }), /domain\.md/);
+  const invalidLead = await WikiLeadRun.open({
+    workspace, runId: "invalid-spec", candidateWikiRoot: second, policy,
+    assertActive: async () => {}, executionToken: "execution-invalid-spec",
+  });
+  await assert.rejects(invalidLead.saveSpec({ pages: ["overview.md", "core/invoice/concept.md"] }), /domain\.md/);
 });
 
 test("publication rejects a valid seal issued for a different Run before mutating the published Wiki", async (t) => {
   const { workspace, store } = await fixture(t);
   const candidate = await store.prepareCandidate("expected-run");
-  await writeFile(path.join(candidate, "overview.md"), "new\n");
-  const seal = await issueWikiPublicationSeal({
-    runId: "other-run", executionToken: "execution-other-run", candidateRoot: candidate, pages: ["overview.md", "core/domain.md"], spec: finalSpec,
-  });
-  await assert.rejects(store.publish("expected-run", {
-    sourceFingerprint: "source-sha256", summary: "complete",
-  }, seal), /different run/);
+  const other = await store.prepareCandidate("other-run");
+  const seal = await sealCandidate(workspace, "other-run", other);
+  await assert.rejects(store.publish("expected-run", seal), /different run/);
   assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "old\n");
   assert.deepEqual(await store.reconcile("expected-run"), { state: "not_published", recovery: "none" });
 });
 
-test("published metadata reader accepts v1 provenance and fails closed without WikiSpec", async (t) => {
+test("published metadata reader fails closed on unsupported or incomplete provenance", async (t) => {
   const { workspace, store } = await fixture(t);
   await mkdir(path.join(workspace, ".okf-wiki"), { recursive: true });
   await writeFile(path.join(workspace, ".okf-wiki", "published.json"), JSON.stringify({
+    version: 2, runId: "old", publishedAt: "2026-08-14T00:00:00.000Z", wikiSpec: finalSpec, policyHash: "legacy",
+  }));
+  await assert.rejects(store.readPublishedMetadata(), /expected 1, found 2/);
+
+  await writeFile(path.join(workspace, ".okf-wiki", "published.json"), JSON.stringify({
     version: 1, runId: "old", publishedAt: "2026-08-14T00:00:00.000Z", wikiSpec: finalSpec, policyHash: "legacy",
   }));
-  const legacy = await store.readPublishedMetadata();
-  assert.equal(legacy.version, 1);
-  assert.equal(legacy.policyHash, "legacy");
+  await assert.rejects(store.readPublishedMetadata(), /unknown or missing fields/);
 
   await writeFile(path.join(workspace, ".okf-wiki", "published.json"), JSON.stringify({
     version: 1, runId: "old", publishedAt: "2026-08-14T00:00:00.000Z",
   }));
-  await assert.rejects(store.readPublishedMetadata(), /WikiSpec must be an object/);
+  await assert.rejects(store.readPublishedMetadata(), /unknown or missing fields/);
 });
 
 test("ensureCandidate resumes files from an interrupted run without resetting them", async (t) => {
@@ -143,13 +178,13 @@ for (const interruptedAfter of ["prepared", "backed_up", "installed", "committed
     });
     const candidate = await store.prepareCandidate(`run-${interruptedAfter}`);
     await writeFile(path.join(candidate, "overview.md"), "new\n", "utf8");
-    await assert.rejects(publish(store, `run-${interruptedAfter}`, candidate), new RegExp(`interrupt-${interruptedAfter}`));
+    await assert.rejects(publish(store, workspace, `run-${interruptedAfter}`, candidate), new RegExp(`interrupt-${interruptedAfter}`));
 
     const recoveryStore = createWikiPublicationStore({ workspace });
     const recovery = await recoveryStore.reconcile(`run-${interruptedAfter}`);
     if (interruptedAfter === "installed" || interruptedAfter === "committed") {
       assert.equal(recovery.state, "published");
-      assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "new\n");
+      assert.match(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), /new\./);
     } else {
       assert.deepEqual(recovery, { state: "not_published", recovery: "rolled_back" });
       assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "old\n");
@@ -170,7 +205,7 @@ for (const blockedAfter of ["prepared", "backed_up", "installed", "committed"]) 
     const runId = `leased-${blockedAfter}`;
     const candidate = await store.prepareCandidate(runId);
     await writeFile(path.join(candidate, "overview.md"), `${blockedAfter}\n`);
-    const publishing = publish(store, runId, candidate);
+    const publishing = publish(store, workspace, runId, candidate);
     await reached.promise;
 
     let reconciled = false;
@@ -195,7 +230,7 @@ test("the publication lease blocks another process and reclaims a dead owner", a
   });
   const candidate = await store.prepareCandidate("cross-process");
   await writeFile(path.join(candidate, "overview.md"), "cross process\n");
-  const publishing = publish(store, "cross-process", candidate);
+  const publishing = publish(store, workspace, "cross-process", candidate);
   await reached.promise;
 
   const moduleUrl = new URL("../dist/publication-store.js", import.meta.url).href;
@@ -242,8 +277,7 @@ test("acknowledged journals are durable audit history and never recover against 
   for (const runId of ["serial-1", "serial-2", "serial-3"]) {
     const store = createWikiPublicationStore({ workspace });
     const candidate = await store.prepareCandidate(runId);
-    await writeFile(path.join(candidate, "overview.md"), `${runId}\n`);
-    await publish(store, runId, candidate, { summary: `summary-${runId}` });
+    await publish(store, workspace, runId, candidate, { summary: `summary-${runId}`, body: runId });
     const terminalGapRestart = createWikiPublicationStore({ workspace });
     assert.equal((await terminalGapRestart.reconcile(runId)).state, "published");
     await terminalGapRestart.acknowledge(runId);
@@ -252,7 +286,7 @@ test("acknowledged journals are durable audit history and never recover against 
     const activeJournal = path.join(workspace, ".okf-wiki", "runs", runId, "publish.json");
     await assert.rejects(readFile(activeJournal), { code: "ENOENT" });
     const audit = JSON.parse(await readFile(path.join(workspace, ".okf-wiki", "publications", `${runId}.json`), "utf8"));
-    assert.equal(audit.version, 2);
+    assert.equal(audit.version, 1);
     assert.equal(audit.state, "committed");
     assert.equal(audit.publishedMetadata.summary, `summary-${runId}`);
     auditDigests.push(audit.metadataDigest);
@@ -262,7 +296,7 @@ test("acknowledged journals are durable audit history and never recover against 
     assert.equal((await restarted.readPublishedMetadata()).runId, runId);
   }
   assert.equal(new Set(auditDigests).size, 3);
-  assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "serial-3\n");
+  assert.match(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), /serial-3\./);
 });
 
 test("reconcile rejects provenance and journal tampering even when page paths are unchanged", async (t) => {
@@ -270,7 +304,7 @@ test("reconcile rejects provenance and journal tampering even when page paths ar
   const runId = "metadata-integrity";
   const candidate = await store.prepareCandidate(runId);
   await writeFile(path.join(candidate, "overview.md"), "published\n");
-  await publish(store, runId, candidate);
+  await publish(store, workspace, runId, candidate);
   const metadataFile = path.join(workspace, ".okf-wiki", "published.json");
   const journalFile = path.join(workspace, ".okf-wiki", "runs", runId, "publish.json");
   const metadata = JSON.parse(await readFile(metadataFile, "utf8"));
@@ -302,7 +336,7 @@ test("ordinary install failure restores the previous Wiki before publish rejects
   candidate = await store.prepareCandidate("install-failure");
   await writeFile(path.join(candidate, "overview.md"), "new\n", "utf8");
 
-  await assert.rejects(publish(store, "install-failure", candidate), { code: "ENOENT" });
+  await assert.rejects(publish(store, workspace, "install-failure", candidate), { code: "ENOENT" });
   assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "old\n");
   assert.deepEqual(await store.reconcile("install-failure"), { state: "not_published", recovery: "rolled_back" });
 });
@@ -313,7 +347,7 @@ test("recoverPending finds journaled runs and committed recovery is idempotent",
   });
   const candidate = await store.prepareCandidate("pending");
   await writeFile(path.join(candidate, "overview.md"), "new\n", "utf8");
-  await assert.rejects(publish(store, "pending", candidate), /interrupt/);
+  await assert.rejects(publish(store, workspace, "pending", candidate), /interrupt/);
 
   const recoveryStore = createWikiPublicationStore({ workspace });
   await recoveryStore.recoverPending();
@@ -325,20 +359,15 @@ test("reconcile projects a published terminal fact after install crashes before 
     if (step === "installed") throw new Error("crash-after-install");
   });
   const candidate = await store.prepareCandidate("terminal-gap");
-  await writeFile(path.join(candidate, "overview.md"), "new\n");
-  const seal = await issueWikiPublicationSeal({
-    runId: "terminal-gap", executionToken: "execution-terminal-gap", candidateRoot: candidate, pages: ["overview.md", "core/domain.md"], spec: finalSpec,
-  });
-  const finalTreeDigest = seal.finalTreeDigest;
-  await assert.rejects(store.publish("terminal-gap", {
-    sourceFingerprint: "source-sha256", summary: "complete",
-  }, seal), /crash-after-install/);
+  const seal = await sealCandidate(workspace, "terminal-gap", candidate);
+  const finalTreeDigest = (await verifyWikiPublicationSeal(seal)).finalTreeDigest;
+  await assert.rejects(store.publish("terminal-gap", seal), /crash-after-install/);
 
   const recoveryStore = createWikiPublicationStore({ workspace });
   assert.deepEqual(await recoveryStore.reconcile("terminal-gap"), {
     state: "published",
     runId: "terminal-gap",
-    pages: ["overview.md", "core/domain.md"],
+    pages: ["core/domain.md", "overview.md"],
     sourceFingerprint: "source-sha256",
     finalTreeDigest,
   });
@@ -355,7 +384,7 @@ test("publish re-verifies the sealed tree immediately before install and restore
   candidate = await store.prepareCandidate("sealed-drift");
   await writeFile(path.join(candidate, "overview.md"), "new\n");
 
-  await assert.rejects(publish(store, "sealed-drift", candidate), /changed after it was sealed/);
+  await assert.rejects(publish(store, workspace, "sealed-drift", candidate), /changed after it was sealed/);
   assert.equal(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), "old\n");
   assert.deepEqual(await store.reconcile("sealed-drift"), { state: "not_published", recovery: "rolled_back" });
 });

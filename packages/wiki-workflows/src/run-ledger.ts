@@ -1,6 +1,6 @@
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { claimText, removePath, syncDirectory, writeText } from "./files.js";
+import { claimText, removePath, syncDirectory, withExclusiveLock, writeText } from "./files.js";
 import { parseWikiDelegateContract, parseWikiDelegateReceipt, type WikiDelegateContract, type WikiDelegateError, type WikiDelegateReceipt, type WikiTaskFailureCode } from "./delegate-contracts.js";
 import { WIKI_BUDGET_EXHAUSTED_CODES } from "./failures.js";
 import type {
@@ -27,21 +27,20 @@ import type {
   WikiLeadObservation,
   WikiProductionPlan,
   WikiTaskRuntimePartial,
-  WikiTaskRuntimeState,
   WikiTaskRuntimeTaskState,
 } from "./runtime-types.js";
 
-export const WIKI_RUN_LEDGER_VERSION = 2 as const;
+export const WIKI_FORMAT = 1 as const;
 
 export class UnsupportedWikiRunVersionError extends Error {
   constructor(readonly location: string, readonly found: unknown) {
-    super(`Unsupported Wiki run version at ${location}: expected ${WIKI_RUN_LEDGER_VERSION}, found ${String(found)}`);
+    super(`Unsupported Wiki format at ${location}: expected ${WIKI_FORMAT}, found ${String(found)}. Preserve needed evidence, then delete stale .okf-wiki Run state. The Published Wiki is independent.`);
     this.name = "UnsupportedWikiRunVersionError";
   }
 }
 
 export interface WikiRunState extends WikiRunView {
-  version: typeof WIKI_RUN_LEDGER_VERSION;
+  version: typeof WIKI_FORMAT;
   attempt: number;
   executionToken?: string;
   productionPlan?: WikiProductionPlan;
@@ -67,17 +66,16 @@ export interface WikiRunLedgerOptions {
 }
 
 interface WikiLedgerTransaction {
-  version: 2;
+  version: typeof WIKI_FORMAT;
   state: WikiRunState;
   event: WikiRunEvent;
   agent?: { target: WikiAgentTarget; record: WikiAgentRecord };
-  agents?: Array<{ target: WikiAgentTarget; record: WikiAgentRecord }>;
   active?: "retain" | "release";
   execution?: { action: "claim"; lease: WikiExecutionLease } | { action: "release" };
 }
 
 interface WikiExecutionLease {
-  version: 1;
+  version: typeof WIKI_FORMAT;
   runId: string;
   attempt: number;
   executionToken: string;
@@ -97,7 +95,7 @@ export interface WikiExecutionOwner {
 }
 
 interface WikiDurableUpdate {
-  version: 2;
+  version: typeof WIKI_FORMAT;
   event: WikiRunEvent;
   state: WikiRunState;
 }
@@ -131,28 +129,16 @@ type WikiRunEventInput = WikiRunEvent extends infer Event
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TERMINAL = new Set<WikiRunStatus>(["succeeded", "failed", "cancelled"]);
-const LOCK_STALE_MS = 5_000;
-const LOCK_POLL_MS = 10;
-
-interface ProcessQueue { chain: Promise<void> }
-const PROCESS_QUEUES = new Map<string, ProcessQueue>();
 
 export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedgerOptions = {}) {
   const root = path.resolve(rootDirectory);
   const runsRoot = path.join(root, "runs");
   const activeFile = path.join(root, "active-run");
-  const lockDirectory = path.join(root, ".ledger.lock");
-  const queue = PROCESS_QUEUES.get(root) ?? { chain: Promise.resolve() };
-  PROCESS_QUEUES.set(root, queue);
+  const lockPath = path.join(root, ".ledger.lock");
 
   const serialize = async <T>(operation: () => Promise<T>): Promise<T> => {
-    let value!: T;
-    const next = queue.chain.catch(() => undefined).then(async () => {
-      value = await withFilesystemLock(root, lockDirectory, operation);
-    });
-    queue.chain = next.then(() => undefined, () => undefined);
-    await next;
-    return value;
+    await ensureDirectoryDurable(root);
+    return await withExclusiveLock(lockPath, operation);
   };
 
   const paths = (runId: string) => {
@@ -167,7 +153,6 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       agent: (target: WikiAgentTarget) => target.kind === "lead"
         ? path.join(directory, "agents", "lead.json")
         : path.join(directory, "agents", "batches", String(target.batch), `${safeTaskId(target.taskId)}.json`),
-      agentBatches: path.join(directory, "agents", "batches"),
     };
   };
 
@@ -205,11 +190,10 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       await writeText(runPaths.execution, `${JSON.stringify(transaction.execution.lease, null, 2)}\n`);
     }
     if (injectFaults) await options.fault?.("afterExecution");
-    const agentWrites = [...(transaction.agents ?? []), ...(transaction.agent ? [transaction.agent] : [])];
-    for (const agent of agentWrites) {
-      const target = runPaths.agent(agent.target);
+    if (transaction.agent) {
+      const target = runPaths.agent(transaction.agent.target);
       await ensureDirectoryDurable(path.dirname(target));
-      await writeText(target, `${JSON.stringify(agent.record, null, 2)}\n`);
+      await writeText(target, `${JSON.stringify(transaction.agent.record, null, 2)}\n`);
     }
     if (injectFaults) await options.fault?.("afterAgent");
     await writeState(transaction.state);
@@ -217,7 +201,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     const existing = await readUpdatesFile(runPaths.events, transaction.state.id);
     if (!existing.some((update) => update.event.sequence === transaction.event.sequence)) {
       await ensureDirectoryDurable(runPaths.events);
-      const update: WikiDurableUpdate = { version: 2, event: transaction.event, state: transaction.state };
+      const update: WikiDurableUpdate = { version: WIKI_FORMAT, event: transaction.event, state: transaction.state };
       await writeText(eventRecordPath(runPaths.events, transaction.event.sequence), `${JSON.stringify(update)}\n`);
     }
     if (injectFaults) await options.fault?.("afterEvent");
@@ -247,7 +231,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       throw new Error("Terminal Wiki state transitions require commitTerminal");
     }
     const event = {
-      version: 1,
+      version: WIKI_FORMAT,
       runId,
       sequence: current.lastEventSequence + 1,
       ...input,
@@ -288,7 +272,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
         }),
       };
     }
-    const transaction: WikiLedgerTransaction = { version: 2, state: parseState(next, runId), event, active, ...(execution ? { execution } : {}), ...(agent ? { agent } : {}) };
+    const transaction: WikiLedgerTransaction = { version: WIKI_FORMAT, state: parseState(next, runId), event, active, ...(execution ? { execution } : {}), ...(agent ? { agent } : {}) };
     const journal = paths(runId).journal;
     await writeText(journal, `${JSON.stringify(transaction, null, 2)}\n`);
     await options.fault?.("afterJournal");
@@ -310,9 +294,9 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
           }
           await removePath(activeFile, { force: true });
         }
-        await claimText(activeFile, `${JSON.stringify({ version: 2, runId: input.id })}\n`);
+        await claimText(activeFile, `${JSON.stringify({ version: WIKI_FORMAT, runId: input.id })}\n`);
         const state: WikiRunState = {
-          version: 2,
+          version: WIKI_FORMAT,
           id: input.id,
           cwd: path.resolve(input.cwd),
           ...(input.focus ? { focus: input.focus } : {}),
@@ -446,8 +430,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       return await serialize(async () => {
         await recover(runId);
         if (!(await readState(runId))) throw new Error(`Unknown Wiki run: ${runId}`);
-        return (await readUpdatesFile(paths(runId).events, runId))
-          .filter((update) => update.event.sequence > after);
+        return await readUpdatesFile(paths(runId).events, runId, after);
       });
     },
 
@@ -538,6 +521,16 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       });
     },
 
+    async assertActive(runId: string, authority: WikiExecutionAuthority): Promise<void> {
+      await serialize(async () => {
+        await recover(runId);
+        const state = await readState(runId);
+        if (!state || state.status !== "running" || state.attempt !== authority.attempt || state.executionToken !== authority.executionToken) {
+          throw new Error(`Wiki Lead execution ${authority.attempt}/${authority.executionToken} is no longer active`);
+        }
+      });
+    },
+
     async executionOwner(runId: string): Promise<"live" | "stale" | "absent"> {
       return await serialize(async () => {
         await recover(runId);
@@ -602,7 +595,7 @@ function parseState(value: unknown, expectedId: string): WikiRunState {
   const state = value as Partial<WikiRunState> & Record<string, unknown>;
   assertExactKeys(state, ["version", "id", "cwd", "focus", "status", "createdAt", "updatedAt", "completedAt", "lastEventSequence",
     "error", "pause", "warnings", "progress", "attempt", "executionToken", "productionPlan", "leadSummary", "publication", "usageByAttempt"], "Wiki run state");
-  if (state.version !== WIKI_RUN_LEDGER_VERSION) {
+  if (state.version !== WIKI_FORMAT) {
     throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/run-state.json`, state.version);
   }
   if (state.id !== expectedId || typeof state.cwd !== "string"
@@ -1077,58 +1070,6 @@ function parseExecutionBudgets(value: unknown): WikiExecutionBudgets | undefined
   return raw as WikiExecutionBudgets;
 }
 
-function parseTaskRuntimeState(value: unknown): WikiTaskRuntimeState {
-  if (!value || typeof value !== "object") throw new Error("Invalid Wiki task runtime state");
-  const raw = value as Partial<WikiTaskRuntimeState>;
-  if (!Array.isArray(raw.batches)) throw new Error("Invalid Wiki task runtime state");
-  const seenBatches = new Set<number>();
-  const seenTargets = new Set<string>();
-  const batches = raw.batches.map((batchValue) => {
-    if (!batchValue || typeof batchValue !== "object") throw new Error("Invalid Wiki task runtime batch");
-    const batch = batchValue as Partial<WikiTaskRuntimeState["batches"][number]>;
-    if (!isPositiveInteger(batch.batchId) || seenBatches.has(batch.batchId) || !Array.isArray(batch.tasks)) {
-      throw new Error("Invalid Wiki task runtime batch");
-    }
-    seenBatches.add(batch.batchId);
-    const tasks = batch.tasks.map((taskValue) => {
-      const task = parseTaskRuntimeTaskState(taskValue);
-      const identity = `${batch.batchId}:${task.task.id}`;
-      if (seenTargets.has(identity)) throw new Error(`Duplicate Wiki runtime task: ${identity}`);
-      seenTargets.add(identity);
-      return task;
-    });
-    return { batchId: batch.batchId, tasks };
-  }).sort((left, right) => left.batchId - right.batchId);
-  return { batches };
-}
-
-function parseTaskRuntimeTaskState(value: unknown): WikiTaskRuntimeTaskState {
-  if (!value || typeof value !== "object") throw new Error("Invalid Wiki task runtime task");
-  const raw = value as Partial<WikiTaskRuntimeTaskState>;
-  const task = parseDelegateTask(raw.task);
-  const partial = parseTaskRuntimePartial(raw.partial);
-  const receipt = parseDelegateReceipt(raw.receipt);
-  const pause = parseDelegateError(raw.pause);
-  if (!task || !isProgressCount(raw.attempt) || !["queued", "running", "paused", "terminal"].includes(raw.phase ?? "")
-    || typeof raw.collected !== "boolean" || raw.partial !== undefined && !partial
-    || raw.sessionFile !== undefined && (typeof raw.sessionFile !== "string" || !raw.sessionFile.trim())
-    || raw.phase === "terminal" && !receipt || raw.phase !== "terminal" && raw.receipt !== undefined
-    || raw.pause !== undefined && !pause || raw.phase !== "paused" && raw.pause !== undefined
-    || raw.phase === "paused" && (!isPositiveInteger(raw.attempt) || raw.collected)) {
-    throw new Error("Invalid Wiki task runtime task");
-  }
-  return {
-    task,
-    phase: raw.phase as WikiTaskRuntimeTaskState["phase"],
-    attempt: raw.attempt,
-    collected: raw.collected,
-    ...(raw.sessionFile ? { sessionFile: raw.sessionFile } : {}),
-    ...(receipt ? { receipt } : {}),
-    ...(pause ? { pause } : {}),
-    ...(partial ? { partial } : {}),
-  };
-}
-
 function parseDelegateTask(value: unknown): WikiDelegateContract | undefined {
   try { return parseWikiDelegateContract(value); }
   catch { return undefined; }
@@ -1141,11 +1082,6 @@ function parseTaskRuntimePartial(value: unknown): WikiTaskRuntimePartial | undef
   if (!Array.isArray(raw.outputs) || raw.outputs.some((entry) => !entry || typeof entry !== "object")
     || !isStringArray(raw.coverage) || !Array.isArray(raw.gaps) || raw.gaps.some((entry) => !entry || typeof entry !== "object")) return undefined;
   return structuredClone(raw as WikiTaskRuntimePartial);
-}
-
-function parseDelegateReceipt(value: unknown): WikiDelegateReceipt | undefined {
-  if (value === undefined) return undefined;
-  try { return parseWikiDelegateReceipt(value); } catch { return undefined; }
 }
 
 const TASK_FAILURE_CODES = new Set<WikiTaskFailureCode>([
@@ -1216,53 +1152,6 @@ function runtimeAgentRecord(
     ...(sessionFile ? { sessionFile } : {}),
     execution,
   });
-}
-
-async function taskRuntimeStateFromLedger(
-  batchesDirectory: string,
-  readRecord: (file: string) => Promise<WikiAgentRecord | undefined>,
-): Promise<WikiTaskRuntimeState> {
-  const grouped = new Map<number, WikiTaskRuntimeTaskState[]>();
-  let batchEntries: import("node:fs").Dirent[];
-  try {
-    batchEntries = await readdir(batchesDirectory, { withFileTypes: true });
-  } catch (error) {
-    if (!isMissing(error)) throw error;
-    batchEntries = [];
-  }
-  for (const batchEntry of batchEntries) {
-    if (!batchEntry.isDirectory() || !/^\d+$/.test(batchEntry.name)) continue;
-    const batchId = Number(batchEntry.name);
-    if (!isPositiveInteger(batchId)) continue;
-    const directory = path.join(batchesDirectory, batchEntry.name);
-    const files = (await readdir(directory, { withFileTypes: true }))
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .sort((left, right) => left.name.localeCompare(right.name));
-    for (const file of files) {
-      const record = await readRecord(path.join(directory, file.name));
-      const execution = record?.execution;
-      if (!record || !execution) continue;
-      if (record.agent.target.kind !== "task" || record.agent.target.batch !== batchId
-        || execution.batchId !== batchId || execution.task.id !== record.agent.target.taskId) {
-        throw new Error("Wiki task runtime sidecar identity mismatch");
-      }
-      const task: WikiTaskRuntimeTaskState = {
-        task: execution.task,
-        phase: execution.phase,
-        attempt: execution.attempt,
-        collected: execution.collected,
-        ...(record.sessionFile ? { sessionFile: record.sessionFile } : {}),
-        ...(record.receipt ? { receipt: record.receipt } : {}),
-        ...(execution.pause ? { pause: execution.pause } : {}),
-        ...(execution.partial ? { partial: execution.partial } : {}),
-      };
-      (grouped.get(batchId) ?? grouped.set(batchId, []).get(batchId)!).push(task);
-    }
-  }
-  const batches = [...grouped.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([batchId, tasks]) => ({ batchId, tasks: tasks.sort((left, right) => left.task.id.localeCompare(right.task.id)) }));
-  return parseTaskRuntimeState({ batches });
 }
 
 function projectActivity(state: WikiRunState, process: WikiActivityEntry[]): WikiRunState {
@@ -1399,7 +1288,8 @@ function isPause(value: unknown): value is WikiRunPause | undefined {
 function parseEvent(value: unknown, expectedId: string): WikiRunEvent {
   if (!value || typeof value !== "object") throw new Error(`Invalid Wiki run event: ${expectedId}`);
   const event = value as Partial<WikiRunEvent> & Record<string, unknown>;
-  if (event.version !== 1 || event.runId !== expectedId || !Number.isInteger(event.sequence)
+  if (event.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/events`, event.version);
+  if (event.runId !== expectedId || !Number.isInteger(event.sequence)
     || (event.sequence ?? 0) < 1 || typeof event.at !== "string" || typeof event.type !== "string"
     || typeof event.message !== "string") throw new Error(`Invalid Wiki run event: ${expectedId}`);
   const common = ["version", "runId", "sequence", "at", "type", "message"];
@@ -1448,8 +1338,8 @@ function assertExactKeys(value: Record<string, unknown>, allowed: readonly strin
 function parseTransaction(value: unknown, expectedId: string): WikiLedgerTransaction {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
   const raw = value as Partial<WikiLedgerTransaction> & Record<string, unknown>;
-  assertExactKeys(raw, ["version", "state", "event", "agent", "agents", "active", "execution"], "Wiki ledger transaction");
-  if (raw.version !== 2) throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/pending-transaction.json`, raw.version);
+  assertExactKeys(raw, ["version", "state", "event", "agent", "active", "execution"], "Wiki ledger transaction");
+  if (raw.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/pending-transaction.json`, raw.version);
   const state = parseState(raw.state, expectedId);
   const event = parseEvent(raw.event, expectedId);
   let agent: WikiLedgerTransaction["agent"];
@@ -1460,39 +1350,31 @@ function parseTransaction(value: unknown, expectedId: string): WikiLedgerTransac
     if (!target) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
     agent = { target, record: parseAgentRecord(raw.agent.record) };
   }
-  let agents: WikiLedgerTransaction["agents"];
-  if (raw.agents !== undefined) {
-    if (!Array.isArray(raw.agents)) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
-    agents = raw.agents.map((entry) => {
-      if (!entry || typeof entry !== "object") throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
-      assertExactKeys(entry as Record<string, unknown>, ["target", "record"], "Wiki ledger agents transaction");
-      const target = parseTarget(entry.target);
-      if (!target) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
-      return { target, record: parseAgentRecord(entry.record) };
-    });
-  }
   if (raw.active !== undefined && raw.active !== "retain" && raw.active !== "release") throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
   const execution = parseTransactionExecution(raw.execution, expectedId);
   assertUpdateInvariant(event, state);
-  return { version: 2, state, event, ...(agent ? { agent } : {}), ...(agents ? { agents } : {}), ...(raw.active ? { active: raw.active } : {}), ...(execution ? { execution } : {}) };
+  return { version: WIKI_FORMAT, state, event, ...(agent ? { agent } : {}), ...(raw.active ? { active: raw.active } : {}), ...(execution ? { execution } : {}) };
 }
 
-async function readUpdatesFile(directory: string, runId: string): Promise<WikiDurableUpdate[]> {
+async function readUpdatesFile(directory: string, runId: string, after = 0): Promise<WikiDurableUpdate[]> {
   try {
+    const afterName = eventRecordName(Number.isFinite(after) ? Math.max(0, Math.trunc(after)) : 0);
     const entries = (await readdir(directory, { withFileTypes: true }))
-      .filter((entry) => entry.isFile() && /^\d{16}\.json$/.test(entry.name))
+      .filter((entry) => entry.isFile() && /^\d{16}\.json$/.test(entry.name) && entry.name > afterName)
       .sort((left, right) => left.name.localeCompare(right.name));
-    return await Promise.all(entries.map(async (entry) => {
+    const updates: WikiDurableUpdate[] = [];
+    for (const entry of entries) {
       const file = path.join(directory, entry.name);
       const value = JSON.parse(await readFile(file, "utf8")) as Partial<WikiDurableUpdate> & Record<string, unknown>;
       assertExactKeys(value, ["version", "event", "state"], "Wiki durable update");
-      if (value.version !== 2) throw new UnsupportedWikiRunVersionError(file, value.version);
+      if (value.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(file, value.version);
       const event = parseEvent(value.event, runId);
       const state = parseState(value.state, runId);
       if (entry.name !== eventRecordName(event.sequence)) throw new Error(`Wiki event record name does not match sequence: ${entry.name}`);
       assertUpdateInvariant(event, state);
-      return { version: 2, event, state };
-    }));
+      updates.push({ version: WIKI_FORMAT, event, state });
+    }
+    return updates;
   } catch (error) {
     if (isMissing(error)) return [];
     throw error;
@@ -1504,8 +1386,8 @@ async function activeRunId(file: string): Promise<string | undefined> {
     const text = (await readFile(file, "utf8")).trim();
     let value: unknown;
     try { value = JSON.parse(text); }
-    catch { throw new UnsupportedWikiRunVersionError(file, 1); }
-    if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) {
+    catch { throw new UnsupportedWikiRunVersionError(file, text); }
+    if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== WIKI_FORMAT) {
       throw new UnsupportedWikiRunVersionError(file, (value as { version?: unknown } | undefined)?.version);
     }
     const runId = (value as { runId?: unknown }).runId;
@@ -1534,14 +1416,15 @@ function eventRecordPath(directory: string, sequence: number): string {
 }
 
 function executionLease(runId: string, attempt: number, executionToken: string, owner: WikiExecutionOwner, acquiredAt: string): WikiExecutionLease {
-  return parseExecutionLease({ version: 1, runId, attempt, executionToken, ownerToken: owner.ownerToken, pid: owner.pid, acquiredAt }, runId);
+  return parseExecutionLease({ version: WIKI_FORMAT, runId, attempt, executionToken, ownerToken: owner.ownerToken, pid: owner.pid, acquiredAt }, runId);
 }
 
 function parseExecutionLease(value: unknown, expectedId: string): WikiExecutionLease {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki execution lease: ${expectedId}`);
   const raw = value as Partial<WikiExecutionLease> & Record<string, unknown>;
   assertExactKeys(raw, ["version", "runId", "attempt", "executionToken", "ownerToken", "pid", "acquiredAt"], "Wiki execution lease");
-  if (raw.version !== 1 || raw.runId !== expectedId || !isPositiveInteger(raw.attempt) || !isToken(raw.executionToken)
+  if (raw.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/execution-owner.json`, raw.version);
+  if (raw.runId !== expectedId || !isPositiveInteger(raw.attempt) || !isToken(raw.executionToken)
     || !isToken(raw.ownerToken) || !Number.isSafeInteger(raw.pid) || (raw.pid ?? 0) < 1 || typeof raw.acquiredAt !== "string") {
     throw new Error(`Invalid Wiki execution lease: ${expectedId}`);
   }
@@ -1615,35 +1498,6 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   return Object.keys(value).length === expected.length && expected.every((key) => Object.hasOwn(value, key));
 }
 
-async function withFilesystemLock<T>(root: string, lockDirectory: string, operation: () => Promise<T>): Promise<T> {
-  await ensureDirectoryDurable(root);
-  while (true) {
-    try {
-      await mkdir(lockDirectory);
-      await writeText(path.join(lockDirectory, "owner.json"), `${JSON.stringify({ version: 1, pid: process.pid })}\n`);
-      break;
-    } catch (error) {
-      if (!isExists(error)) throw error;
-      if (await lockIsStale(lockDirectory)) {
-        await removePath(lockDirectory, { recursive: true, force: true }).catch(() => {});
-        continue;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, LOCK_POLL_MS));
-    }
-  }
-  try { return await operation(); }
-  finally { await removePath(lockDirectory, { recursive: true, force: true }); }
-}
-
-async function lockIsStale(lockDirectory: string): Promise<boolean> {
-  try {
-    const raw = JSON.parse(await readFile(path.join(lockDirectory, "owner.json"), "utf8")) as Record<string, unknown>;
-    if (raw.version === 1 && Number.isSafeInteger(raw.pid)) return !processIsAlive(raw.pid as number);
-  } catch (error) { if (!isMissing(error)) return true; }
-  try { return Date.now() - (await stat(lockDirectory)).mtimeMs > LOCK_STALE_MS; }
-  catch { return true; }
-}
-
 function processIsAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
@@ -1655,8 +1509,4 @@ function assertSafeId(value: string, label: string): void {
 
 function isMissing(error: unknown): boolean {
   return !!error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-function isExists(error: unknown): boolean {
-  return !!error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EEXIST";
 }

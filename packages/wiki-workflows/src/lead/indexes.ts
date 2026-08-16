@@ -1,9 +1,9 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import { inside, readText, writeText } from "./files.js";
-import { parsePage } from "./frontmatter.js";
-import type { WikiValidationIssue } from "./types.js";
-import type { WikiSpec } from "./wiki-spec.js";
+import { inside, readText, writeText } from "../files.js";
+import { parsePage } from "../frontmatter.js";
+import type { WikiValidationIssue } from "../types.js";
+import type { WikiSpec } from "./spec.js";
 import {
   derivedIndexPaths,
   formatIssue,
@@ -15,7 +15,7 @@ import {
   scanWikiTree,
   specPagePaths,
   type ResolvedWikiRoots,
-} from "./wiki-validate.js";
+} from "./validate.js";
 
 /** Replace the deterministic index projection without modifying concept pages. */
 export async function materializeWikiIndexes(root: string, spec: WikiSpec, wikiDirectory = "wiki", pinnedRoots?: ResolvedWikiRoots): Promise<string[]> {

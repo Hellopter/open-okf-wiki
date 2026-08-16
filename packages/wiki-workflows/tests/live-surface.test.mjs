@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { themeWikiLiveText, wikiFooterStatus, wikiWidgetLines } from "../dist/ui/live-surface.js";
-import { formatLocalDateTime } from "../dist/time-format.js";
+import { formatLocalDateTime } from "../dist/ui/time-format.js";
 
 const now = Date.parse("2026-08-12T00:01:00.000Z");
 function view(overrides = {}) {
@@ -80,14 +80,14 @@ test("widget accepts Chinese labels for the live card", () => {
   ]);
 });
 
-test("widget shows a cluster label when task snapshots already carry paths or a cluster id", () => {
+test("widget shows a cluster label when the task id is a cluster or wiki path", () => {
   const lines = wikiWidgetLines(view({
     progress: {
       stage: "lead",
       lead: lead(),
       currentBatch: { batch: 1, status: "running", completed: 0, total: 3, tasks: [
-        { id: "write-runtime", role: "write", status: "running", writePaths: ["wiki/core/runtime/concept.md", "wiki/core/runtime/flows.md"] },
-        { id: "review-runtime", role: "review", status: "queued", reviewPaths: ["wiki/core/runtime/concept.md"] },
+        { id: "wiki/core/runtime/concept.md", role: "write", status: "running" },
+        { id: "wiki/core/runtime/flows.md", role: "review", status: "queued" },
         { id: "core/runtime", role: "research", status: "queued" },
       ] },
     },
@@ -95,8 +95,8 @@ test("widget shows a cluster label when task snapshots already carry paths or a 
   assert.deepEqual(lines, [
     "◆ lead  synthesizing",
     "batch 1  0/3",
-    "  ◆ write  core/runtime  write-runtime",
-    "  · review  core/runtime  review-runtime",
+    "  ◆ write  core/runtime  wiki/core/runtime/concept.md",
+    "  · review  core/runtime  wiki/core/runtime/flows.md",
     "  · research  core/runtime",
   ]);
   const withoutPaths = wikiWidgetLines(view({

@@ -6,6 +6,7 @@ import { ensureDirectory, removePath, writeFileDurable } from "./files.js";
 import { stableStringify } from "./util.js";
 
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SKILL_TREE_DIGEST = /^[a-f0-9]{64}$/;
 
 export const PRODUCTION_SKILL_REQUIRED_FILES = [
   "SKILL.md",
@@ -39,7 +40,27 @@ export function skillWorkspacePath(runId: string): string {
   return `.okf-wiki/runs/${runId}/skill`;
 }
 
-/** Snapshot the production skill for a fresh run; resume only verifies that snapshot. */
+export interface PinnedProductionSkill {
+  root: string;
+  digest: string;
+}
+
+/** Materialize a fresh run skill snapshot and return its durable root and tree digest. */
+export async function pin(workspace: string, runId: string): Promise<PinnedProductionSkill> {
+  const root = await materializeProductionSkill(workspace, runId);
+  return { root, digest: await digestProductionSkillTree(root) };
+}
+
+/** Reopen the run skill snapshot and fail closed unless its tree digest is exactly `digest`. */
+export async function reopen(workspace: string, runId: string, digest: string): Promise<PinnedProductionSkill> {
+  if (!SKILL_TREE_DIGEST.test(digest)) throw new Error("Pinned Wiki production skill digest is invalid");
+  const root = await materializeProductionSkill(workspace, runId, undefined, "resume");
+  const actual = await digestProductionSkillTree(root);
+  if (actual !== digest) throw new Error("Pinned Wiki production skill changed while the run was active");
+  return { root, digest };
+}
+
+/** Copy the packaged production skill into the run directory. Resume only asserts the required files exist. */
 export async function materializeProductionSkill(
   workspace: string,
   runId: string,

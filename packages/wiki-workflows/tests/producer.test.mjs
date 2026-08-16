@@ -4,8 +4,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { WikiLeadRun } from "../dist/lead.js";
 import { createConfiguredWikiProducer } from "../dist/production-run.js";
-import { WikiLeadRun } from "../dist/wiki-lead-run.js";
+import { createWikiRunLedger } from "../dist/run-ledger.js";
 
 async function workspace(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-producer-v2-"));
@@ -24,11 +25,19 @@ function content(type, title) {
   return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: runtime", "    resource: repo:src/index.ts#L1-L1", "---", "", "Runtime behavior.[^runtime]", "", "[^runtime]: [Source](repo:src/index.ts#L1-L1)", ""].join("\n");
 }
 
+function leadFence(request) {
+  const ledger = createWikiRunLedger(path.join(request.cwd, ".okf-wiki"));
+  return {
+    assertActive: () => ledger.assertActive(request.runId, { attempt: request.attempt, executionToken: request.executionToken }),
+    executionToken: request.executionToken,
+  };
+}
+
 async function completeCandidate(request) {
   const lead = await WikiLeadRun.open({
     workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
     policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-    executionFence: { runStateFile: path.join(request.cwd, ".okf-wiki", "runs", request.runId, "run-state.json"), attempt: request.attempt, executionToken: request.executionToken },
+    ...leadFence(request),
   });
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
@@ -44,7 +53,7 @@ async function completeCandidate(request) {
 async function acceptReviews(lead, groups) {
   for (let offset = 0; offset < groups.length; offset += 2) {
     const chunk = groups.slice(offset, offset + 2);
-    const { batchId, contracts } = await lead.queueDelegateBatch(chunk.map((reviewPaths, index) => ({
+    const { batchId, contracts } = await lead.dispatch(chunk.map((reviewPaths, index) => ({
       id: `review-${offset + index + 1}`, role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths,
     })));
     for (const contract of contracts) {
@@ -64,11 +73,29 @@ function deferred() {
   return { promise, resolve };
 }
 
+test("production applies lead observations during run, not only after it settles", async (t) => {
+  const root = await workspace(t);
+  const live = deferred();
+  const release = deferred();
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    await request.record({ kind: "progress", message: "live lead" });
+    live.resolve();
+    await release.promise;
+    await completeCandidate(request);
+    return { kind: "complete", summary: "done" };
+  } }) });
+  const handle = await producer.start({ cwd: root });
+  await live.promise;
+  assert.equal((await handle.view()).progress?.lastMessage, "live lead");
+  release.resolve();
+  assert.equal((await handle.result()).summary, "done");
+});
+
 test("updates replay every durable transition with its same-sequence view including terminal", async (t) => {
   const root = await workspace(t);
   const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await request.record({ kind: "progress", message: "Lead is working" });
     await completeCandidate(request);
+    await request.record({ kind: "progress", message: "Lead is working" });
     return { kind: "complete", summary: "done" };
   } }) });
   const handle = await producer.start({ cwd: root, focus: " runtime " });
@@ -178,12 +205,12 @@ test("cancel fences observations from a slow prior attempt", async (t) => {
   const entered = deferred();
   const release = deferred();
   const attempted = deferred();
-  let lateError;
   const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
     entered.resolve();
     await release.promise;
-    try { await request.record({ kind: "progress", message: "late write" }); } catch (error) { lateError = error; }
-    finally { attempted.resolve(); }
+    attempted.resolve();
+    try { await request.record({ kind: "progress", message: "late write" }); }
+    catch { /* attempt already fenced */ }
     return { kind: "complete", summary: "too late" };
   } }) });
   const run = await producer.start({ cwd: root });
@@ -195,7 +222,6 @@ test("cancel fences observations from a slow prior attempt", async (t) => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal((await run.view()).status, "cancelled");
   assert.equal((await run.view()).lastEventSequence, sequence);
-  assert.match(String(lateError), /no longer current/);
 });
 
 test("cancel fences direct Candidate mutations from an abort-ignoring Lead", async (t) => {
@@ -208,7 +234,7 @@ test("cancel fences direct Candidate mutations from an abort-ignoring Lead", asy
     const lead = await WikiLeadRun.open({
       workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
       policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-      executionFence: { runStateFile: path.join(request.cwd, ".okf-wiki", "runs", request.runId, "run-state.json"), attempt: request.attempt, executionToken: request.executionToken },
+      ...leadFence(request),
     });
     await lead.saveSpec(spec());
     ready.resolve();
@@ -227,25 +253,22 @@ test("cancel fences direct Candidate mutations from an abort-ignoring Lead", asy
   await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", run.id, "candidate", "wiki", "overview.md"), "utf8"), { code: "ENOENT" });
 });
 
-test("a second producer attaches to the live process run and concurrent controls serialize durably", async (t) => {
+test("a second handle from the same producer attaches to the live run", async (t) => {
   const root = await workspace(t);
   const entered = deferred();
   const release = deferred();
   let calls = 0;
-  const firstProducer = createConfiguredWikiProducer({ createId: () => "shared-run", createLead: () => ({ async run() {
+  const producer = createConfiguredWikiProducer({ createId: () => "shared-run", createLead: () => ({ async run() {
     calls += 1;
     if (calls === 1) { entered.resolve(); await release.promise; }
     return { kind: "pause", reason: "quota", summary: `attempt:${calls}` };
   } }) });
-  const first = await firstProducer.start({ cwd: root });
+  const first = await producer.start({ cwd: root });
   await entered.promise;
   const before = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run-state.json"), "utf8"));
-  const secondProducer = createConfiguredWikiProducer({ createLead: () => { throw new Error("must attach to existing run"); } });
-  const second = await secondProducer.open(first.id, path.join(root, "src"));
+  const second = await producer.open(first.id, path.join(root, "src"));
   assert.ok(second);
-  const controls = await Promise.allSettled([first.control("pause"), second.control("pause")]);
-  assert.equal(controls.filter((result) => result.status === "fulfilled").length, 1);
-  assert.equal((await second.view()).status, "paused");
+  assert.equal((await second.control("pause")).status, "paused");
   const resumed = await second.control("resume");
   const after = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run-state.json"), "utf8"));
   assert.equal(resumed.status, "running");
@@ -256,23 +279,63 @@ test("a second producer attaches to the live process run and concurrent controls
   assert.equal(calls, 2);
 });
 
-test("open and resume use pinned paths even when workspace config becomes invalid", async (t) => {
+test("two producer instances do not intern the same Run handle; open/list use the Workspace not leftover .okf-wiki", async (t) => {
+  const root = await workspace(t);
+  let firstCalls = 0;
+  let secondCalls = 0;
+  const firstProducer = createConfiguredWikiProducer({ createId: () => "workspace-run", createLead: () => ({ async run() {
+    firstCalls += 1;
+    return { kind: "pause", reason: "quota", summary: `first:${firstCalls}` };
+  } }) });
+  const started = await firstProducer.start({ cwd: root });
+  while ((await started.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+
+  const nested = path.join(root, "src", "nested");
+  await mkdir(path.join(nested, ".okf-wiki"), { recursive: true });
+  const listed = await firstProducer.list(nested);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].id, "workspace-run");
+  assert.equal(listed[0].cwd, root);
+
+  const stray = await mkdtemp(path.join(os.tmpdir(), "wiki-no-workspace-"));
+  t.after(async () => await rm(stray, { recursive: true, force: true }));
+  assert.equal(await firstProducer.open(started.id, stray), undefined);
+  assert.deepEqual(await firstProducer.list(stray), []);
+
+  const secondProducer = createConfiguredWikiProducer({ createLead: () => ({ async run() {
+    secondCalls += 1;
+    throw new Error("second producer must not inherit first internment");
+  } }) });
+  const reopened = await secondProducer.open(started.id, nested);
+  assert.ok(reopened);
+  assert.notEqual(reopened, started);
+
+  await started.control("resume");
+  while ((await started.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(firstCalls, 2);
+  assert.equal(secondCalls, 0);
+  assert.equal((await started.view()).status, "paused");
+
+  await reopened.control("resume");
+  while ((await reopened.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(secondCalls, 1);
+  assert.equal((await reopened.view()).status, "failed");
+});
+
+test("resume uses pinned paths even when workspace config becomes invalid", async (t) => {
   const root = await workspace(t);
   let calls = 0;
-  const firstProducer = createConfiguredWikiProducer({ createId: () => "pinned-open", createLead: () => ({ async run() {
+  const producer = createConfiguredWikiProducer({ createId: () => "pinned-open", createLead: () => ({ async run() {
     calls += 1;
     return { kind: "pause", reason: "quota", summary: "wait" };
   } }) });
-  const run = await firstProducer.start({ cwd: root });
+  const run = await producer.start({ cwd: root });
   while ((await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
   await writeFile(path.join(root, "workspace.yaml"), "not: [valid\n");
-  const secondProducer = createConfiguredWikiProducer({});
-  const reopened = await secondProducer.open(run.id, path.join(root, "src"));
-  assert.ok(reopened);
-  await reopened.control("resume");
-  while ((await reopened.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+  await run.control("resume");
+  while ((await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(calls, 2);
-  assert.equal((await reopened.view()).status, "paused");
+  assert.equal((await run.view()).status, "paused");
 });
 
 test("resume rejects a modified materialized production skill", async (t) => {

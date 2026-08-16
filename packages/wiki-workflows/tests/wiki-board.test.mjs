@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { projectWikiBoard, renderWikiBoard } from "../dist/wiki-board.js";
-import { parseWikiSpec } from "../dist/wiki-spec.js";
+import { parseWikiSpec, projectWikiBoard, renderWikiBoard } from "../dist/lead.js";
 
 function sampleModel() {
   return {

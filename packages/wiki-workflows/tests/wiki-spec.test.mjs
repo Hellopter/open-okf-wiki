@@ -10,7 +10,7 @@ import {
   wikiSpecPagePaths,
   wikiSpecPageType,
   wikiSpecPages,
-} from "../dist/wiki-spec.js";
+} from "../dist/lead.js";
 
 const validPages = [
   "overview.md",

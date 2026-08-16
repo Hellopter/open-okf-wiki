@@ -45,7 +45,7 @@ async function started(ledger, workspace) {
   await ledger.transition("run-1", { kind: "started", at: "2026-01-01T00:00:00.000Z" });
 }
 
-test("semantic transitions persist v2 snapshots and same-sequence update projections", async (t) => {
+test("semantic transitions persist current-format snapshots and same-sequence update projections", async (t) => {
   const workspace = await root(t);
   const ledger = createWikiRunLedger(workspace);
   await started(ledger, workspace);
@@ -56,7 +56,7 @@ test("semantic transitions persist v2 snapshots and same-sequence update project
   await ledger.transition("run-1", { kind: "published", at: "2026-01-01T00:00:05.000Z", pages: ["overview.md"], sourceFingerprint: "a".repeat(64), finalTreeDigest: "d".repeat(64) });
 
   const snapshot = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8"));
-  assert.equal(snapshot.version, 2);
+  assert.equal(snapshot.version, 1);
   assert.equal(snapshot.operation, undefined);
   const updates = await ledger.updates("run-1");
   assert.deepEqual(updates.map(({ event }) => event.sequence), [1, 2, 3, 4, 5, 6]);
@@ -109,11 +109,11 @@ test("terminal pending recovery commits snapshot, event and active-marker releas
   await recovered.create({ id: "run-2", cwd: workspace, at: "2026-01-01T00:00:02.000Z" });
 });
 
-test("v1 snapshot and legacy active marker fail closed without changing disk", async (t) => {
+test("unsupported snapshot and legacy active marker fail closed without changing disk", async (t) => {
   const workspace = await root(t);
   const runDir = path.join(workspace, "runs", "old-run");
   await mkdir(runDir, { recursive: true });
-  const legacyState = `${JSON.stringify({ version: 1, id: "old-run" })}\n`;
+  const legacyState = `${JSON.stringify({ version: 2, id: "old-run" })}\n`;
   await writeFile(path.join(runDir, "run-state.json"), legacyState);
   const ledger = createWikiRunLedger(workspace);
   await assert.rejects(ledger.read("old-run"), UnsupportedWikiRunVersionError);
@@ -123,6 +123,21 @@ test("v1 snapshot and legacy active marker fail closed without changing disk", a
   await writeFile(marker, "old-run\n");
   await assert.rejects(ledger.create({ id: "new-run", cwd: workspace, at: "2026-01-01T00:00:00.000Z" }), UnsupportedWikiRunVersionError);
   assert.equal(await readFile(marker, "utf8"), "old-run\n");
+});
+
+test("updates after a sequence cursor skip older event files without parsing them", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  const first = path.join(workspace, "runs", "run-1", "events", "0000000000000001.json");
+  const invalid = { ...JSON.parse(await readFile(first, "utf8")), extra: true };
+  await writeFile(first, `${JSON.stringify(invalid)}\n`);
+  await assert.rejects(ledger.updates("run-1"), /unknown fields/);
+  const updates = await ledger.updates("run-1", 1);
+  assert.deepEqual(updates.map(({ event }) => event.sequence), [2]);
+  assert.equal(updates[0].event.type, "stage");
+  assert.equal(updates[0].event.stage, "prepare");
 });
 
 test("durable event parser rejects unknown payload fields instead of exposing a data bag", async (t) => {

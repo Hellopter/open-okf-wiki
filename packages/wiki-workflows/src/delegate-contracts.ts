@@ -1,7 +1,7 @@
 import type { WikiArtifactRef } from "./artifact-store.js";
 import { createHash } from "node:crypto";
 import type { WikiBudgetExhaustedCode } from "./failures.js";
-import { isSafeWikiPagePath } from "./wiki-path.js";
+import { isSafeWikiPagePath } from "./lead.js";
 import { sameStringSet, stableStringify } from "./util.js";
 import type { WikiAgentOutcome } from "./producer-types.js";
 
@@ -156,7 +156,6 @@ export class WikiTaskExecutionError extends Error {
     message: string,
     readonly code?: WikiTaskFailureCode,
     readonly options: {
-      status?: number;
       retryAfterMs?: number;
       partialMarkdown?: string;
       coverage?: string[];

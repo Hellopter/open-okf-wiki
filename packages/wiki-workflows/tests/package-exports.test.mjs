@@ -20,7 +20,7 @@ test("package consumers use only root, cli, and pi subpaths", async () => {
 
 test("root declarations expose the complete caller type closure without internal records", async () => {
   const declaration = await readFile(new URL("../dist/index.d.ts", import.meta.url), "utf8");
-  for (const name of ["WikiProducer", "WikiRunHandle", "WikiRunUpdate", "WikiRunView", "WikiRunEvent", "WikiAgentInspection", "WikiAgentOutcome", "WikiRunWarning"]) {
+  for (const name of ["WikiProducer", "WikiRunHandle", "WikiInspectOptions", "WikiRunUpdate", "WikiRunView", "WikiRunEvent", "WikiAgentInspection", "WikiAgentOutcome", "WikiRunWarning"]) {
     assert.match(declaration, new RegExp(`\\b${name}\\b`));
   }
   assert.doesNotMatch(declaration, /WikiRunLedger|WikiRunFact|WikiAgentRecord|WikiDelegateReceipt|CandidateWiki/);

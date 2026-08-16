@@ -13,7 +13,7 @@ import {
   type WikiTaskFailureCode,
 } from "./delegate-contracts.js";
 import { classifyWikiAttemptFailure, decideWikiAgentAttempt } from "./agent-attempt-policy.js";
-import { budgetExhaustedCode, isWikiBudgetExhaustedError, WikiBudgetExhaustedError } from "./failures.js";
+import { WikiBudgetExhaustedError } from "./failures.js";
 import { WIKI_MANUAL_PAUSE } from "./runtime-types.js";
 import type {
   WikiAgentTarget,
@@ -22,10 +22,10 @@ import type {
 } from "./producer-types.js";
 import type { WikiTaskRuntimeState, WikiTaskRuntimeTaskState } from "./runtime-types.js";
 import type { WikiReviewResult } from "./delegate-contracts.js";
-import type { WikiTaskRuntimeTransitions } from "./wiki-lead-run.js";
+import type { WikiTaskRuntimeTransitions } from "./lead.js";
 
 type WikiObservabilityHealth = { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
-import { isSafeWikiPagePath } from "./wiki-path.js";
+import { isSafeWikiPagePath } from "./lead.js";
 
 export type WikiTaskProgressPhase = "queued" | "start" | "update" | "end";
 
@@ -409,7 +409,7 @@ export class WikiTaskRuntime {
   }
 
   private restore(input: WikiTaskRuntimeState): void {
-    const state = cloneRuntimeState(input);
+    const state = structuredClone(input);
     validateRestoredState(state);
     this.delegatedTasks = state.batches.reduce((total, batch) => total + batch.tasks.length, 0);
     this.delegateBatches = state.batches.length;
@@ -444,7 +444,7 @@ export class WikiTaskRuntime {
 
   private async execute(record: AsyncTask, batch: number, signal: AbortSignal): Promise<TaskExecutionOutcome> {
     const task = record.state.task;
-    let lastFailure: ClassifiedFailure | undefined;
+    let lastFailure: WikiDelegateError | undefined;
     const acceptedOutputs = [...(record.state.partial?.outputs ?? [])];
     const acceptedCoverage = new Set(record.state.partial?.coverage ?? []);
     const acceptedGaps = [...(record.state.partial?.gaps ?? [])];
@@ -665,10 +665,6 @@ function promiseWithResolvers<T>(): { promise: Promise<T>; resolve: (value: T) =
   return { promise, resolve };
 }
 
-function cloneRuntimeState(state: WikiTaskRuntimeState): WikiTaskRuntimeState {
-  return structuredClone(state);
-}
-
 function validateRestoredState(state: WikiTaskRuntimeState): void {
   const batchIds = new Set<number>();
   for (const batch of state.batches) {
@@ -692,7 +688,7 @@ function validateRestoredState(state: WikiTaskRuntimeState): void {
   }
 }
 
-function receiptFromState(state: WikiTaskRuntimeTaskState, failure: ClassifiedFailure): WikiDelegateReceipt {
+function receiptFromState(state: WikiTaskRuntimeTaskState, failure: WikiDelegateError): WikiDelegateReceipt {
   const partial = state.partial;
   const outputs = partial?.outputs ?? [];
   const status = outputs.length > 0 || failure.code === "timeout" || failure.code === "context_exhausted" ? "incomplete" : "failed";
@@ -782,7 +778,7 @@ function receipt(
   outputs: WikiArtifactRef[],
   coverage: string[] = [],
   gaps: WikiDelegateGap[] = [],
-  failure?: ClassifiedFailure,
+  failure?: WikiDelegateError,
   attempts = 1,
   review?: WikiReviewResult,
 ): WikiDelegateReceipt {
@@ -801,8 +797,6 @@ function receipt(
     ...(review ? { review } : {}),
   };
 }
-
-interface ClassifiedFailure extends WikiDelegateError {}
 
 function partialResult(error: unknown): { markdown?: string; coverage?: string[]; gaps?: WikiDelegateGap[] } {
   return error instanceof WikiTaskExecutionError ? {

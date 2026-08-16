@@ -3,12 +3,13 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readdir, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { createWikiArtifactStore } from "./artifact-store.js";
 import { projectWikiAgentOutcome } from "./delegate-contracts.js";
 import { removePath } from "./files.js";
 import { inspectWiki, verifyPinnedSourcePlan } from "./inspect.js";
+import { WikiLeadRun } from "./lead.js";
 import { createPiLeadRuntime, type PiWikiRoleModels } from "./lead-runtime.js";
 import { createWikiPublicationStore } from "./publication-store.js";
 import {
@@ -23,6 +24,7 @@ import {
   WikiRunResultError,
   type WikiAgentInspection,
   type WikiAgentTarget,
+  type WikiInspectOptions,
   type WikiProducerRequest,
   type WikiProducer,
   type WikiRunControl,
@@ -34,15 +36,17 @@ import {
 import {
   WIKI_MANUAL_PAUSE,
   type WikiLeadExecutionRequest,
+  type WikiLeadObservation,
   type WikiLeadRuntime,
   type WikiProductionPlan,
 } from "./runtime-types.js";
 import { readWikiSessionTranscript } from "./session-transcript.js";
-import { digestProductionSkillTree, materializeProductionSkill, skillWorkspacePath } from "./skill-store.js";
+import { pin, reopen, skillWorkspacePath } from "./skill-store.js";
 import { loadWikiWorkspace, ensureWikiWorkspaceInternalIgnore, type WikiGenerationProfile, type WikiRoleModelConfig } from "./workspace.js";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const RESULT_POLL_MS = 50;
+const UPDATE_IDLE_MS = 1_000;
 const CONTROL_SETTLE_MS = 1_000;
 
 export interface ProductionRuntimeOptions {
@@ -65,16 +69,11 @@ interface ActiveAttempt {
   settled: Promise<void>;
 }
 
-interface ProcessRunRegistry {
-  ledgers: Map<string, WikiRunLedger>;
-  runs: Map<string, WikiProductionRun>;
-}
-
-const PROCESS_RUNS: ProcessRunRegistry = { ledgers: new Map(), runs: new Map() };
-
 /** Workspace/run registry. Lifecycle knowledge remains inside each WikiProductionRun. */
 export class WikiProductionRuns implements WikiProducer {
   private readonly createId: () => string;
+  private readonly ledgers = new Map<string, WikiRunLedger>();
+  private readonly runs = new Map<string, WikiProductionRun>();
 
   constructor(private readonly options: ProductionRuntimeOptions = {}) {
     this.createId = options.createId ?? randomUUID;
@@ -92,35 +91,35 @@ export class WikiProductionRuns implements WikiProducer {
   }
 
   async open(runId: string, cwd: string): Promise<WikiRunHandle | undefined> {
-    const workspaceRoot = await locateWikiWorkspaceRoot(cwd);
-    if (!workspaceRoot) return undefined;
-    const ledger = this.ledger(workspaceRoot);
+    const workspace = await resolveWikiWorkspace(cwd);
+    if (!workspace) return undefined;
+    const ledger = this.ledger(workspace.root);
     if (!(await ledger.read(runId))) return undefined;
-    const run = this.run(workspaceRoot, runId, ledger);
+    const run = this.run(workspace.root, runId, ledger);
     await run.recover();
     return run.handle();
   }
 
   async list(cwd: string): Promise<WikiRunView[]> {
-    const workspaceRoot = await locateWikiWorkspaceRoot(cwd);
-    if (!workspaceRoot) return [];
-    return (await this.ledger(workspaceRoot).list()).map(toView);
+    const workspace = await resolveWikiWorkspace(cwd);
+    if (!workspace) return [];
+    return (await this.ledger(workspace.root).list()).map(toView);
   }
 
   private run(workspaceRoot: string, runId: string, ledger: WikiRunLedger): WikiProductionRun {
     const key = runKey(workspaceRoot, runId);
-    let run = PROCESS_RUNS.runs.get(key);
+    let run = this.runs.get(key);
     if (!run) {
       run = new WikiProductionRun(path.resolve(workspaceRoot), runId, ledger, this.options);
-      PROCESS_RUNS.runs.set(key, run);
+      this.runs.set(key, run);
     }
     return run;
   }
 
   private ledger(workspaceRoot: string): WikiRunLedger {
     const root = path.join(path.resolve(workspaceRoot), ".okf-wiki");
-    let ledger = PROCESS_RUNS.ledgers.get(root);
-    if (!ledger) { ledger = createWikiRunLedger(root); PROCESS_RUNS.ledgers.set(root, ledger); }
+    let ledger = this.ledgers.get(root);
+    if (!ledger) { ledger = createWikiRunLedger(root); this.ledgers.set(root, ledger); }
     return ledger;
   }
 
@@ -190,7 +189,7 @@ class WikiProductionRun {
       updates: (after = 0, signal?: AbortSignal) => this.updateStream(after, signal),
       result: async () => await this.waitForResult(),
       control: async (action) => await this.control(action),
-      inspectAgent: async (target) => await this.inspectAgent(target),
+      inspectAgent: async (target, options) => await this.inspectAgent(target, options),
     };
   }
 
@@ -236,9 +235,7 @@ class WikiProductionRun {
       const request: WikiLeadExecutionRequest = {
         runId: this.runId, cwd: state.cwd, focus: state.focus, signal: controller.signal, preparation, attempt, executionToken, ...plan,
         record: async (observation) => {
-          await this.assertCurrent(authority, controller.signal);
-          const event = await this.ledger.recordObservation(this.runId, observation, authority);
-          if (event) await this.publishCommitted(event);
+          await this.applyLeadObservations([observation], authority, controller.signal);
         },
       };
       const outcome = await lead.run(request);
@@ -253,14 +250,14 @@ class WikiProductionRun {
       await this.commitForAttempt(authority, controller.signal, { kind: "stage_entered", at: this.timestamp(), stage: "validate" });
       await verifyPinnedSourcePlan(plan.sourcePlan);
       await this.assertCurrent(authority, controller.signal);
-      const seal = await this.seal(plan, authority);
+      const seal = await this.seal(plan, authority, outcome.summary);
       await this.assertCurrent(authority, controller.signal);
       await verifyPinnedSourcePlan(plan.sourcePlan);
       await this.commitForAttempt(authority, controller.signal, { kind: "stage_entered", at: this.timestamp(), stage: "publish" });
       const publication = createWikiPublicationStore({ workspace: plan.sourcePlan.workspaceRoot });
       this.publicationCritical = true;
       try {
-        const published = await publication.publish(this.runId, { sourceFingerprint: plan.sourcePlan.fingerprint, summary: outcome.summary }, seal);
+        const published = await publication.publish(this.runId, seal);
         try { await this.options.fault?.("afterPublication"); }
         catch (cause) { throw new WikiProductionCrashFault(cause); }
         await this.cleanup(plan);
@@ -279,9 +276,8 @@ class WikiProductionRun {
     }
   }
 
-  private async seal(plan: WikiProductionPlan, authority: WikiExecutionAuthority) {
-    const module = await import("./wiki-lead-run.js");
-    return await module.sealWikiLeadRunForPublication({
+  private async seal(plan: WikiProductionPlan, authority: WikiExecutionAuthority, summary: string) {
+    const run = await WikiLeadRun.open({
       workspace: plan.sourcePlan.workspaceRoot,
       runId: this.runId,
       candidateWikiRoot: plan.candidateWikiRoot,
@@ -289,9 +285,14 @@ class WikiProductionRun {
       sourcePlan: plan.sourcePlan,
       language: plan.language,
       requiredSections: plan.generation.templates.requiredSections,
+      assertActive: () => this.ledger.assertActive(this.runId, authority),
+      executionToken: authority.executionToken,
+    });
+    return await run.sealForPublication({
       requiredProfileCoverage: plan.generation.review.mustCover,
       publicationAt: this.timestamp(),
-      executionFence: { runStateFile: path.join(this.workspaceRoot, ".okf-wiki", "runs", this.runId, "run-state.json"), ...authority },
+      sourceFingerprint: plan.sourcePlan.fingerprint,
+      summary,
     });
   }
 
@@ -343,6 +344,18 @@ class WikiProductionRun {
     return toView(await this.state());
   }
 
+  private async applyLeadObservations(
+    observations: readonly WikiLeadObservation[],
+    authority: WikiExecutionAuthority,
+    signal: AbortSignal,
+  ): Promise<void> {
+    for (const observation of observations) {
+      await this.assertCurrent(authority, signal);
+      const event = await this.ledger.recordObservation(this.runId, observation, authority);
+      if (event) await this.publishCommitted(event);
+    }
+  }
+
   private async assertCurrent(authority: WikiExecutionAuthority, signal: AbortSignal): Promise<void> {
     if (signal.aborted || !this.active || this.active.controller.signal !== signal || this.active.number !== authority.attempt
       || this.active.executionToken !== authority.executionToken) throw new Error("Wiki attempt is no longer current");
@@ -378,17 +391,41 @@ class WikiProductionRun {
     const controller = new AbortController();
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let cursor = Math.max(0, Math.trunc(after));
+    const queued: WikiRunUpdate[] = [];
+    const enqueue = (update: WikiRunUpdate) => { queued.push(update); };
+    this.hub.on("update", enqueue);
     try {
+      let catchUp = true;
       while (!combined.aborted) {
-        for (const update of await this.ledger.updates(this.runId, cursor)) {
-          if (combined.aborted || update.event.sequence <= cursor) continue;
+        if (catchUp) {
+          for (const update of await this.ledger.updates(this.runId, cursor)) {
+            if (combined.aborted || update.event.sequence <= cursor) continue;
+            cursor = update.event.sequence;
+            yield { event: update.event, view: toView(update.state) };
+            if (isTerminalEvent(update.event)) return;
+          }
+          catchUp = false;
+        }
+        while (queued.length > 0 && !combined.aborted) {
+          const update = queued.shift()!;
+          if (update.event.sequence <= cursor) continue;
+          if (update.event.sequence !== cursor + 1) {
+            queued.unshift(update);
+            catchUp = true;
+            break;
+          }
           cursor = update.event.sequence;
-          yield { event: update.event, view: toView(update.state) };
+          yield update;
           if (isTerminalEvent(update.event)) return;
         }
-        await waitForUpdate(this.hub, combined);
+        if (catchUp) continue;
+        await waitForUpdate(this.hub, combined, () => queued.length > 0);
+        if (queued.length === 0) catchUp = true;
       }
-    } finally { controller.abort(); }
+    } finally {
+      this.hub.off("update", enqueue);
+      controller.abort();
+    }
   }
 
   private async waitForResult() {
@@ -408,22 +445,24 @@ class WikiProductionRun {
     }
   }
 
-  private async inspectAgent(target: WikiAgentTarget): Promise<WikiAgentInspection | undefined> {
+  private async inspectAgent(target: WikiAgentTarget, options?: WikiInspectOptions): Promise<WikiAgentInspection | undefined> {
     const state = await this.state();
     const record = await this.ledger.readAgent(this.runId, target);
     const agent = record?.agent ?? (target.kind === "lead" ? state.progress?.lead : undefined);
     if (!agent) return undefined;
+    const includeHandoff = options?.handoff !== false;
+    const includeTranscript = options?.transcript !== false;
     const ref = record?.receipt?.outputs?.at(-1);
     let handoff: string | undefined;
-    if (ref) { try { handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref); } catch { handoff = undefined; } }
+    if (includeHandoff && ref) { try { handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref); } catch { handoff = undefined; } }
     return {
       runId: this.runId,
       agent,
       process: record?.process ?? [],
-      ...(record?.sessionFile ? { messages: await readWikiSessionTranscript(record.sessionFile) } : {}),
+      ...(includeTranscript && record?.sessionFile ? { messages: await readWikiSessionTranscript(record.sessionFile) } : {}),
       ...(record?.receipt ? { outcome: projectWikiAgentOutcome(record.receipt) } : {}),
       ...(handoff !== undefined ? { handoff } : {}),
-      ...(ref?.relativePath ? { handoffPath: ref.relativePath } : {}),
+      ...(includeHandoff && ref?.relativePath ? { handoffPath: ref.relativePath } : {}),
     };
   }
 
@@ -447,8 +486,7 @@ async function prepareProductionPlan(cwd: string, runId: string, focus: string |
   await ensureWikiWorkspaceInternalIgnore(workspace.root);
   const sourcePlan = await inspectWiki(cwd);
   const candidateWikiRoot = await publication.prepareCandidate(runId);
-  const skillRoot = await materializeProductionSkill(workspace.root, runId, undefined, "fresh");
-  const skillTreeDigest = await digestProductionSkillTree(skillRoot);
+  const { root: skillRoot, digest: skillTreeDigest } = await pin(workspace.root, runId);
   const runRoot = path.join(workspace.root, ".okf-wiki", "runs", runId);
   return {
     sourcePlan,
@@ -478,8 +516,7 @@ async function resumeProductionPlan(plan: WikiProductionPlan, runId: string): Pr
   const publication = createWikiPublicationStore({ workspace: plan.sourcePlan.workspaceRoot });
   await publication.recoverPending();
   const candidateWikiRoot = await publication.ensureCandidate(runId);
-  await materializeProductionSkill(plan.sourcePlan.workspaceRoot, runId, undefined, "resume");
-  if (await digestProductionSkillTree(plan.skillRoot) !== plan.skillTreeDigest) throw new Error("Pinned Wiki production skill changed while the run was active");
+  await reopen(plan.sourcePlan.workspaceRoot, runId, plan.skillTreeDigest);
   if (path.resolve(candidateWikiRoot) !== path.resolve(plan.candidateWikiRoot)) throw new Error("Pinned Wiki candidate path changed during resume");
 }
 
@@ -568,24 +605,28 @@ function currentAuthority(state: WikiRunState): WikiExecutionAuthority {
   return { attempt: state.attempt, executionToken: state.executionToken };
 }
 
-async function locateWikiWorkspaceRoot(cwd: string): Promise<string | undefined> {
-  let current = path.resolve(cwd);
-  while (true) {
-    try { if ((await stat(path.join(current, ".okf-wiki"))).isDirectory()) return current; }
-    catch (error) { if (!error || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    const parent = path.dirname(current);
-    if (parent === current) return undefined;
-    current = parent;
-  }
+async function resolveWikiWorkspace(cwd: string) {
+  try { return await loadWikiWorkspace(cwd); }
+  catch { return undefined; }
 }
 function normalizedFocus(value: string | undefined): string | undefined { return value?.trim() || undefined; }
 function isTerminalEvent(event: WikiRunEvent): boolean { return event.type === "completed" || event.type === "failed" || event.type === "cancelled"; }
-async function waitForUpdate(hub: EventEmitter, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return;
+async function waitForUpdate(hub: EventEmitter, signal: AbortSignal, delivered: () => boolean): Promise<void> {
+  if (signal.aborted || delivered()) return;
   await new Promise<void>((resolve) => {
-    const complete = () => { clearTimeout(timer); hub.off("update", complete); signal.removeEventListener("abort", complete); resolve(); };
-    const timer = setTimeout(complete, RESULT_POLL_MS);
-    hub.once("update", complete);
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const complete = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      hub.off("update", complete);
+      signal.removeEventListener("abort", complete);
+      resolve();
+    };
+    hub.on("update", complete);
+    if (delivered() || signal.aborted) { complete(); return; }
+    timer = setTimeout(complete, UPDATE_IDLE_MS);
     signal.addEventListener("abort", complete, { once: true });
   });
 }

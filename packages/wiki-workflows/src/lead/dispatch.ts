@@ -6,7 +6,7 @@ import {
   wikiSpecPagePaths,
   wikiSpecRelativePath,
   type WikiSpec,
-} from "./wiki-spec.js";
+} from "./spec.js";
 
 const FANOUT = { research: 4, write: 2, review: 2 } as const;
 
@@ -27,8 +27,6 @@ export interface WikiDispatchInput {
   knownContextRefs?: readonly string[] | ReadonlySet<string>;
   delegatedTasks?: number;
   delegateBatches?: number;
-  maxDelegatedTasks?: number;
-  maxDelegateBatches?: number;
 }
 
 /** Reject an illegal delegate batch before any contract is created. */
@@ -63,17 +61,6 @@ export function assertDispatchable(input: WikiDispatchInput): void {
     if (counts[role] > FANOUT[role]) {
       throw new Error(`A delegate batch may include at most ${FANOUT[role]} ${role} tasks`);
     }
-  }
-
-  const delegatedTasks = input.delegatedTasks ?? 0;
-  const delegateBatches = input.delegateBatches ?? 0;
-  const maxDelegatedTasks = input.maxDelegatedTasks ?? Number.POSITIVE_INFINITY;
-  const maxDelegateBatches = input.maxDelegateBatches ?? Number.POSITIVE_INFINITY;
-  if (delegatedTasks + tasks.length > maxDelegatedTasks) {
-    throw new Error(`Delegated task limit exhausted (${maxDelegatedTasks})`);
-  }
-  if (delegateBatches + 1 > maxDelegateBatches) {
-    throw new Error(`Delegate batch limit exhausted (${maxDelegateBatches})`);
   }
 
   const spec = input.spec;

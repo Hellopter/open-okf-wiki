@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
-import { WikiCandidateCorruptionError, WikiLeadRun } from "../dist/wiki-lead-run.js";
+import { WikiCandidateCorruptionError, WikiLeadRun } from "../dist/lead.js";
 import { verifyWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
@@ -34,17 +34,29 @@ async function fixture(t, fault, finalizeFault) {
     "sources:", "  - path: source", "    origin:", "      type: link", `      localPath: ${JSON.stringify(path.join(root, "source"))}`, "",
   ].join("\n"));
   const candidate = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
-  const runStateFile = path.join(root, ".okf-wiki", "runs", "run-1", "run-state.json");
-  await mkdir(path.dirname(runStateFile), { recursive: true });
-  await writeFile(runStateFile, JSON.stringify({ version: 2, id: "run-1", status: "running", attempt: 1, executionToken: "execution-1" }));
-  const executionFence = { runStateFile, attempt: 1, executionToken: "execution-1" };
-  const run = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, fault, finalizeFault, executionFence });
+  const fence = createFence("execution-1");
+  const run = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, fault, finalizeFault, ...fence });
   await run.saveSpec(spec);
-  return { root, candidate, run, executionFence };
+  return { root, candidate, run, fence };
+}
+
+function createFence(token) {
+  const state = { token };
+  return {
+    executionToken: token,
+    assertActive: async () => {
+      if (state.token !== token) throw new Error(`Wiki Lead execution 1/${token} is no longer active`);
+    },
+    retire(next = "retired") { state.token = next; },
+  };
+}
+
+function sealInput(extra = {}) {
+  return { requiredProfileCoverage: [], sourceFingerprint: "a".repeat(64), summary: "complete", ...extra };
 }
 
 async function settleReviews(run, tasks) {
-  const { contracts } = await run.queueDelegateBatch(tasks);
+  const { contracts } = await run.dispatch(tasks);
   for (const contract of contracts) {
     const receipt = {
       id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -67,7 +79,7 @@ async function completeAndApprove(run) {
 }
 
 async function settleWrite(run, id, writePaths) {
-  const { contracts: [contract] } = await run.queueDelegateBatch([{
+  const { contracts: [contract] } = await run.dispatch([{
     id, role: "write", instruction: `Write ${id}`, sourceScopeIds: [], contextRefs: [], writePaths,
   }]);
   await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
@@ -85,10 +97,10 @@ async function settleWrite(run, id, writePaths) {
 for (const point of ["afterJournal", "afterState", "afterRename", "afterVerify"]) {
   test(`candidate transaction rolls forward after ${point}`, async (t) => {
     let armed = true;
-    const { root, candidate, run, executionFence } = await fixture(t, (value) => { if (armed && value === point) throw new Error(`fault:${point}`); });
+    const { root, candidate, run, fence } = await fixture(t, (value) => { if (armed && value === point) throw new Error(`fault:${point}`); });
     await assert.rejects(run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }), new RegExp(`fault:${point}`));
     armed = false;
-    await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, executionFence });
+    await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
     assert.match(await readFile(path.join(candidate, "overview.md"), "utf8"), /Runtime behavior/);
     await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", "run-1", "candidate-transaction.json")), { code: "ENOENT" });
   });
@@ -96,12 +108,12 @@ for (const point of ["afterJournal", "afterState", "afterRename", "afterVerify"]
 
 test("candidate recovery rejects an externally modified target it cannot prove", async (t) => {
   let armed = true;
-  const { root, candidate, run, executionFence } = await fixture(t, (value) => { if (armed && value === "afterJournal") throw new Error("fault"); });
+  const { root, candidate, run, fence } = await fixture(t, (value) => { if (armed && value === "afterJournal") throw new Error("fault"); });
   await writeFile(path.join(candidate, "overview.md"), "old\n");
   await assert.rejects(run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }), /fault/);
   armed = false;
   await writeFile(path.join(candidate, "overview.md"), "tampered\n");
-  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, executionFence }), WikiCandidateCorruptionError);
+  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence }), WikiCandidateCorruptionError);
 });
 
 test("candidate rejects a symlink page and globally invalidates accepted review after any page write", async (t) => {
@@ -117,14 +129,14 @@ test("candidate rejects a symlink page and globally invalidates accepted review 
     { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
     { id: "review-domain", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
   ]);
-  await run.assertPublishable(reviewPaths, []);
+  await run.finish(reviewPaths, []);
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview", " changed"), actor: "lead" });
-  await assert.rejects(run.assertPublishable(reviewPaths, []), /lacks passing independent review/);
+  await assert.rejects(run.finish(reviewPaths, []), /lacks passing independent review/);
 });
 
 test("independent WikiLeadRun instances serialize page commits without losing a global Candidate Revision", async (t) => {
-  const { root, candidate, run: first, executionFence } = await fixture(t);
-  const second = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, executionFence });
+  const { root, candidate, run: first, fence } = await fixture(t);
+  const second = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
   await Promise.all([
     first.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }),
     second.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
@@ -139,7 +151,7 @@ test("each review contract persists an exact independent path basis", async (t) 
   const { run } = await fixture(t);
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
-  const { contracts } = await run.queueDelegateBatch([
+  const { contracts } = await run.dispatch([
     { id: "overview-review", role: "review", instruction: "Review overview", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
     { id: "domain-review", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
   ]);
@@ -150,10 +162,10 @@ test("each review contract persists an exact independent path basis", async (t) 
 
 test("rollbackDelegateBatch removes an unlaunched queued batch so the next queue can reuse its identity", async (t) => {
   const { run } = await fixture(t);
-  const first = await run.queueDelegateBatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const first = await run.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
   assert.equal(first.batchId, 1);
   await run.rollbackDelegateBatch(1);
-  const second = await run.queueDelegateBatch([{ id: "research-retry", role: "research", instruction: "Research again", sourceScopeIds: [], contextRefs: [] }]);
+  const second = await run.dispatch([{ id: "research-retry", role: "research", instruction: "Research again", sourceScopeIds: [], contextRefs: [] }]);
   assert.equal(second.batchId, 1);
   assert.equal(second.contracts[0].contractId, "b1-research-retry");
   assert.equal(run.taskRuntimeState.batches.length, 1);
@@ -161,7 +173,7 @@ test("rollbackDelegateBatch removes an unlaunched queued batch so the next queue
 
 test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => {
   const { run } = await fixture(t);
-  const { batchId, contracts: [contract] } = await run.queueDelegateBatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { batchId, contracts: [contract] } = await run.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
   await run.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
   await assert.rejects(run.rollbackDelegateBatch(batchId), /Cannot roll back delegate batch 1 after launch/);
   assert.equal(run.taskRuntimeState.batches.length, 1);
@@ -173,13 +185,13 @@ test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => 
     },
   });
   await assert.rejects(run.rollbackDelegateBatch(batchId), /Cannot roll back delegate batch 1 after launch/);
-  const next = await run.queueDelegateBatch([{ id: "later", role: "research", instruction: "Later", sourceScopeIds: [], contextRefs: [] }]);
+  const next = await run.dispatch([{ id: "later", role: "research", instruction: "Later", sourceScopeIds: [], contextRefs: [] }]);
   assert.equal(next.batchId, 2);
 });
 
 test("semantic task transitions reject rollback, collection before terminal, and forged receipts", async (t) => {
   const { run } = await fixture(t);
-  const { contracts: [contract] } = await run.queueDelegateBatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { contracts: [contract] } = await run.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
   await assert.rejects(run.taskTransitions.tasksCollected(1, [contract.id]), /Only terminal/);
   await assert.rejects(run.taskTransitions.taskSettled(1, contract.id, { attempt: 1, receipt: { id: contract.id } }), /Only the current running attempt/);
   await run.taskTransitions.taskStarted(1, contract.id, { attempt: 1 });
@@ -189,23 +201,23 @@ test("semantic task transitions reject rollback, collection before terminal, and
 });
 
 test("persisted delegate history cannot delete queued tasks or forge a phase rollback", async (t) => {
-  const { root, candidate, run, executionFence } = await fixture(t);
-  const { contracts: [contract] } = await run.queueDelegateBatch([{ id: "durable", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { root, candidate, run, fence } = await fixture(t);
+  const { contracts: [contract] } = await run.dispatch([{ id: "durable", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
   await run.taskTransitions.taskStarted(1, contract.id, { attempt: 1 });
   const stateFile = path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json");
   const state = JSON.parse(await readFile(stateFile, "utf8"));
   state.delegates.batches[0].tasks[0].phase = "queued";
   await writeFile(stateFile, JSON.stringify(state));
-  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, executionFence }), /integrity check/);
+  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence }), /integrity check/);
   state.delegates.batches[0].tasks = [];
   await writeFile(stateFile, JSON.stringify(state));
-  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, executionFence }), /integrity check/);
+  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence }), /integrity check/);
 });
 
 test("publication seal fails closed after file, dotfile, or empty-directory drift", async (t) => {
   const { candidate, run } = await fixture(t);
   await completeAndApprove(run);
-  const seal = await run.sealForPublication({ requiredProfileCoverage: [], publicationAt: "2026-01-01T00:00:00.000Z" });
+  const seal = await run.sealForPublication(sealInput({ publicationAt: "2026-01-01T00:00:00.000Z" }));
   assert.equal((await verifyWikiPublicationSeal(seal)).executionToken, "execution-1");
   await writeFile(path.join(candidate, ".drift"), "hidden\n");
   await assert.rejects(verifyWikiPublicationSeal(seal), /changed after it was sealed/);
@@ -219,26 +231,25 @@ test("publication seal fails closed after file, dotfile, or empty-directory drif
 
 test("durable execution token fence blocks stale write, settle, and seal after same-attempt resume", async (t) => {
   const { root, candidate } = await fixture(t);
-  const runStateFile = path.join(root, ".okf-wiki", "runs", "run-1", "run-state.json");
-  await writeFile(runStateFile, JSON.stringify({ version: 2, id: "run-1", status: "running", attempt: 1, executionToken: "execution-old" }));
+  const staleFence = createFence("execution-old");
   const stale = await WikiLeadRun.open({
     workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy,
-    executionFence: { runStateFile, attempt: 1, executionToken: "execution-old" },
+    ...staleFence,
   });
   await stale.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  const { contracts: [contract] } = await stale.queueDelegateBatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { contracts: [contract] } = await stale.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
   await stale.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
   const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: contract.contractDigest };
-  await writeFile(runStateFile, JSON.stringify({ version: 2, id: "run-1", status: "running", attempt: 1, executionToken: "execution-new" }));
+  staleFence.retire("execution-new");
   await assert.rejects(
     stale.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
     /no longer active/,
   );
   await assert.rejects(stale.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt }), /no longer active/);
-  await assert.rejects(stale.sealForPublication({ requiredProfileCoverage: [] }), /no longer active/);
+  await assert.rejects(stale.sealForPublication(sealInput()), /no longer active/);
   const current = await WikiLeadRun.open({
     workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy,
-    executionFence: { runStateFile, attempt: 1, executionToken: "execution-new" },
+    ...createFence("execution-new"),
   });
   await current.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
 });
@@ -246,26 +257,26 @@ test("durable execution token fence blocks stale write, settle, and seal after s
 test("a fenced open performs no candidate or run-directory writes", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-lead-fenced-open-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
-  const runStateFile = path.join(root, "cancelled-run.json");
-  await writeFile(runStateFile, JSON.stringify({ version: 2, id: "run-2", status: "running", attempt: 1, executionToken: "execution-new" }));
   const candidate = path.join(root, ".okf-wiki", "runs", "run-2", "candidate", "wiki");
+  const stale = createFence("execution-old");
+  stale.retire("execution-new");
   await assert.rejects(WikiLeadRun.open({
     workspace: root, runId: "run-2", candidateWikiRoot: candidate, policy,
-    executionFence: { runStateFile, attempt: 1, executionToken: "execution-old" },
+    ...stale,
   }), /no longer active/);
   await assert.rejects(readFile(candidate), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", "run-2")), { code: "ENOENT" });
 });
 
 test("pinned validation and finalization ignore workspace configuration changes during a run", async (t) => {
-  const { root, candidate, executionFence } = await fixture(t);
+  const { root, candidate, fence } = await fixture(t);
   const run = await WikiLeadRun.open({
     workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy,
-    sourcePlan: sourcePlan(root), language: "en", executionFence,
+    sourcePlan: sourcePlan(root), language: "en", ...fence,
   });
   await writeFile(path.join(root, "workspace.yaml"), "this is no longer a valid workspace config\n");
   await completeAndApprove(run);
-  const seal = await run.sealForPublication({ requiredProfileCoverage: [], publicationAt: "2026-01-01T00:00:00.000Z" });
+  const seal = await run.sealForPublication(sealInput({ publicationAt: "2026-01-01T00:00:00.000Z" }));
   await verifyWikiPublicationSeal(seal);
 });
 
@@ -289,18 +300,54 @@ test("three terminal write or review tasks on one cluster block wiki_finish", as
   await settleWrite(run, "write-1", ["wiki/core/domain.md"]);
   await settleWrite(run, "write-2", ["wiki/core/domain.md"]);
   await settleWrite(run, "write-3", ["wiki/core/domain.md"]);
-  await assert.rejects(run.assertPublishable(["wiki/overview.md", "wiki/core/domain.md"], []), /blocked.*core/);
+  await assert.rejects(run.finish(["wiki/overview.md", "wiki/core/domain.md"], []), /blocked.*core/);
+});
+
+test("changes_requested and a later spec revision block finish", async (t) => {
+  const { run } = await fixture(t);
+  await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
+  await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
+  const { contracts } = await run.dispatch([
+    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+  ]);
+  for (const contract of contracts) {
+    const requestChanges = contract.reviewPaths.includes("wiki/overview.md");
+    await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(contract.batchId, contract.id, {
+      attempt: 1,
+      receipt: {
+        id: contract.id, role: "review", status: "complete", summary: requestChanges ? "changes" : "pass",
+        outputs: [], coverage: [], gaps: [], attempts: 1,
+        contractId: contract.contractId, contractDigest: contract.contractDigest,
+        review: {
+          verdict: requestChanges ? "changes_requested" : "pass",
+          reviewedPaths: contract.reviewPaths,
+          findings: requestChanges
+            ? [{ path: "wiki/overview.md", severity: "major", message: "Missing evidence", evidence: ["src/a.ts#L1"], suggestion: "Add evidence" }]
+            : [],
+          profileCoverage: [],
+        },
+      },
+    });
+  }
+  await assert.rejects(run.finish(["wiki/overview.md", "wiki/core/domain.md"], []), /requested changes/);
+
+  const stale = await fixture(t);
+  await completeAndApprove(stale.run);
+  await stale.run.saveSpec(spec);
+  await assert.rejects(stale.run.finish(["wiki/overview.md", "wiki/core/domain.md"], []), /lacks passing independent review/);
 });
 
 for (const point of ["afterFinalizeJournal", "afterValidation", "afterObsoleteRemoval", "afterStamp", "afterIndexes", "afterCleanup", "afterFinalize", "afterSeal"]) {
   test(`publication finalization recovers after ${point}`, async (t) => {
     let armed = true;
-    const { root, candidate, run, executionFence } = await fixture(t, undefined, (value) => { if (armed && value === point) throw new Error(`fault:${point}`); });
+    const { root, candidate, run, fence } = await fixture(t, undefined, (value) => { if (armed && value === point) throw new Error(`fault:${point}`); });
     await completeAndApprove(run);
-    await assert.rejects(run.sealForPublication({ requiredProfileCoverage: [], publicationAt: "2026-01-01T00:00:00.000Z" }), new RegExp(`fault:${point}`));
+    await assert.rejects(run.sealForPublication(sealInput({ publicationAt: "2026-01-01T00:00:00.000Z" })), new RegExp(`fault:${point}`));
     armed = false;
-    const reopened = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, executionFence });
-    const seal = await reopened.sealForPublication({ requiredProfileCoverage: [], publicationAt: "2026-01-01T00:00:00.000Z" });
+    const reopened = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
+    const seal = await reopened.sealForPublication(sealInput({ publicationAt: "2026-01-01T00:00:00.000Z" }));
     await verifyWikiPublicationSeal(seal);
   });
 }

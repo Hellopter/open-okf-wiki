@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { WikiSpec } from "./wiki-spec.js";
-import { parseWikiSpec, wikiSpecPagePaths } from "./wiki-spec.js";
 import { sameStringSet, stableStringify } from "./util.js";
 
+type WikiSpec = { pages: string[] };
+
 const sealBrand: unique symbol = Symbol("WikiPublicationSeal");
+const sealPayloads = new WeakMap<WikiPublicationSeal, VerifiedWikiPublicationSealPayload>();
 
 export interface VerifiedWikiPublicationSealPayload {
   readonly runId: string;
@@ -14,10 +15,12 @@ export interface VerifiedWikiPublicationSealPayload {
   readonly finalTreeDigest: string;
   readonly pages: readonly string[];
   readonly spec: WikiSpec;
+  readonly sourceFingerprint: string;
+  readonly summary: string;
 }
 
 /** Opaque, run-bound proof that Lead governance and deterministic finalization completed. */
-export type WikiPublicationSeal = VerifiedWikiPublicationSealPayload & {
+export type WikiPublicationSeal = {
   readonly [sealBrand]: true;
 };
 
@@ -28,40 +31,52 @@ export async function issueWikiPublicationSeal(input: {
   candidateRoot: string;
   pages: readonly string[];
   spec: WikiSpec;
+  sourceFingerprint: string;
+  summary: string;
 }): Promise<WikiPublicationSeal> {
   const candidateRoot = path.resolve(input.candidateRoot);
   if (typeof input.executionToken !== "string" || !input.executionToken.trim()) throw new Error("Invalid Wiki publication seal execution token");
-  const spec = parseWikiSpec(input.spec);
+  if (typeof input.sourceFingerprint !== "string" || !input.sourceFingerprint) throw new Error("Wiki publication source fingerprint must be a non-empty string");
+  if (typeof input.summary !== "string") throw new Error("Wiki publication summary must be a string");
+  const spec = input.spec;
   const pages = [...input.pages];
-  if (!sameStringSet(pages, wikiSpecPagePaths(spec))) throw new Error("Publication seal pages do not match the WikiSpec");
-  const payload = {
+  if (!sameStringSet(pages, spec.pages)) throw new Error("Publication seal pages do not match the WikiSpec");
+  const payload: VerifiedWikiPublicationSealPayload = Object.freeze({
     runId: input.runId,
     executionToken: input.executionToken,
     candidateRoot,
     finalTreeDigest: await digestWikiTree(candidateRoot),
     pages: Object.freeze(pages),
     spec: deepFreeze(structuredClone(spec)),
-  };
-  return Object.freeze({ ...payload, [sealBrand]: true }) as WikiPublicationSeal;
+    sourceFingerprint: input.sourceFingerprint,
+    summary: input.summary,
+  });
+  const seal = Object.freeze({ [sealBrand]: true }) as WikiPublicationSeal;
+  sealPayloads.set(seal, payload);
+  return seal;
 }
 
 /** Re-prove the candidate immediately before publication and return trusted metadata. */
 export async function verifyWikiPublicationSeal(seal: WikiPublicationSeal): Promise<VerifiedWikiPublicationSealPayload> {
   if (!seal || typeof seal !== "object" || seal[sealBrand] !== true) throw new Error("Invalid Wiki publication seal");
-  const candidateRoot = path.resolve(seal.candidateRoot);
-  if (candidateRoot !== seal.candidateRoot) throw new Error("Wiki publication seal candidate root is not canonical");
-  const spec = parseWikiSpec(seal.spec);
-  if (!seal.executionToken || typeof seal.executionToken !== "string") throw new Error("Invalid Wiki publication seal execution token");
-  if (!sameStringSet(seal.pages, wikiSpecPagePaths(spec))) throw new Error("Wiki publication seal pages no longer match its WikiSpec");
+  const stored = sealPayloads.get(seal);
+  if (!stored) throw new Error("Invalid Wiki publication seal");
+  const candidateRoot = path.resolve(stored.candidateRoot);
+  if (candidateRoot !== stored.candidateRoot) throw new Error("Wiki publication seal candidate root is not canonical");
+  const spec = stored.spec;
+  if (!stored.executionToken || typeof stored.executionToken !== "string") throw new Error("Invalid Wiki publication seal execution token");
+  if (!sameStringSet(stored.pages, spec.pages)) throw new Error("Wiki publication seal pages no longer match its WikiSpec");
   const actual = await digestWikiTree(candidateRoot);
-  if (actual !== seal.finalTreeDigest) throw new Error("Candidate Wiki changed after it was sealed for publication");
+  if (actual !== stored.finalTreeDigest) throw new Error("Candidate Wiki changed after it was sealed for publication");
   return Object.freeze({
-    runId: seal.runId,
-    executionToken: seal.executionToken,
+    runId: stored.runId,
+    executionToken: stored.executionToken,
     candidateRoot,
-    finalTreeDigest: seal.finalTreeDigest,
-    pages: Object.freeze([...seal.pages]),
+    finalTreeDigest: stored.finalTreeDigest,
+    pages: Object.freeze([...stored.pages]),
     spec: deepFreeze(structuredClone(spec)),
+    sourceFingerprint: stored.sourceFingerprint,
+    summary: stored.summary,
   });
 }
 

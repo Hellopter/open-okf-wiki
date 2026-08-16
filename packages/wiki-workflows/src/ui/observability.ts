@@ -1,15 +1,17 @@
 import type {
   WikiActivityEntry,
   WikiAgentInspection,
+  WikiAgentSnapshot,
   WikiAgentStatus,
   WikiContextStats,
   WikiDelegationBatchSummary,
   WikiRunEvent,
   WikiRunStage,
   WikiRunView,
-} from "./producer-types.js";
+  WikiTaskSnapshot,
+} from "../producer-types.js";
 import { formatLocalDateTime } from "./time-format.js";
-import { wikiSpecClusterId } from "./wiki-spec.js";
+import { wikiSpecClusterId } from "../lead.js";
 
 export type WikiTone = "muted" | "accent" | "success" | "warning" | "error";
 export type WikiMarker = "·" | "◆" | "✓" | "◐" | "✗" | "○" | "!" | "⏸";
@@ -21,14 +23,68 @@ export interface WikiStatusSemantics {
   terminal: boolean;
 }
 
+export interface WikiProjectedTaskLine {
+  id: string;
+  role: WikiTaskSnapshot["role"];
+  status: WikiTaskSnapshot["status"];
+  marker: WikiMarker;
+  tone: WikiTone;
+  identity: string;
+  cluster?: string;
+  detail?: string;
+  healthNotice?: string;
+  attempts?: number;
+  activity?: string;
+  sortRank: number;
+}
+
+export interface WikiProjectedToolOutcome {
+  marker: WikiMarker;
+  tone: WikiTone;
+  name: string;
+  detail?: string;
+}
+
+export interface WikiProjectedBatch {
+  batch: number;
+  status: WikiDelegationBatchSummary["status"];
+  marker: WikiMarker;
+  tone: WikiTone;
+  completed: number;
+  total: number;
+  running: number;
+  label: string;
+  countLabel: string;
+  tasks: readonly WikiProjectedTaskLine[];
+}
+
+export interface WikiContextPressure {
+  percent: number;
+  label: string;
+  tone: WikiTone;
+}
+
 export interface WikiRunObservability {
   language: "zh" | "en";
+  marker: WikiMarker;
+  tone: WikiTone;
   status: WikiStatusSemantics & { label: string };
   stage?: { key: WikiRunStage; label: string };
   health: "healthy" | "degraded";
   liveness: WikiLiveness;
+  leadPresent: boolean;
+  leadLabel: string;
+  leadMarker: WikiMarker;
+  leadTone: WikiTone;
+  leadDetail?: string;
+  activityLabel?: string;
   activityAge?: string;
   heartbeatAge?: string;
+  healthNotice?: string;
+  silenceNotice?: string;
+  batch?: WikiProjectedBatch;
+  recentToolOutcomes: readonly WikiProjectedToolOutcome[];
+  contextPressure?: WikiContextPressure;
 }
 
 export interface WikiRunEventObservability {
@@ -78,14 +134,32 @@ export function projectWikiRunObservability(view: WikiRunView, now = Date.now())
       : isLongWait(lead?.lastActivityAt, lead?.lastHeartbeatAt, now) ? "alive_without_activity"
         : lead?.activeTools.length || lead?.activity === "streaming" || lead?.activity === "using_tool" ? "active"
           : "quiet";
+  const leadView = projectLead(lead, language);
+  const currentBatch = view.progress?.currentBatch;
+  const batch = currentBatch ? projectBatch(currentBatch, language) : undefined;
+  const activityLabel = lead ? footerActivityLabel(lead, currentBatch, language) : undefined;
+  const contextPressure = projectContextPressure(lead?.usage);
   return {
     language,
+    marker: status.marker,
+    tone: status.tone,
     status: { ...status, label: localizedStatus(view.status, language) },
     ...(view.progress?.stage ? { stage: stageSemantics(view.progress.stage, language) } : {}),
     health,
     liveness,
+    leadPresent: Boolean(lead),
+    leadLabel: language === "zh" ? "主理" : "lead",
+    leadMarker: leadView.marker,
+    leadTone: leadView.tone,
+    ...(leadView.detail ? { leadDetail: leadView.detail } : {}),
+    ...(activityLabel ? { activityLabel } : {}),
     ...(activityAge ? { activityAge } : {}),
     ...(heartbeatAge ? { heartbeatAge } : {}),
+    ...(health === "degraded" ? { healthNotice: healthNotice(language) } : {}),
+    ...(liveness === "alive_without_activity" ? { silenceNotice: silenceNotice(language, activityAge, heartbeatAge) } : {}),
+    ...(batch ? { batch } : {}),
+    recentToolOutcomes: projectToolOutcomes(view.progress?.recentActivity),
+    ...(contextPressure ? { contextPressure } : {}),
   };
 }
 
@@ -124,11 +198,18 @@ export function activitySemantics(entry: WikiActivityEntry): WikiStatusSemantics
   if (entry.severity === "error") return { marker: "✗", tone: "error", terminal: Boolean(entry.completed) };
   if (entry.severity === "warning") return { marker: "!", tone: "warning", terminal: Boolean(entry.completed) };
   if (entry.completed) return { marker: "✓", tone: "success", terminal: true };
-  return { marker: "·", tone: "muted", terminal: false };
+  return { marker: "◆", tone: "accent", terminal: false };
 }
 
 export function stageSemantics(stage: WikiRunStage, language: "zh" | "en" = "en"): { key: WikiRunStage; label: string } {
   return { key: stage, label: localizedStage(stage, language) };
+}
+
+export function wikiContextPressureTone(percent: number | undefined): WikiTone | undefined {
+  if (percent === undefined) return undefined;
+  if (percent > 90) return "error";
+  if (percent > 70) return "warning";
+  return undefined;
 }
 
 export type WikiTextRole = "primary" | "label" | WikiTone;
@@ -174,26 +255,14 @@ export function projectWikiAgentLines(
   return lines;
 }
 
-/** Short cluster id from snapshot paths or a path-like task id. Absent paths yield no label. */
-export function wikiTaskClusterLabel(task: {
-  id?: string;
-  writePaths?: readonly string[];
-  reviewPaths?: readonly string[];
-}): string | undefined {
-  const fromPaths = clusterIdFromAssignedPaths(task.writePaths ?? task.reviewPaths);
-  if (fromPaths) return fromPaths;
+/** Cluster id from a path-like or `domain/concept` task id. Snapshots do not carry writePaths. */
+export function wikiTaskClusterLabel(task: { id?: string }): string | undefined {
   return clusterIdFromTaskId(task.id);
 }
 
-function clusterIdFromAssignedPaths(paths: readonly string[] | undefined): string | undefined {
-  if (!paths?.length) return undefined;
-  const ids = new Set<string>();
-  for (const pagePath of paths) {
-    const clusterId = wikiSpecClusterId(pagePath);
-    if (!clusterId) return undefined;
-    ids.add(clusterId);
-  }
-  return ids.size === 1 ? [...ids][0] : undefined;
+export function wikiTaskIdentity(task: { id: string }): string {
+  const cluster = wikiTaskClusterLabel(task);
+  return cluster && cluster !== task.id ? `${cluster}  ${task.id}` : task.id;
 }
 
 function clusterIdFromTaskId(id: string | undefined): string | undefined {
@@ -222,6 +291,147 @@ export function formatWikiContext(usage: WikiContextStats | undefined): string |
   if (usage.cost !== undefined && usage.cost > 0) parts.push(usage.cost < 0.0001 ? "<$0.0001" : `$${usage.cost.toFixed(usage.cost >= 0.01 ? 2 : 4)}`);
   if (usage.model) parts.push(usage.model);
   return parts.length ? parts.join("  ") : undefined;
+}
+
+function projectBatch(batch: WikiDelegationBatchSummary, language: "zh" | "en"): WikiProjectedBatch {
+  const semantics = batchStatusSemantics(batch.status);
+  return {
+    batch: batch.batch,
+    status: batch.status,
+    marker: semantics.marker,
+    tone: semantics.tone,
+    completed: batch.completed,
+    total: batch.total,
+    running: batch.tasks.filter((task) => task.status === "running").length,
+    label: language === "zh" ? "批次" : "batch",
+    countLabel: `${batch.completed}/${batch.total}`,
+    tasks: batch.tasks.map((task) => projectTaskLine(task, language)),
+  };
+}
+
+const TASK_SORT_RANK: Record<WikiTaskSnapshot["status"], number> = {
+  failed: 0,
+  incomplete: 0,
+  running: 1,
+  queued: 2,
+  complete: 3,
+};
+
+function projectTaskLine(task: WikiTaskSnapshot, language: "zh" | "en"): WikiProjectedTaskLine {
+  const degraded = task.health === "degraded";
+  const status = agentStatusSemantics(task.status);
+  const cluster = wikiTaskClusterLabel(task);
+  const detail = taskLineDetail(task);
+  const activity = taskLineActivity(task);
+  return {
+    id: task.id,
+    role: task.role,
+    status: task.status,
+    marker: degraded ? "!" : status.marker,
+    tone: degraded ? "warning" : status.tone,
+    identity: wikiTaskIdentity(task),
+    ...(cluster ? { cluster } : {}),
+    ...(detail ? { detail } : {}),
+    ...(degraded ? { healthNotice: healthNotice(language) } : {}),
+    ...(task.attempts !== undefined ? { attempts: task.attempts } : {}),
+    ...(activity ? { activity } : {}),
+    sortRank: TASK_SORT_RANK[task.status],
+  };
+}
+
+function taskLineDetail(task: WikiTaskSnapshot): string | undefined {
+  if (task.status === "running") {
+    const tool = task.activeTool;
+    if (!tool) return undefined;
+    return tool.summary ? `${tool.name}  ${tool.summary}` : tool.name;
+  }
+  return task.summary;
+}
+
+function taskLineActivity(task: WikiTaskSnapshot): string | undefined {
+  if (task.status !== "running") return undefined;
+  if (task.activeTool?.name) return `${task.activeTool.name}…`;
+  switch (task.activity) {
+    case "responding": return "responding…";
+    case "tool": return "tool…";
+    case "compacting": return "compacting…";
+    default: return undefined;
+  }
+}
+
+function projectToolOutcomes(activity: WikiActivityEntry[] | undefined): WikiProjectedToolOutcome[] {
+  return (activity ?? [])
+    .filter((entry) => entry.kind === "tool" && entry.completed)
+    .slice(-4)
+    .map((entry) => {
+      const semantics = activitySemantics(entry);
+      const detail = semantics.tone === "error" ? entry.message : entry.summary;
+      return {
+        marker: semantics.marker,
+        tone: semantics.tone,
+        name: entry.toolName ?? "tool",
+        ...(detail ? { detail } : {}),
+      };
+    });
+}
+
+function projectLead(lead: WikiAgentSnapshot | undefined, language: "zh" | "en"): { marker: WikiMarker; tone: WikiTone; detail?: string } {
+  if (!lead) return { marker: "◆", tone: "accent" };
+  const degraded = lead.health === "degraded";
+  const retrying = lead.status === "retrying";
+  const status = agentStatusSemantics(lead.status);
+  const tool = lead.activeTools[0];
+  const detail = tool ? (tool.summary ? `${tool.name}  ${tool.summary}` : tool.name) : quietActivity(lead.activity, language);
+  return {
+    marker: degraded || retrying ? "!" : status.marker,
+    tone: degraded || retrying ? "warning" : status.tone,
+    ...(detail ? { detail } : {}),
+  };
+}
+
+function footerActivityLabel(
+  lead: WikiAgentSnapshot,
+  batch: WikiDelegationBatchSummary | undefined,
+  language: "zh" | "en",
+): string | undefined {
+  if (batch && lead.activity === "delegating") return `batch ${batch.batch} · ${batch.completed}/${batch.total}`;
+  return lead.activeTools[0]?.name ?? quietActivity(lead.activity, language);
+}
+
+function projectContextPressure(usage: WikiContextStats | undefined): WikiContextPressure | undefined {
+  if (usage?.contextPercent === undefined) return undefined;
+  const percent = Math.round(usage.contextPercent);
+  return {
+    percent,
+    label: `ctx ${percent}%`,
+    tone: wikiContextPressureTone(usage.contextPercent) ?? "muted",
+  };
+}
+
+function healthNotice(language: "zh" | "en"): string {
+  return language === "zh" ? "观测降级" : "observability degraded";
+}
+
+function silenceNotice(language: "zh" | "en", activityAge: string | undefined, heartbeatAge: string | undefined): string {
+  const activity = language === "zh" ? `无 Pi 活动 ${activityAge ?? "?"}` : `no Pi activity ${activityAge ?? "?"}`;
+  if (!heartbeatAge) return activity;
+  return language === "zh" ? `${activity} · 会话存活 ${heartbeatAge}` : `${activity} · session alive ${heartbeatAge}`;
+}
+
+function quietActivity(activity: WikiAgentSnapshot["activity"] | undefined, language: "zh" | "en"): string | undefined {
+  if (!activity || activity === "starting" || activity === "settled" || activity === "waiting_model" || activity === "using_tool") {
+    return undefined;
+  }
+  const zh: Partial<Record<WikiAgentSnapshot["activity"], string>> = {
+    streaming: "生成中",
+    delegating: "协调委派",
+    synthesizing: "综合结果",
+    compacting: "压缩上下文",
+    retry_wait: "等待重试",
+    finishing: "收尾中",
+  };
+  if (language === "zh") return zh[activity] ?? activity;
+  return activity.replaceAll("_", " ");
 }
 
 function localizedStatus(status: WikiRunView["status"], language: "zh" | "en"): string {
@@ -266,7 +476,7 @@ function textLines(text: string, role: WikiTextRole): WikiTextLine[] { return te
 function fieldLine(label: string, value: string, role: WikiTextRole): WikiTextLine { return [span(`${label}  `, "label"), span(value, role)]; }
 function interleaveProcessTab(inspection: WikiAgentInspection): Array<{ kind: "process"; entry: WikiActivityEntry } | { kind: "message"; text: string }> {
   return [
-    ...inspection.process.filter((entry) => entry.kind !== "tool" || entry.completed).map((entry) => ({ kind: "process" as const, at: entry.at, entry })),
+    ...inspection.process.map((entry) => ({ kind: "process" as const, at: entry.at, entry })),
     ...(inspection.messages ?? []).map((message) => ({ kind: "message" as const, at: message.at, text: message.text })),
   ].sort((left, right) => left.at.localeCompare(right.at));
 }
