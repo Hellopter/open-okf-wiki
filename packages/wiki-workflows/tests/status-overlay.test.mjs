@@ -76,6 +76,15 @@ function wikiOverlayMaxHeight(rows) {
   return Math.max(1, Math.min(Math.floor(rows * 0.88), rows - 2));
 }
 
+function navigationColumn(lines, width) {
+  const text = lines.map((line) => plain(line));
+  if (width < 100) return text.join("\n");
+  return text.map((line) => {
+    const index = line.indexOf(" │ ");
+    return index >= 0 ? line.slice(0, index) : line;
+  }).join("\n");
+}
+
 test("up arrow leaves the bottom after overscrolling or tailing", async () => {
   const process = Array.from({ length: 40 }, (_, index) => ({
     sequence: index,
@@ -270,6 +279,7 @@ test("footers expose only actions available on the current page", async () => {
   component.handleInput("\u001b[D");
   component.handleInput("j");
   component.handleInput("j");
+  component.handleInput("j");
   component.handleInput("CONFIRM");
   await new Promise((resolve) => setImmediate(resolve));
   const activityFooter = plain(component.render(80).at(-1));
@@ -316,16 +326,24 @@ test("small viewports keep the selected target visible and Enter opens that targ
     });
     const { component } = await componentFor(subject, 12);
     await new Promise((resolve) => setImmediate(resolve));
-    for (const input of ["j", "j", "j", "PAGE_DOWN"]) {
-      component.handleInput(input);
+    let hops = 0;
+    while (!/> .*\btask-13\b/.test(plain(navigationColumn(component.render(width), width))) && hops < 40) {
+      component.handleInput("j");
+      hops += 1;
       await new Promise((resolve) => setImmediate(resolve));
       const rendered = plain(component.render(width).join("\n"));
-      assert.equal((rendered.match(/> /g) ?? []).length, 1, `selection disappeared at width ${width} after ${input}`);
+      assert.equal((rendered.match(/> /g) ?? []).length, 1, `selection disappeared at width ${width} after hop ${hops}`);
     }
+    assert.match(navigationColumn(component.render(width), width), /> .*\btask-13\b/);
     component.handleInput("CONFIRM");
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(inspected.at(-1), { kind: "task", batch: 4, taskId: "task-13" });
-    assert.match(plain(component.render(width).join("\n")), /task-13/);
+    component.handleInput("\u001b[D");
+    component.handleInput("PAGE_DOWN");
+    await new Promise((resolve) => setImmediate(resolve));
+    const paged = plain(component.render(width).join("\n"));
+    assert.equal((paged.match(/> /g) ?? []).length, 1);
+    assert.match(paged, /> /);
     component.dispose();
   }
 });
@@ -345,6 +363,7 @@ test("control keys only act on the run page and for legal run states", async () 
   ];
   invalidContexts[1].component.handleInput("j");
   invalidContexts[1].component.handleInput("j");
+  invalidContexts[1].component.handleInput("j");
   invalidContexts[1].component.handleInput("CONFIRM");
   for (const variant of invalidContexts) {
     for (const input of ["p", "r", "x"]) variant.component.handleInput(input);
@@ -360,6 +379,39 @@ test("control keys only act on the run page and for legal run states", async () 
     assert.deepEqual(variant.calls, [expected]);
     variant.component.dispose();
   }
+});
+
+test("process tab shows model messages and output wraps markdown instead of truncating", async () => {
+  const long = `alpha-${"word".repeat(80)}`;
+  const markdown = `# Coverage\n\n- auth flow\n- token refresh\n\n\`${long}\``;
+  const { component } = await componentFor(handle({
+    async inspectAgent(target) {
+      return {
+        ...inspection(target),
+        process: [
+          { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: true },
+        ],
+        messages: [
+          { at: "2026-08-12T00:00:01.000Z", text: "I will inspect the source first." },
+        ],
+        handoff: markdown,
+      };
+    },
+  }), 24, { kind: "lead" });
+  await new Promise((resolve) => setImmediate(resolve));
+  component.handleInput("\u001b[C");
+  const processPage = plain(component.render(80).join("\n"));
+  assert.match(processPage, /◆ model/);
+  assert.match(processPage, /I will inspect the source first/);
+  assert.match(processPage, /✓ read/);
+  component.handleInput("\u001b[C");
+  const outputPage = component.render(48);
+  const outputText = plain(outputPage.join("\n"));
+  assert.match(outputText, /Coverage/);
+  assert.match(outputText, /auth flow/);
+  assert.ok(outputPage.every((line) => visibleWidth(line) <= 48));
+  assert.ok(outputPage.filter((line) => /alpha-|word/.test(plain(line))).length >= 2);
+  component.dispose();
 });
 
 test("activity list shows tool success and failure without start events", async () => {
@@ -378,6 +430,7 @@ test("activity list shows tool success and failure without start events", async 
   }), 24, undefined, recorded.theme);
   component.handleInput("j");
   component.handleInput("j");
+  component.handleInput("j");
   component.handleInput("CONFIRM");
   await new Promise((resolve) => setImmediate(resolve));
   const rendered = plain(component.render(80).join("\n"));
@@ -391,6 +444,7 @@ test("activity list shows tool success and failure without start events", async 
 
 test("wide run preview uses activity context before Enter", async () => {
   const { component } = await componentFor();
+  component.handleInput("j");
   component.handleInput("j");
   component.handleInput("j");
   await new Promise((resolve) => setImmediate(resolve));
@@ -537,6 +591,7 @@ test("stale agent inspection cannot replace the selected agent", async () => {
   const subject = handle({ async inspectAgent(target) { return await deferred(target); } });
   const { component } = await componentFor(subject);
   component.handleInput("j");
+  component.handleInput("j");
   component.handleInput("CONFIRM");
   pending.get(JSON.stringify({ kind: "task", batch: 2, taskId: "write-auth" }))(inspection({ kind: "task", batch: 2, taskId: "write-auth" }, "new"));
   await new Promise((resolve) => setImmediate(resolve));
@@ -562,6 +617,7 @@ test("switching targets clears old inspection while the new request is pending",
   assert.match(oldRendered, /observability degraded/);
 
   component.handleInput("j");
+  component.handleInput("j");
   await new Promise((resolve) => setImmediate(resolve));
   const pendingWide = component.render(120).join("\n");
   assert.doesNotMatch(pendingWide, /old leader summary/);
@@ -583,6 +639,7 @@ test("activity loads 50, pages older entries, deduplicates cursor, and filters",
   ];
   const subject = handle({ async activity(options) { calls.push(options); return pages.shift() ?? { entries: [], nextBefore: undefined }; } });
   const { component } = await componentFor(subject);
+  component.handleInput("j");
   component.handleInput("j");
   component.handleInput("j");
   component.handleInput("CONFIRM");
@@ -642,8 +699,8 @@ test("prepare stage always selects a leader navigation target before inspection 
   component.dispose();
 });
 
-test("collapsed history tasks never create invisible cursor targets", async () => {
-  const history = { batch: 1, status: "complete", completed: 1, total: 1, tasks: [{ id: "old", role: "review", status: "complete" }] };
+test("completed batches stay collapsed until expanded and then inspect their tasks", async () => {
+  const history = { batch: 1, status: "complete", completed: 1, total: 1, tasks: [{ id: "old", role: "review", status: "complete", summary: "reviewed auth" }] };
   const current = { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: "current", role: "write", status: "running" }] };
   const withHistory = { ...view, progress: { ...view.progress, currentBatch: current, batches: [history, current] } };
   for (const width of [80, 120]) {
@@ -656,13 +713,21 @@ test("collapsed history tasks never create invisible cursor targets", async () =
     await new Promise((resolve) => setImmediate(resolve));
     component.handleInput("j");
     await new Promise((resolve) => setImmediate(resolve));
-    const navigation = component.render(width).join("\n");
-    assert.equal((navigation.match(/> /g) ?? []).length, 1);
-    assert.match(navigation, />   ◆ write  current/);
-    assert.doesNotMatch(navigation, /review  old/);
+    const collapsedLines = component.render(width);
+    const collapsed = plain(collapsedLines.join("\n"));
+    const nav = navigationColumn(collapsedLines, width);
+    assert.equal((collapsed.match(/> /g) ?? []).length, 1);
+    assert.match(nav, /> ✓ Batch 1/);
+    assert.doesNotMatch(nav, /review  old/);
+    if (width >= 100) assert.match(collapsed, /reviewed auth/);
     component.handleInput("CONFIRM");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(inspected.at(-1), { kind: "task", batch: 2, taskId: "current" });
+    const expanded = plain(component.render(width).join("\n"));
+    assert.match(expanded, /review  old/);
+    component.handleInput("j");
+    component.handleInput("CONFIRM");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(inspected.at(-1), { kind: "task", batch: 1, taskId: "old" });
     component.dispose();
   }
 });

@@ -180,6 +180,7 @@ export interface WikiAgentInspection {
   runId: string;
   agent: WikiAgentSnapshot;
   process: WikiActivityEntry[];
+  messages?: ReadonlyArray<{ at: string; text: string }>;
   outcome?: WikiAgentOutcome;
   handoff?: string;
   handoffPath?: string;

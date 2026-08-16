@@ -37,6 +37,7 @@ import {
   type WikiLeadRuntime,
   type WikiProductionPlan,
 } from "./runtime-types.js";
+import { readWikiSessionTranscript } from "./session-transcript.js";
 import { digestProductionSkillTree, materializeProductionSkill, skillWorkspacePath } from "./skill-store.js";
 import { loadWikiWorkspace, ensureWikiWorkspaceInternalIgnore, type WikiGenerationProfile, type WikiRoleModelConfig } from "./workspace.js";
 
@@ -416,7 +417,15 @@ class WikiProductionRun {
     const ref = record?.receipt?.outputs?.at(-1);
     let handoff: string | undefined;
     if (ref) { try { handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref); } catch { handoff = undefined; } }
-    return { runId: this.runId, agent, process: record?.process ?? [], ...(record?.receipt ? { outcome: projectWikiAgentOutcome(record.receipt) } : {}), ...(handoff !== undefined ? { handoff } : {}), ...(ref?.relativePath ? { handoffPath: ref.relativePath } : {}) };
+    return {
+      runId: this.runId,
+      agent,
+      process: record?.process ?? [],
+      ...(record?.sessionFile ? { messages: await readWikiSessionTranscript(record.sessionFile) } : {}),
+      ...(record?.receipt ? { outcome: projectWikiAgentOutcome(record.receipt) } : {}),
+      ...(handoff !== undefined ? { handoff } : {}),
+      ...(ref?.relativePath ? { handoffPath: ref.relativePath } : {}),
+    };
   }
 
   private async state(): Promise<WikiRunState> {

@@ -271,6 +271,31 @@ test("process tab shows tool outcomes without start or complete verbs", () => {
   assert.equal(lines[2].find((span) => span.text.includes("Path is not assigned"))?.role, "error");
 });
 
+test("process tab shows model messages on their own lines", () => {
+  const inspection = {
+    runId: "run-1",
+    agent: {
+      target: { kind: "lead" }, role: "lead", status: "running", attempt: 1,
+      activity: "streaming", activeTools: [], health: "healthy",
+    },
+    process: [
+      { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: true },
+    ],
+    messages: [
+      { at: "2026-08-12T00:00:01.000Z", text: "I will read auth next.\nThen write the page." },
+    ],
+  };
+
+  const rendered = renderWikiAgent(inspection, "process");
+  assert.equal(rendered, [
+    "Wiki run-1  ·  lead  ·  process",
+    "◆ model",
+    "I will read auth next.",
+    "Then write the page.",
+    "✓ read  src/a.ts",
+  ].join("\n"));
+});
+
 test("retrying agents share one warning presentation across structured and plain output", () => {
   const inspection = {
     runId: "run-2",
