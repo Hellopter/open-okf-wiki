@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { WikiLeadRun } from "../dist/lead.js";
+import { createWikiDelegateStartTool } from "../dist/lead/host-tools.js";
 
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
 
@@ -207,6 +208,38 @@ test("research may omit cluster", async (t) => {
   const queued = await run.dispatch([researchTask("research-1"), researchTask("research-2", { cluster: "ignored" })]);
   assert.equal(queued.contracts.length, 2);
   assert.equal(queued.contracts[0].role, "research");
+});
+
+test("host owns research assignment IDs and supplements inherit blocker assignments", async (t) => {
+  const run = await lead(t);
+  const discovery = await run.dispatch([
+    researchTask("discover", { assignmentIds: ["model-chosen"] }),
+    researchTask("second-discovery", { assignmentIds: ["another-model-choice"] }),
+  ]);
+  assert.deepEqual(discovery.contracts.map((contract) => contract.assignmentIds), [["a-b1-t1"], ["a-b1-t2"]]);
+  assert.notEqual(discovery.contracts[0].assignmentIds[0], "discover");
+  await settleResearch(run, [discovery.contracts[0]], {
+    followups: [{ id: "gap-discover", kind: "evidence_gap", question: "Need more evidence", sourceScopeIds: ["source"] }],
+  });
+  await settleResearch(run, [discovery.contracts[1]]);
+
+  const supplement = await run.dispatch([researchTask("supplement", {
+    mode: "supplement", assignmentIds: ["another-model-choice"], resolvesIds: ["gap-discover"],
+  })]);
+  assert.deepEqual(supplement.contracts[0].assignmentIds, ["a-b1-t1"]);
+});
+
+test("research task IDs cannot be reused across delegate batches", async (t) => {
+  const run = await lead(t);
+  const first = await run.dispatch([researchTask("stable-research")]);
+  await settleResearch(run, first.contracts);
+  await assert.rejects(run.dispatch([researchTask("stable-research")]), /Duplicate research task id across delegate batches/);
+});
+
+test("Lead-facing delegate schema does not expose assignment IDs", () => {
+  const tool = createWikiDelegateStartTool(async () => ({ accepted: true }));
+  assert.doesNotMatch(JSON.stringify(tool.parameters), /assignmentIds/);
+  assert.ok(!tool.promptGuidelines?.some((line) => line.includes("assignmentIds")));
 });
 
 test("discovery blockers close through a supplement before the write wave", async (t) => {

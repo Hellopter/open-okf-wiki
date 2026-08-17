@@ -14,10 +14,11 @@ source copies, or alternate plans.
    and candidate semantic domain. Keep source names as provenance scopes; do
    not promote a repository name to a domain without evidence.
 2. Start one discovery logical wave for all ready, independent coverage
-   assignments. Give each task disjoint `assignmentIds`, explicit source,
-   domain, and lens scopes, a stop condition, and a role-specific Markdown
-   handoff. Queue the complete ready wave in one `wiki_delegate_start`;
-   runtime concurrency controls actual sessions and retries remain attempts.
+   assignments. Give each task explicit source, domain, and lens scopes, a
+   stop condition, and a role-specific Markdown handoff. The host assigns
+   opaque coverage IDs and carries them into the leaf contract. Queue the
+   complete ready wave in one `wiki_delegate_start`; runtime concurrency
+   controls actual sessions and retries remain attempts.
 3. Collect discovery and reconcile taxonomy once, then submit the compact
    `wiki_taxonomy` checkpoint before `wiki_plan`. Record
    merge/split/rename decisions, source-local detail, cross-source relations,

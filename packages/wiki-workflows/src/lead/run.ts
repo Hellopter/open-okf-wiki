@@ -29,7 +29,7 @@ import {
 } from "../wiki-publication-seal.js";
 import { sameStringSet, stableStringify } from "../util.js";
 import { projectWikiBoard, renderWikiBoard, wikiLeadMayWrite, wikiOpenResearchBlockerIds, type WikiBoardProjectionInput, type WikiBoardTaxonomyCheckpoint, type WikiBoardTaxonomyDecision } from "./board.js";
-import { assertDispatchable } from "./dispatch.js";
+import { assertDispatchable, type WikiDispatchTaskInput } from "./dispatch.js";
 import { UnsupportedWikiRunVersionError, WIKI_FORMAT } from "../run-ledger.js";
 
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -290,27 +290,48 @@ export class WikiLeadRun {
   async dispatch(values: readonly unknown[]): Promise<{ batchId: number; contracts: WikiDelegateContract[] }> {
     return await this.serial(async () => {
       await this.recover();
+      const batchId = this.state.delegates.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1);
+      if (!Number.isSafeInteger(batchId)) throw new Error("Delegate batch identity is exhausted");
+      const existingResearchTasks = this.state.delegates.batches.flatMap((batch) => batch.tasks)
+        .filter((item) => item.task.role === "research")
+        .map((item) => {
+          const task = item.task;
+          if (task.role !== "research") throw new Error("Internal research task projection mismatch");
+          const receipt = item?.receipt;
+          return {
+            id: task.id,
+            mode: task.mode,
+            assignmentIds: task.assignmentIds,
+            resolvesIds: task.resolvesIds,
+            ...(receipt ? { receipt: {
+              status: receipt.status,
+              ...(receipt.error ? { error: { code: receipt.error.code } } : {}),
+              ...(receipt.gaps ? { gaps: receipt.gaps } : {}),
+              ...(receipt.followups ? { followups: receipt.followups.map((followup) => ({ id: followup.id })) } : {}),
+            } } : {}),
+          };
+      });
+      const dispatchTasks: WikiDispatchTaskInput[] = values.map(dispatchTaskInput)
+        .map((task, index) => expandDispatchTask(task, this.state.spec, existingResearchTasks, `a-b${batchId}-t${index + 1}`) as WikiDispatchTaskInput);
       assertDispatchable({
-        tasks: values.map(dispatchTaskInput),
+        tasks: dispatchTasks,
         spec: this.state.spec,
         pendingWritePaths: pendingWritePaths(this.state),
         knownContextRefs: knownContextRefs(this.state),
         delegatedTasks: delegatedTaskCount(this.state),
         delegateBatches: this.state.delegates.batches.length,
         maxDelegatedTasks: this.maxDelegatedTasks,
-        existingResearchTasks: this.state.delegates.batches.flatMap((batch) => batch.tasks)
-          .map((task) => task.task)
-          .filter((task) => task.role === "research")
-          .map((task) => ({ id: task.id, mode: task.mode, assignmentIds: task.assignmentIds, resolvesIds: task.resolvesIds })),
+        existingResearchTasks,
         knownResearchBlockerIds: wikiOpenResearchBlockerIds(this.state.delegates.batches.flatMap((batch) => batch.tasks).map(researchBlockerTask)),
       });
       if ((values.some((value) => taskRole(value) === "write" || taskRole(value) === "review"))
         && (!this.state.taxonomy?.accepted || !this.state.spec || !researchReady(this.state))) {
         throw new Error("Wiki write/review dispatch requires an accepted taxonomy, WikiSpec, and complete research wave");
       }
-      const parsed = values.map((value) => parseWikiDelegateTask(expandDispatchTask(value, this.state.spec)));
-      const batchId = this.state.delegates.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1);
-      if (!Number.isSafeInteger(batchId)) throw new Error("Delegate batch identity is exhausted");
+      const parsed = dispatchTasks.map((value) => {
+        const { cluster: _cluster, ...contractInput } = value;
+        return parseWikiDelegateTask(contractInput);
+      });
       const reviewTree = parsed.some((task) => task.role === "review") ? await this.prepareReviewTree() : undefined;
       const contracts = parsed.map((task) => createWikiDelegateContract(
         batchId,
@@ -1004,7 +1025,7 @@ function boardInput(state: WikiLeadRunState): WikiBoardProjectionInput {
     },
   };
 }
-function dispatchTaskInput(value: unknown): { id?: string; role?: string; instruction?: string; cluster?: string; writePaths?: readonly string[]; reviewPaths?: readonly string[]; contextRefs?: readonly string[]; mode?: "discovery" | "supplement"; assignmentIds?: readonly string[]; domainScopeIds?: readonly string[]; lensScopeIds?: readonly string[]; resolvesIds?: readonly string[] } {
+function dispatchTaskInput(value: unknown): { id?: string; role?: string; instruction?: string; cluster?: string; writePaths?: readonly string[]; reviewPaths?: readonly string[]; sourceScopeIds?: readonly string[]; contextRefs?: readonly string[]; mode?: "discovery" | "supplement"; domainScopeIds?: readonly string[]; lensScopeIds?: readonly string[]; resolvesIds?: readonly string[] } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const task = value as Record<string, unknown>;
   const id = typeof task.id === "string" ? task.id : undefined;
@@ -1016,12 +1037,13 @@ function dispatchTaskInput(value: unknown): { id?: string; role?: string; instru
     ...(typeof task.cluster === "string" ? { cluster: task.cluster } : {}),
     ...(Array.isArray(task.writePaths) ? { writePaths: task.writePaths.filter((path): path is string => typeof path === "string") } : {}),
     ...(Array.isArray(task.reviewPaths) ? { reviewPaths: task.reviewPaths.filter((path): path is string => typeof path === "string") } : {}),
+    ...(Array.isArray(task.sourceScopeIds) ? { sourceScopeIds: task.sourceScopeIds.filter((path): path is string => typeof path === "string") } : {}),
     ...(Array.isArray(task.contextRefs) ? { contextRefs: task.contextRefs.filter((path): path is string => typeof path === "string") } : {}),
-    ...(role === "research" ? { mode: task.mode === "supplement" ? "supplement" : "discovery", assignmentIds: Array.isArray(task.assignmentIds) ? task.assignmentIds.filter((value): value is string => typeof value === "string") : (id ? [id] : []), domainScopeIds: Array.isArray(task.domainScopeIds) ? task.domainScopeIds.filter((value): value is string => typeof value === "string") : [], lensScopeIds: Array.isArray(task.lensScopeIds) ? task.lensScopeIds.filter((value): value is string => typeof value === "string") : [], resolvesIds: Array.isArray(task.resolvesIds) ? task.resolvesIds.filter((value): value is string => typeof value === "string") : [] } : {}),
+    ...(role === "research" ? { mode: task.mode === "supplement" ? "supplement" : "discovery", domainScopeIds: Array.isArray(task.domainScopeIds) ? task.domainScopeIds.filter((value): value is string => typeof value === "string") : [], lensScopeIds: Array.isArray(task.lensScopeIds) ? task.lensScopeIds.filter((value): value is string => typeof value === "string") : [], resolvesIds: Array.isArray(task.resolvesIds) ? task.resolvesIds.filter((value): value is string => typeof value === "string") : [] } : {}),
   };
 }
 
-function expandDispatchTask(value: unknown, spec: WikiSpec | undefined): unknown {
+function expandDispatchTask(value: unknown, spec: WikiSpec | undefined, existingResearchTasks: readonly { id: string; mode: "discovery" | "supplement"; assignmentIds: readonly string[]; resolvesIds: readonly string[]; receipt?: { status: "complete" | "incomplete" | "failed"; error?: { code?: string }; gaps?: readonly unknown[]; followups?: readonly { id: string }[] } }[] = [], hostAssignmentId?: string): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const task = { ...(value as Record<string, unknown>) };
   const cluster = typeof task.cluster === "string" ? task.cluster : undefined;
@@ -1030,16 +1052,30 @@ function expandDispatchTask(value: unknown, spec: WikiSpec | undefined): unknown
   if (!Array.isArray(task.contextRefs)) task.contextRefs = [];
   if (task.role === "research") {
     if (task.mode !== "discovery" && task.mode !== "supplement") task.mode = "discovery";
-    if (!Array.isArray(task.assignmentIds)) task.assignmentIds = typeof task.id === "string" ? [task.id] : [];
+    const resolvesIds = Array.isArray(task.resolvesIds) ? task.resolvesIds.filter((value): value is string => typeof value === "string") : [];
+    const blockerAssignments = new Map<string, readonly string[]>();
+    for (const prior of existingResearchTasks) {
+      const receipt = prior.receipt;
+      const blockerIds = [
+        ...(receipt?.error?.code && !(receipt.gaps?.length || receipt.followups?.length) ? [`failure:${prior.id}:${receipt.error.code}`] : []),
+        ...(receipt?.gaps ?? []).map((_gap, index) => `gap:${prior.id}:${index + 1}`),
+        ...(receipt?.followups ?? []).map((followup) => followup.id),
+      ];
+      for (const blockerId of blockerIds) blockerAssignments.set(blockerId, prior.assignmentIds);
+    }
+    task.assignmentIds = task.mode === "supplement"
+      ? [...new Set(resolvesIds.flatMap((blockerId) => blockerAssignments.get(blockerId) ?? []))]
+      : (hostAssignmentId ? [hostAssignmentId] : []);
     if (!Array.isArray(task.domainScopeIds)) task.domainScopeIds = [];
     if (!Array.isArray(task.lensScopeIds)) task.lensScopeIds = [];
-    if (!Array.isArray(task.resolvesIds)) task.resolvesIds = [];
+    task.resolvesIds = resolvesIds;
     return task;
   }
   if (task.role !== "write" && task.role !== "review") return task;
   if (!cluster?.trim()) return task;
   if (!spec) throw new Error(`Submit an accepted WikiSpec before delegating ${task.role} tasks`);
   const paths = wikiSpecClusterPaths(spec, cluster).map((page) => `wiki/${page}`);
+  if (!paths.length) return { ...task, cluster };
   if (task.role === "write") return { ...task, writePaths: paths };
   return { ...task, reviewPaths: paths };
 }

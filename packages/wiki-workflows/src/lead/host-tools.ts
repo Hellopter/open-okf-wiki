@@ -22,7 +22,6 @@ export interface WikiLeadDelegateTask {
   sourceScopeIds: string[];
   contextRefs: string[];
   mode?: "discovery" | "supplement";
-  assignmentIds?: string[];
   domainScopeIds?: string[];
   lensScopeIds?: string[];
   resolvesIds?: string[];
@@ -33,7 +32,6 @@ const delegateTaskSchema = Type.Union([
     ...delegateTaskBase,
     role: StringEnum(["research"]),
     mode: StringEnum(["discovery", "supplement"]),
-    assignmentIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
     domainScopeIds: Type.Array(Type.String()),
     lensScopeIds: Type.Array(Type.String()),
     resolvesIds: Type.Array(Type.String()),
@@ -121,7 +119,7 @@ export function createWikiDelegateStartTool(start: (tasks: WikiLeadDelegateTask[
       "When chaining delegated work, populate contextRefs from the exact nodeId values in prior receipt.outputs entries.",
       "Do not mix write and review tasks in one wiki_delegate_start batch.",
       "write and review tasks require a current Spec cluster id; the host expands it to wiki/... paths.",
-      "The first research wave uses mode discovery and mutually exclusive assignmentIds. A supplement must use mode supplement and resolvesIds for explicit unresolved gap, conflict, or failure IDs; do not repeat broad research.",
+      "The host assigns opaque research coverage IDs. Use mode discovery for the first research wave. A supplement must use mode supplement and resolvesIds for explicit unresolved gap, conflict, or failure IDs; do not repeat broad research.",
     ],
     parameters: Type.Object({ tasks: Type.Array(delegateTaskSchema, { minItems: 1 }) }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,

@@ -18,6 +18,7 @@ export interface WikiDispatchTaskInput {
   writePaths?: readonly string[];
   reviewPaths?: readonly string[];
   contextRefs?: readonly string[];
+  sourceScopeIds?: readonly string[];
   mode?: "discovery" | "supplement";
   assignmentIds?: readonly string[];
   domainScopeIds?: readonly string[];
@@ -37,6 +38,12 @@ export interface WikiDispatchInput {
     mode: "discovery" | "supplement";
     assignmentIds: readonly string[];
     resolvesIds: readonly string[];
+    receipt?: {
+      status: "complete" | "incomplete" | "failed";
+      error?: { code?: string };
+      gaps?: readonly unknown[];
+      followups?: readonly { id: string }[];
+    };
   }[];
   knownResearchBlockerIds?: readonly string[];
 }
@@ -83,12 +90,15 @@ export function assertDispatchable(input: WikiDispatchInput): void {
   const pending = new Set(pendingWritePaths);
   const priorResearch = input.existingResearchTasks ?? [];
   const priorAssignments = new Set(priorResearch.flatMap((task) => task.assignmentIds));
+  const priorResearchTaskIds = new Set(priorResearch.map((task) => task.id));
   const blockerIds = new Set(input.knownResearchBlockerIds ?? []);
   for (const task of tasks) {
     if (task.role !== "research") continue;
+    const taskId = task.id ?? "";
+    if (priorResearchTaskIds.has(taskId)) throw new Error(`Duplicate research task id across delegate batches: ${taskId}`);
     const mode = task.mode ?? "discovery";
     const assignments = [...(task.assignmentIds ?? [])];
-    if (!assignments.length) throw new Error(`Research task ${task.id} requires assignmentIds`);
+    if (!assignments.length) throw new Error(`Research task ${task.id} has no host-owned assignmentIds`);
     if (new Set(assignments).size !== assignments.length) throw new Error(`Research task ${task.id} assignmentIds must be unique`);
     const resolves = [...(task.resolvesIds ?? [])];
     if (mode === "supplement") {
