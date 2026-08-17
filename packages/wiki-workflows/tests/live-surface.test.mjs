@@ -100,8 +100,8 @@ test("widget shows a cluster label when the task id is a cluster or wiki path", 
   assert.deepEqual(lines, [
     "◆ lead  synthesizing",
     "batch 1  0/3",
-    "  ◆ write  core/runtime  wiki/core/runtime/concept.md",
-    "  · review  core/runtime  wiki/core/runtime/flows.md",
+    "  ◆ write  wiki/core/runtime/concept.md",
+    "  · review  wiki/core/runtime/flows.md",
     "  · research  core/runtime",
   ]);
   const withoutPaths = wikiWidgetLines(view({

@@ -21,12 +21,22 @@ export interface WikiLeadDelegateTask {
   cluster?: string;
   sourceScopeIds: string[];
   contextRefs: string[];
+  mode?: "discovery" | "supplement";
+  assignmentIds?: string[];
+  domainScopeIds?: string[];
+  lensScopeIds?: string[];
+  resolvesIds?: string[];
 }
 
 const delegateTaskSchema = Type.Union([
   Type.Object({
     ...delegateTaskBase,
     role: StringEnum(["research"]),
+    mode: StringEnum(["discovery", "supplement"]),
+    assignmentIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    domainScopeIds: Type.Array(Type.String()),
+    lensScopeIds: Type.Array(Type.String()),
+    resolvesIds: Type.Array(Type.String()),
   }, { additionalProperties: false }),
   Type.Object({
     ...delegateTaskBase,
@@ -40,12 +50,16 @@ const delegateTaskSchema = Type.Union([
   }, { additionalProperties: false }),
 ]);
 
+const taxonomyDecisionSchema = Type.Object({
+  sourceScopeId: Type.String({ minLength: 1 }),
+  domainId: Type.String({ minLength: 1 }),
+  conceptIds: Type.Array(Type.String({ minLength: 1 })),
+}, { additionalProperties: false });
+
 const reviewFindingSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 128, description: "Stable finding ID referenced by the Markdown handoff" }),
   path: Type.String({ minLength: 1, description: "Assigned candidate path for this finding" }),
   severity: StringEnum(["critical", "major", "minor"], { description: "Finding severity" }),
-  message: Type.String({ minLength: 1, description: "What is wrong on the page" }),
-  evidence: Type.Array(Type.String({ minLength: 1 }), { description: "Source locators supporting the finding" }),
-  suggestion: Type.String({ minLength: 1, description: "Concrete repair the writer should make" }),
 }, { additionalProperties: false });
 
 export function createWikiPlanTool(save: (spec: unknown) => Promise<unknown>): ToolDefinition<any, any, any> {
@@ -72,17 +86,42 @@ export function createWikiPlanTool(save: (spec: unknown) => Promise<unknown>): T
   } as ToolDefinition<any, any, any>;
 }
 
+export function createWikiTaxonomyTool(save: (taxonomy: unknown) => Promise<unknown>): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_taxonomy",
+    label: "Accept Wiki taxonomy",
+    description: "Accept the source-qualified taxonomy checkpoint before submitting wiki_plan. The host records its digest and conflict IDs.",
+    promptSnippet: "Accept the source-qualified taxonomy checkpoint before wiki_plan",
+    promptGuidelines: [
+      "Call wiki_taxonomy after the discovery research wave and before wiki_plan.",
+      "Keep sourceScopeId, domainId, and conceptIds source-qualified and evidence-backed.",
+      "Record unresolved conflict IDs instead of silently merging minority evidence.",
+    ],
+    parameters: Type.Object({
+      revision: Type.Integer({ minimum: 1 }),
+      decisions: Type.Array(taxonomyDecisionSchema, { minItems: 1 }),
+      conflictIds: Type.Array(Type.String({ minLength: 1 })),
+    }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
+    async execute(_id, params) {
+      try { return toolResult(await save(params)); }
+      catch (error) { rejectWikiTool("wiki_taxonomy", error); }
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
 export function createWikiDelegateStartTool(start: (tasks: WikiLeadDelegateTask[]) => Promise<unknown>): ToolDefinition<any, any, any> {
   return {
     name: "wiki_delegate_start",
     label: "Start Wiki tasks",
-    description: "Start one bounded asynchronous batch of Wiki research, writing, or review tasks and return its batch ID immediately.",
-    promptSnippet: "Start one bounded asynchronous research, write, or review batch",
+    description: "Durably queue one logical wave of all ready independent Wiki tasks; runtime concurrency controls actual sessions and retries remain attempts.",
+    promptSnippet: "Queue one logical discovery, supplement, write, or review wave",
     promptGuidelines: [
       "Each instruction must state its goal, scope, expected artifact or page, and stop condition.",
       "When chaining delegated work, populate contextRefs from the exact nodeId values in prior receipt.outputs entries.",
       "Do not mix write and review tasks in one wiki_delegate_start batch.",
       "write and review tasks require a current Spec cluster id; the host expands it to wiki/... paths.",
+      "The first research wave uses mode discovery and mutually exclusive assignmentIds. A supplement must use mode supplement and resolvesIds for explicit unresolved gap, conflict, or failure IDs; do not repeat broad research.",
     ],
     parameters: Type.Object({ tasks: Type.Array(delegateTaskSchema, { minItems: 1 }) }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,

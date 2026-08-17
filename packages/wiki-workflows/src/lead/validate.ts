@@ -390,7 +390,12 @@ async function validatePageContent(
     return undefined;
   }
 
-  const sources = await validateFrontmatter(page, wikiSpecPageType(page)!, parsed.frontmatter, roots, mode, issues);
+  const pageType = wikiSpecPageType(page);
+  if (!pageType) {
+    issue(issues, "spec-page", `Page is not a legal Source -> Domain -> Concept path: ${page}`, page);
+    return undefined;
+  }
+  const sources = await validateFrontmatter(page, pageType, parsed.frontmatter, roots, mode, issues);
   await validateBody(page, parsed.body, roots, plannedTargets, sources, issues);
   validateRequiredSections(page, parsed.body, requiredSections, issues);
   return parsed.body;

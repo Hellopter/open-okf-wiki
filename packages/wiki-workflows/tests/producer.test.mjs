@@ -18,7 +18,7 @@ async function workspace(t) {
 }
 
 function spec() {
-  return { pages: ["overview.md", "runtime/domain.md", "runtime/lifecycle/concept.md"] };
+  return { pages: ["overview.md", "api/source.md", "api/runtime/domain.md"] };
 }
 
 function content(type, title) {
@@ -33,20 +33,30 @@ function leadFence(request) {
   };
 }
 
+async function acceptTaxonomy(lead) {
+  await lead.saveTaxonomy({
+    revision: 1,
+    decisions: [{ sourceScopeId: ".", domainId: "runtime", conceptIds: [] }],
+    conflictIds: [],
+  });
+}
+
 async function completeCandidate(request) {
   const lead = await WikiLeadRun.open({
     workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
     policy: request.generation, requiredSections: request.generation.templates.requiredSections,
+    allowedSourceScopeIds: ["."],
     ...leadFence(request),
   });
+  await acceptTaxonomy(lead);
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  await lead.replacePage({ path: "wiki/runtime/domain.md", content: content("Domain", "Runtime domain"), actor: "lead" });
-  await lead.replacePage({ path: "wiki/runtime/lifecycle/concept.md", content: content("Concept", "Runtime"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/api/source.md", content: content("Source", "API"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/api/runtime/domain.md", content: content("Domain", "Runtime domain"), actor: "lead" });
   await acceptReviews(lead, [
     ["wiki/overview.md"],
-    ["wiki/runtime/domain.md"],
-    ["wiki/runtime/lifecycle/concept.md"],
+    ["wiki/api/source.md"],
+    ["wiki/api/runtime/domain.md"],
   ]);
 }
 
@@ -377,8 +387,10 @@ test("cancel fences direct Candidate mutations from an abort-ignoring Lead", asy
     const lead = await WikiLeadRun.open({
       workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
       policy: request.generation, requiredSections: request.generation.templates.requiredSections,
+      allowedSourceScopeIds: ["."],
       ...leadFence(request),
     });
+    await acceptTaxonomy(lead);
     await lead.saveSpec(spec());
     ready.resolve();
     await release.promise;

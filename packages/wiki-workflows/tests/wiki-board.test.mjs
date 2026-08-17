@@ -19,8 +19,8 @@ function sampleModel() {
         terminalWriteOrReviewCount: 0,
       },
       {
-        id: "core/runtime",
-        paths: ["core/runtime/concept.md", "core/runtime/module.md"],
+        id: "source/core/runtime",
+        paths: ["source/core/runtime/concept.md", "source/core/runtime/module.md"],
         status: "writing",
         terminalWriteOrReviewCount: 1,
       },
@@ -29,7 +29,7 @@ function sampleModel() {
       {
         id: "research-1",
         role: "research",
-        paths: ["core/runtime/concept.md"],
+        paths: ["source/core/runtime/concept.md"],
         phase: "terminal",
         receiptStatus: "complete",
       },
@@ -44,13 +44,13 @@ function sampleModel() {
       {
         id: "write-2",
         role: "write",
-        paths: ["core/runtime/concept.md"],
+        paths: ["source/core/runtime/concept.md"],
         phase: "running",
       },
     ],
     remaining: [
-      "write core/runtime/module.md",
-      "review core/runtime/concept.md",
+      "write source/core/runtime/module.md",
+      "review source/core/runtime/concept.md",
     ],
   };
 }
@@ -70,9 +70,9 @@ const expectedBoard = `\
 
 - \`core\` **accepted** (writes/reviews: 0)
   - overview.md
-- \`core/runtime\` **writing** (writes/reviews: 1)
-  - core/runtime/concept.md
-  - core/runtime/module.md
+- \`source/core/runtime\` **writing** (writes/reviews: 1)
+  - source/core/runtime/concept.md
+  - source/core/runtime/module.md
 
 ## Tasks
 
@@ -82,8 +82,8 @@ const expectedBoard = `\
 
 ## Remaining
 
-- write core/runtime/module.md
-- review core/runtime/concept.md
+- write source/core/runtime/module.md
+- review source/core/runtime/concept.md
 `;
 
 test("renders a known-good board model as stable Markdown", () => {
@@ -95,7 +95,7 @@ test("empty remaining renders - none", () => {
   model.remaining = [];
   const rendered = renderWikiBoard(model);
   assert.match(rendered, /^## Remaining\n\n- none\n$/m);
-  assert.equal(rendered.includes("- write core/runtime/module.md"), false);
+  assert.equal(rendered.includes("- write source/core/runtime/module.md"), false);
 });
 
 test("blocked cluster shows blocked when terminalWriteOrReviewCount is at least 3", () => {
@@ -108,17 +108,17 @@ test("blocked cluster shows blocked when terminalWriteOrReviewCount is at least 
     delegates: {
       batches: [{
         tasks: [
-          { id: "w1", role: "write", phase: "terminal", writePaths: ["wiki/core/runtime/concept.md"], receipt: { status: "complete" } },
-          { id: "w2", role: "write", phase: "terminal", writePaths: ["wiki/core/runtime/concept.md"], receipt: { status: "complete" } },
-          { id: "r1", role: "review", phase: "terminal", reviewPaths: ["wiki/core/runtime/concept.md"], receipt: { status: "complete" } },
+          { id: "w1", role: "write", phase: "terminal", writePaths: ["wiki/source/core/runtime/concept.md"], receipt: { status: "complete" } },
+          { id: "w2", role: "write", phase: "terminal", writePaths: ["wiki/source/core/runtime/concept.md"], receipt: { status: "complete" } },
+          { id: "r1", role: "review", phase: "terminal", reviewPaths: ["wiki/source/core/runtime/concept.md"], receipt: { status: "complete" } },
         ],
       }],
     },
   });
-  const runtime = model.clusters.find((cluster) => cluster.id === "core/runtime");
+  const runtime = model.clusters.find((cluster) => cluster.id === "source/core/runtime");
   assert.equal(runtime.status, "blocked");
   assert.equal(runtime.terminalWriteOrReviewCount, 3);
-  assert.match(renderWikiBoard(model), /`core\/runtime` \*\*blocked\*\* \(writes\/reviews: 3\)/);
+  assert.match(renderWikiBoard(model), /`source\/core\/runtime` \*\*blocked\*\* \(writes\/reviews: 3\)/);
   assert.match(renderWikiBoard(model), /`_root` \*\*unplanned\*\*/);
 });
 
@@ -130,25 +130,25 @@ test("renderWikiBoard prints projected status without overriding accepted to blo
     compactionObserved: false,
     spec: projectionSpec(),
     reviews: [
-      { verdict: "pass", reviewedPaths: ["wiki/core/domain.md"] },
+      { verdict: "pass", reviewedPaths: ["wiki/source/core/domain.md"] },
     ],
     delegates: {
       batches: [{
         tasks: [
-          { id: "w1", role: "write", phase: "terminal", writePaths: ["wiki/core/domain.md"], receipt: { status: "complete" } },
-          { id: "w2", role: "write", phase: "terminal", writePaths: ["wiki/core/domain.md"], receipt: { status: "complete" } },
-          { id: "r1", role: "review", phase: "terminal", reviewPaths: ["wiki/core/domain.md"], receipt: { status: "complete" } },
+          { id: "w1", role: "write", phase: "terminal", writePaths: ["wiki/source/core/domain.md"], receipt: { status: "complete" } },
+          { id: "w2", role: "write", phase: "terminal", writePaths: ["wiki/source/core/domain.md"], receipt: { status: "complete" } },
+          { id: "r1", role: "review", phase: "terminal", reviewPaths: ["wiki/source/core/domain.md"], receipt: { status: "complete" } },
         ],
       }],
     },
   });
-  const core = model.clusters.find((cluster) => cluster.id === "core");
+  const core = model.clusters.find((cluster) => cluster.id === "source/core");
   assert.equal(core.status, "accepted");
   assert.equal(core.terminalWriteOrReviewCount, 3);
-  assert.match(renderWikiBoard(model), /`core` \*\*accepted\*\* \(writes\/reviews: 3\)/);
+  assert.match(renderWikiBoard(model), /`source\/core` \*\*accepted\*\* \(writes\/reviews: 3\)/);
 });
 
-function projectionSpec(pages = ["overview.md", "core/domain.md", "core/runtime/concept.md"]) {
+function projectionSpec(pages = ["overview.md", "source/source.md", "source/core/domain.md", "source/core/runtime/concept.md"]) {
   return parseWikiSpec({ pages });
 }
 
@@ -160,15 +160,15 @@ test("projector maps a DTO to accepted, blocked, and remaining cluster work", ()
     compactionObserved: false,
     spec: projectionSpec(),
     reviews: [
-      { verdict: "pass", reviewedPaths: ["wiki/core/domain.md"] },
-      { verdict: "changes_requested", reviewedPaths: ["wiki/core/runtime/concept.md"] },
+      { verdict: "pass", reviewedPaths: ["wiki/source/core/domain.md"] },
+      { verdict: "changes_requested", reviewedPaths: ["wiki/source/core/runtime/concept.md"] },
     ],
     delegates: {
       batches: [{
         tasks: [
-          { id: "w1", role: "write", phase: "terminal", writePaths: ["wiki/core/runtime/concept.md"], receipt: { status: "complete" } },
-          { id: "w2", role: "write", phase: "terminal", writePaths: ["wiki/core/runtime/concept.md"], receipt: { status: "complete" } },
-          { id: "r1", role: "review", phase: "terminal", reviewPaths: ["wiki/core/runtime/concept.md"], receipt: { status: "complete" } },
+          { id: "w1", role: "write", phase: "terminal", writePaths: ["wiki/source/core/runtime/concept.md"], receipt: { status: "complete" } },
+          { id: "w2", role: "write", phase: "terminal", writePaths: ["wiki/source/core/runtime/concept.md"], receipt: { status: "complete" } },
+          { id: "r1", role: "review", phase: "terminal", reviewPaths: ["wiki/source/core/runtime/concept.md"], receipt: { status: "complete" } },
         ],
       }],
     },
@@ -176,17 +176,19 @@ test("projector maps a DTO to accepted, blocked, and remaining cluster work", ()
   const byId = Object.fromEntries(model.clusters.map((cluster) => [cluster.id, cluster]));
   assert.equal(byId._root.status, "unplanned");
   assert.deepEqual(byId._root.paths, ["overview.md"]);
-  assert.equal(byId.core.status, "accepted");
-  assert.equal(byId["core/runtime"].status, "blocked");
-  assert.equal(byId["core/runtime"].terminalWriteOrReviewCount, 3);
+  assert.equal(byId["source/core"].status, "accepted");
+  assert.equal(byId["source/core/runtime"].status, "blocked");
+  assert.equal(byId["source/core/runtime"].terminalWriteOrReviewCount, 3);
   assert.deepEqual(model.remaining, [
     "write _root",
     "review _root",
-    "review core/runtime",
-    "changes_requested core/runtime",
-    "blocked core/runtime",
+    "write source/_source",
+    "review source/_source",
+    "review source/core/runtime",
+    "changes_requested source/core/runtime",
+    "blocked source/core/runtime",
   ]);
-  assert.equal(model.directWriteAllowed, true);
+  assert.equal(model.directWriteAllowed, false);
   assert.equal(model.delegatedTaskCount, 3);
   assert.equal(model.delegateBatchCount, 1);
 });
@@ -198,19 +200,19 @@ test("directWriteAllowed requires one domain, at most three pages, and no compac
     candidateRevision: 1,
     compactionObserved: false,
   };
-  assert.equal(projectWikiBoard({ ...input, spec: projectionSpec(["overview.md", "core/domain.md"]) }).directWriteAllowed, true);
+  assert.equal(projectWikiBoard({ ...input, spec: projectionSpec(["overview.md", "source/source.md", "source/core/domain.md"]) }).directWriteAllowed, true);
   assert.equal(projectWikiBoard({
     ...input,
     compactionObserved: true,
-    spec: projectionSpec(["overview.md", "core/domain.md"]),
+    spec: projectionSpec(["overview.md", "source/source.md", "source/core/domain.md"]),
   }).directWriteAllowed, false);
   assert.equal(projectWikiBoard({
     ...input,
-    spec: projectionSpec(["overview.md", "core/domain.md", "core/runtime/concept.md", "core/runtime/flows.md"]),
+    spec: projectionSpec(["overview.md", "source/source.md", "source/core/domain.md", "source/core/runtime/concept.md", "source/core/runtime/flows.md"]),
   }).directWriteAllowed, false);
   assert.equal(projectWikiBoard({
     ...input,
-    spec: projectionSpec(["overview.md", "core/domain.md", "billing/domain.md"]),
+    spec: projectionSpec(["overview.md", "source/source.md", "source/core/domain.md", "source/billing/domain.md"]),
   }).directWriteAllowed, false);
 });
 
@@ -225,7 +227,7 @@ test("task line includes batch n when batchId is present and omits it otherwise"
       batches: [{
         batchId: 2,
         tasks: [
-          { id: "w1", role: "write", phase: "running", writePaths: ["wiki/core/domain.md"] },
+          { id: "w1", role: "write", phase: "running", writePaths: ["wiki/source/core/domain.md"] },
         ],
       }],
     },
@@ -242,7 +244,7 @@ test("task line includes batch n when batchId is present and omits it otherwise"
     delegates: {
       batches: [{
         tasks: [
-          { id: "w1", role: "write", phase: "running", writePaths: ["wiki/core/domain.md"] },
+          { id: "w1", role: "write", phase: "running", writePaths: ["wiki/source/core/domain.md"] },
         ],
       }],
     },
@@ -255,8 +257,8 @@ test("sorts clusters, cluster paths, and tasks independently of input order", ()
   const model = sampleModel();
   model.clusters = [
     {
-      id: "core/runtime",
-      paths: ["core/runtime/module.md", "core/runtime/concept.md"],
+      id: "source/core/runtime",
+      paths: ["source/core/runtime/module.md", "source/core/runtime/concept.md"],
       status: "writing",
       terminalWriteOrReviewCount: 1,
     },
@@ -269,4 +271,62 @@ test("sorts clusters, cluster paths, and tasks independently of input order", ()
   ];
   model.tasks = [...model.tasks].reverse();
   assert.equal(renderWikiBoard(model), expectedBoard);
+});
+
+test("projects taxonomy, artifact context, assignment coverage, and blocker followups", () => {
+  const model = projectWikiBoard({
+    runId: "run-1",
+    specRevision: 1,
+    taxonomy: {
+      accepted: true,
+      revision: 2,
+      decisions: [{ sourceScopeId: "api", domainId: "runtime", conceptIds: ["session"] }],
+      conflictIds: ["conflict-runtime"],
+      digest: "a".repeat(64),
+    },
+    candidateRevision: 1,
+    compactionObserved: true,
+    spec: projectionSpec(["overview.md", "api/source.md", "api/runtime/domain.md"]),
+    delegates: { batches: [{ batchId: 1, tasks: [{
+      id: "research-runtime", role: "research", phase: "terminal", mode: "discovery",
+      sourceScopeIds: ["api"], contextRefs: ["b1-research-runtime"], assignmentIds: ["api-runtime"],
+      domainScopeIds: ["runtime"], lensScopeIds: ["entry"],
+      receipt: {
+        status: "incomplete", outputs: [{ nodeId: "b1-research-runtime", attempt: 1 }],
+        completedAssignmentIds: [], coverage: ["api-entry"], needsFollowup: true,
+        followups: [{ id: "gap-runtime", kind: "evidence_gap", question: "Where is retry state persisted?", sourceScopeIds: ["api"] }],
+      },
+    }] }] },
+  });
+  assert.equal(model.taxonomy?.revision, 2);
+  assert.deepEqual(model.tasks[0].artifactRefs?.map((ref) => ref.nodeId), ["b1-research-runtime"]);
+  assert.deepEqual(model.tasks[0].contextRefs, ["b1-research-runtime"]);
+  assert.deepEqual(model.blockers, ["gap-runtime"]);
+  assert.match(renderWikiBoard(model), /b1-research-runtime/);
+  assert.match(renderWikiBoard(model), /Where is retry state persisted\?/);
+});
+
+test("subtracts blockers resolved by a completed supplement", () => {
+  const model = projectWikiBoard({
+    runId: "run-1",
+    specRevision: 1,
+    candidateRevision: 1,
+    compactionObserved: true,
+    spec: projectionSpec(["overview.md", "api/source.md", "api/runtime/domain.md"]),
+    delegates: { batches: [{ batchId: 1, tasks: [
+      {
+        id: "discover", role: "research", phase: "terminal", mode: "discovery", assignmentIds: ["discover"],
+        receipt: {
+          status: "complete", outputs: [], completedAssignmentIds: ["discover"], coverage: ["discover"],
+          needsFollowup: true, followups: [{ id: "gap-discover", kind: "evidence_gap", question: "Need evidence", sourceScopeIds: ["api"] }],
+        },
+      },
+      {
+        id: "supplement", role: "research", phase: "terminal", mode: "supplement", assignmentIds: ["supplement"], resolvesIds: ["gap-discover"],
+        receipt: { status: "complete", outputs: [], completedAssignmentIds: ["supplement"], coverage: ["supplement"], needsFollowup: false, followups: [] },
+      },
+    ] }] },
+  });
+  assert.deepEqual(model.blockers, []);
+  assert.equal(renderWikiBoard(model).includes("gap-discover"), false);
 });

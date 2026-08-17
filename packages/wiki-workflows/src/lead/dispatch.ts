@@ -8,7 +8,7 @@ import {
   type WikiSpec,
 } from "./spec.js";
 
-const FANOUT = { research: 4, write: 2, review: 2 } as const;
+export type WikiLogicalWave = "discovery" | "supplement" | "write" | "review";
 
 export interface WikiDispatchTaskInput {
   id?: string;
@@ -18,8 +18,12 @@ export interface WikiDispatchTaskInput {
   writePaths?: readonly string[];
   reviewPaths?: readonly string[];
   contextRefs?: readonly string[];
+  mode?: "discovery" | "supplement";
+  assignmentIds?: readonly string[];
+  domainScopeIds?: readonly string[];
+  lensScopeIds?: readonly string[];
+  resolvesIds?: readonly string[];
 }
-
 export interface WikiDispatchInput {
   tasks: readonly WikiDispatchTaskInput[];
   spec?: WikiSpec;
@@ -27,6 +31,14 @@ export interface WikiDispatchInput {
   knownContextRefs?: readonly string[] | ReadonlySet<string>;
   delegatedTasks?: number;
   delegateBatches?: number;
+  maxDelegatedTasks?: number;
+  existingResearchTasks?: readonly {
+    id: string;
+    mode: "discovery" | "supplement";
+    assignmentIds: readonly string[];
+    resolvesIds: readonly string[];
+  }[];
+  knownResearchBlockerIds?: readonly string[];
 }
 
 /** Reject an illegal delegate batch before any contract is created. */
@@ -46,6 +58,10 @@ export function assertDispatchable(input: WikiDispatchInput): void {
 
   const hasWrite = tasks.some((task) => task.role === "write");
   const hasReview = tasks.some((task) => task.role === "review");
+  const hasDiscovery = tasks.some((task) => task.role === "research" && (task.mode ?? "discovery") === "discovery");
+  const hasSupplement = tasks.some((task) => task.role === "research" && task.mode === "supplement");
+  if (hasDiscovery && (hasSupplement || hasWrite || hasReview)) throw new Error("Discovery research may not mix with another research wave, write, or review tasks");
+  if (hasSupplement && (hasWrite || hasReview)) throw new Error("Supplement research may not mix with write or review tasks");
   if (hasWrite && hasReview) throw new Error("A delegate batch may not mix write and review tasks");
 
   const pendingWritePaths = [...(input.pendingWritePaths ?? [])].map(wikiSpecRelativePath);
@@ -53,20 +69,41 @@ export function assertDispatchable(input: WikiDispatchInput): void {
     throw new Error("Wiki review is blocked while delegated Wiki writes are pending");
   }
 
-  const counts = { research: 0, write: 0, review: 0 };
-  for (const task of tasks) {
-    if (task.role === "research" || task.role === "write" || task.role === "review") counts[task.role] += 1;
+  if (input.maxDelegatedTasks !== undefined
+    && (!Number.isSafeInteger(input.maxDelegatedTasks) || input.maxDelegatedTasks < 0)) {
+    throw new Error("maxDelegatedTasks must be a non-negative safe integer");
   }
-  for (const role of ["research", "write", "review"] as const) {
-    if (counts[role] > FANOUT[role]) {
-      throw new Error(`A delegate batch may include at most ${FANOUT[role]} ${role} tasks`);
-    }
+  if (input.maxDelegatedTasks !== undefined && (input.delegatedTasks ?? 0) + tasks.length > input.maxDelegatedTasks) {
+    throw new Error(`Delegated task limit exhausted (${input.maxDelegatedTasks}); ${Math.max(0, input.maxDelegatedTasks - (input.delegatedTasks ?? 0))} task slots remain`);
   }
 
   const spec = input.spec;
   const known = input.knownContextRefs instanceof Set ? input.knownContextRefs : new Set(input.knownContextRefs ?? []);
   const batchWritePaths = new Set<string>();
   const pending = new Set(pendingWritePaths);
+  const priorResearch = input.existingResearchTasks ?? [];
+  const priorAssignments = new Set(priorResearch.flatMap((task) => task.assignmentIds));
+  const blockerIds = new Set(input.knownResearchBlockerIds ?? []);
+  for (const task of tasks) {
+    if (task.role !== "research") continue;
+    const mode = task.mode ?? "discovery";
+    const assignments = [...(task.assignmentIds ?? [])];
+    if (!assignments.length) throw new Error(`Research task ${task.id} requires assignmentIds`);
+    if (new Set(assignments).size !== assignments.length) throw new Error(`Research task ${task.id} assignmentIds must be unique`);
+    const resolves = [...(task.resolvesIds ?? [])];
+    if (mode === "supplement") {
+      if (!resolves.length) throw new Error(`Supplement research task ${task.id} must resolve a gap, conflict, or failure ID`);
+      for (const blocker of resolves) if (!blockerIds.has(blocker)) throw new Error(`Supplement research task ${task.id} references unknown blocker: ${blocker}`);
+      for (const blocker of resolves) blockerIds.delete(blocker);
+    } else if (resolves.length) {
+      throw new Error(`Discovery research task ${task.id} cannot resolve blocker IDs`);
+    }
+    const duplicate = assignments.filter((assignment) => priorAssignments.has(assignment));
+    if (duplicate.length && !resolves.length) {
+      throw new Error(`Research assignment already covered without a blocker: ${duplicate.join(", ")}`);
+    }
+    for (const assignment of assignments) priorAssignments.add(assignment);
+  }
 
   for (const task of tasks) {
     if (task.role === "write" || task.role === "review") {
@@ -93,6 +130,12 @@ export function assertDispatchable(input: WikiDispatchInput): void {
   }
 }
 
+export function wikiDispatchWave(task: Pick<WikiDispatchTaskInput, "role" | "mode">): WikiLogicalWave {
+  if (task.role === "write") return "write";
+  if (task.role === "review") return "review";
+  return task.mode === "supplement" ? "supplement" : "discovery";
+}
+
 /** Resolve a write/review cluster id from the Lead-facing cluster field, or from internal path lists. */
 function dispatchCluster(task: WikiDispatchTaskInput, spec: WikiSpec): string {
   const labeled = typeof task.cluster === "string" ? task.cluster.trim() : "";
@@ -115,4 +158,3 @@ function dispatchCluster(task: WikiDispatchTaskInput, spec: WikiSpec): string {
   }
   return clusterId;
 }
-

@@ -1,4 +1,4 @@
-import type { WikiArtifactRef } from "./artifact-store.js";
+import { MAX_WIKI_RESEARCH_ARTIFACT_BYTES, type WikiArtifactKind, type WikiArtifactRef } from "./artifact-store.js";
 import { createHash } from "node:crypto";
 import type { WikiBudgetExhaustedCode } from "./failures.js";
 import { isSafeWikiPagePath } from "./lead.js";
@@ -6,11 +6,9 @@ import { sameStringSet, stableStringify } from "./util.js";
 import type { WikiAgentOutcome } from "./producer-types.js";
 
 export interface WikiReviewFinding {
+  id: string;
   path: string;
   severity: "critical" | "major" | "minor";
-  message: string;
-  evidence: string[];
-  suggestion: string;
 }
 
 export interface WikiReviewResult {
@@ -18,6 +16,43 @@ export interface WikiReviewResult {
   reviewedPaths: string[];
   findings: WikiReviewFinding[];
   profileCoverage: string[];
+}
+
+export const WIKI_FOLLOWUP_KINDS = [
+  "unread_scope", "evidence_gap", "conflict", "taxonomy_uncertain", "tool_failure",
+] as const;
+export type WikiFollowupKind = typeof WIKI_FOLLOWUP_KINDS[number];
+
+export interface WikiResearchFollowupDraft {
+  kind: WikiFollowupKind;
+  question: string;
+  sourceScopeIds: string[];
+}
+
+export interface WikiDelegateFollowup extends WikiResearchFollowupDraft {
+  id: string;
+}
+
+export interface WikiResearchCompletion {
+  status: "complete" | "incomplete";
+  summary: string;
+  completedAssignmentIds: string[];
+  needsFollowup: boolean;
+  followups: WikiResearchFollowupDraft[];
+}
+
+export function parseWikiResearchCompletion(value: unknown): WikiResearchCompletion {
+  const raw = record(value, "Wiki research completion");
+  exactKeys(raw, ["status", "summary", "completedAssignmentIds", "needsFollowup", "followups"], "Wiki research completion");
+  if (raw.status !== "complete" && raw.status !== "incomplete") throw new Error("Invalid Wiki research completion status");
+  const summary = nonEmpty(raw.summary, "Wiki research completion summary");
+  if (Buffer.byteLength(summary, "utf8") > 1024) throw new Error("Wiki research completion summary exceeds 1024 bytes");
+  const completedAssignmentIds = nonEmptyStrings(raw.completedAssignmentIds, "Wiki research completedAssignmentIds");
+  if (new Set(completedAssignmentIds).size !== completedAssignmentIds.length) throw new Error("Wiki research completedAssignmentIds must be unique");
+  if (typeof raw.needsFollowup !== "boolean") throw new Error("Invalid Wiki research needsFollowup");
+  const followups = parseResearchFollowups(raw.followups);
+  if (raw.needsFollowup !== (followups.length > 0)) throw new Error("Wiki research needsFollowup must match followups");
+  return { status: raw.status, summary, completedAssignmentIds, needsFollowup: raw.needsFollowup, followups };
 }
 
 export function parseWikiReviewResult(value: unknown): WikiReviewResult {
@@ -28,19 +63,17 @@ export function parseWikiReviewResult(value: unknown): WikiReviewResult {
   if (!Array.isArray(review.findings)) throw new Error("Invalid review result findings");
   const findings: WikiReviewFinding[] = review.findings.map((value) => {
     const finding = record(value, "Wiki review finding");
-    exactKeys(finding, ["path", "severity", "message", "evidence", "suggestion"], "Wiki review finding");
+    exactKeys(finding, ["id", "path", "severity"], "Wiki review finding");
     if (finding.severity !== "critical" && finding.severity !== "major" && finding.severity !== "minor") throw new Error("Invalid Wiki review finding severity");
     return {
+      id: safeId(finding.id, "Wiki review finding id"),
       severity: finding.severity,
       path: nonEmpty(finding.path, "Wiki review finding path"),
-      message: nonEmpty(finding.message, "Wiki review finding message"),
-      evidence: strings(finding.evidence, "Wiki review finding evidence"),
-      suggestion: nonEmpty(finding.suggestion, "Wiki review finding suggestion"),
     };
   });
   const profileCoverage = strings(review.profileCoverage, "Wiki review profileCoverage");
   if (reviewedPaths.some((page) => !safeAssignedWikiPath(page)) || new Set(reviewedPaths).size !== reviewedPaths.length) throw new Error("Invalid Wiki review reviewedPaths");
-  if (findings.some((finding) => !reviewedPaths.includes(finding.path))) throw new Error("Wiki review finding path is outside reviewedPaths");
+  if (findings.some((finding) => !reviewedPaths.includes(finding.path)) || new Set(findings.map((finding) => finding.id)).size !== findings.length) throw new Error("Wiki review finding path or id is invalid");
   return { verdict: review.verdict, reviewedPaths, findings, profileCoverage };
 }
 
@@ -54,7 +87,16 @@ interface WikiDelegateTaskBase {
 }
 
 export type WikiDelegateTask =
-  | WikiDelegateTaskBase & { role: "research"; writePaths?: never; reviewPaths?: never }
+  | WikiDelegateTaskBase & {
+    role: "research";
+    mode: "discovery" | "supplement";
+    assignmentIds: string[];
+    domainScopeIds: string[];
+    lensScopeIds: string[];
+    resolvesIds: string[];
+    writePaths?: never;
+    reviewPaths?: never;
+  }
   | WikiDelegateTaskBase & { role: "write"; writePaths: string[]; reviewPaths?: never }
   | WikiDelegateTaskBase & { role: "review"; reviewPaths: string[]; writePaths?: never };
 
@@ -67,7 +109,7 @@ export interface WikiReviewBasis {
 }
 
 export type WikiDelegateContract = WikiDelegateTask & {
-  contractVersion: 1;
+  contractVersion: 2;
   contractId: string;
   contractDigest: string;
   batchId: number;
@@ -89,7 +131,7 @@ export function createWikiDelegateContract(
   }
   const body = {
     ...task,
-    contractVersion: 1 as const,
+    contractVersion: 2 as const,
     contractId: `b${batchId}-${task.id}`,
     batchId,
     ...(basis ? { reviewBasis: basis } : {}),
@@ -117,8 +159,11 @@ export interface WikiDelegateReceipt {
   status: WikiDelegateStatus;
   summary: string;
   outputs: WikiArtifactRef[];
-  coverage: string[];
-  gaps: WikiDelegateGap[];
+  completedAssignmentIds?: string[];
+  needsFollowup?: boolean;
+  followups?: WikiDelegateFollowup[];
+  coverage?: string[];
+  gaps?: WikiDelegateGap[];
   error?: WikiDelegateError;
   attempts: number;
   review?: WikiReviewResult;
@@ -198,7 +243,7 @@ const FAILURE_CODES = new Set<WikiTaskFailureCode>([
 
 export function parseWikiDelegateTask(value: unknown): WikiDelegateTask {
   const raw = record(value, "Wiki delegate task");
-  exactKeys(raw, ["id", "role", "instruction", "sourceScopeIds", "contextRefs", "writePaths", "reviewPaths"], "Wiki delegate task");
+  exactKeys(raw, ["id", "role", "instruction", "sourceScopeIds", "contextRefs", "writePaths", "reviewPaths", "mode", "assignmentIds", "domainScopeIds", "lensScopeIds", "resolvesIds"], "Wiki delegate task");
   const id = safeId(raw.id, "Wiki delegate task id");
   const instruction = nonEmpty(raw.instruction, "Wiki delegate instruction");
   const sourceScopeIds = strings(raw.sourceScopeIds, "Wiki delegate sourceScopeIds");
@@ -206,7 +251,13 @@ export function parseWikiDelegateTask(value: unknown): WikiDelegateTask {
   if (new Set(sourceScopeIds).size !== sourceScopeIds.length || new Set(contextRefs).size !== contextRefs.length) throw new Error("Wiki delegate scopes and context refs must be unique");
   if (raw.role === "research") {
     if (raw.writePaths !== undefined || raw.reviewPaths !== undefined) throw new Error("Research delegate cannot declare writePaths or reviewPaths");
-    return { id, role: "research", instruction, sourceScopeIds, contextRefs };
+    if (raw.mode !== "discovery" && raw.mode !== "supplement") throw new Error("Research delegate requires mode discovery or supplement");
+    const assignmentIds = nonEmptyStrings(raw.assignmentIds, "Wiki research assignmentIds");
+    const domainScopeIds = strings(raw.domainScopeIds, "Wiki research domainScopeIds");
+    const lensScopeIds = strings(raw.lensScopeIds, "Wiki research lensScopeIds");
+    const resolvesIds = strings(raw.resolvesIds, "Wiki research resolvesIds");
+    if ([assignmentIds, domainScopeIds, lensScopeIds, resolvesIds].some((items) => new Set(items).size !== items.length)) throw new Error("Wiki research scope IDs must be unique");
+    return { id, role: "research", instruction, sourceScopeIds, contextRefs, mode: raw.mode, assignmentIds, domainScopeIds, lensScopeIds, resolvesIds };
   }
   if (raw.role === "write") {
     if (raw.reviewPaths !== undefined) throw new Error("Write delegate cannot declare reviewPaths");
@@ -240,15 +291,15 @@ export function parseWikiReviewBasis(value: unknown): WikiReviewBasis {
 
 export function parseWikiDelegateContract(value: unknown): WikiDelegateContract {
   const raw = record(value, "Wiki delegate contract");
-  exactKeys(raw, ["id", "role", "instruction", "sourceScopeIds", "contextRefs", "writePaths", "reviewPaths", "contractVersion", "contractId", "contractDigest", "batchId", "reviewBasis"], "Wiki delegate contract");
+  exactKeys(raw, ["id", "role", "instruction", "sourceScopeIds", "contextRefs", "writePaths", "reviewPaths", "mode", "assignmentIds", "domainScopeIds", "lensScopeIds", "resolvesIds", "contractVersion", "contractId", "contractDigest", "batchId", "reviewBasis"], "Wiki delegate contract");
   const task = parseWikiDelegateTask(Object.fromEntries(Object.entries(raw).filter(([key]) => !["contractVersion", "contractId", "contractDigest", "batchId", "reviewBasis"].includes(key))));
-  if (raw.contractVersion !== 1 || !Number.isSafeInteger(raw.batchId) || (raw.batchId as number) < 1) throw new Error("Invalid Wiki delegate contract version or batch");
+  if (raw.contractVersion !== 2 || !Number.isSafeInteger(raw.batchId) || (raw.batchId as number) < 1) throw new Error("Invalid Wiki delegate contract version or batch");
   const basis = raw.reviewBasis === undefined ? undefined : parseWikiReviewBasis(raw.reviewBasis);
   if ((task.role === "review") !== Boolean(basis)) throw new Error("Only review delegate contracts require a review basis");
   if (basis && !sameStringSet(basis.paths, task.reviewPaths ?? [])) throw new Error("Wiki review basis paths must exactly match the assigned review paths");
   const contract: WikiDelegateContract = {
     ...task,
-    contractVersion: 1,
+    contractVersion: 2,
     contractId: safeId(raw.contractId, "Wiki delegate contract id"),
     contractDigest: digest(raw.contractDigest, "Wiki delegate contract digest"),
     batchId: raw.batchId as number,
@@ -271,29 +322,46 @@ export function parseWikiDelegateError(value: unknown): WikiDelegateError {
 
 export function parseWikiDelegateReceipt(value: unknown): WikiDelegateReceipt {
   const raw = record(value, "Wiki delegate receipt");
-  exactKeys(raw, ["id", "role", "status", "summary", "outputs", "coverage", "gaps", "error", "attempts", "review", "contractId", "contractDigest"], "Wiki delegate receipt");
+  exactKeys(raw, ["id", "role", "status", "summary", "outputs", "completedAssignmentIds", "needsFollowup", "followups", "coverage", "gaps", "error", "attempts", "review", "contractId", "contractDigest"], "Wiki delegate receipt");
   const id = safeId(raw.id, "Wiki delegate receipt id");
   if (!["research", "write", "review"].includes(String(raw.role)) || !["complete", "incomplete", "failed"].includes(String(raw.status))
-    || !Number.isSafeInteger(raw.attempts) || (raw.attempts as number) < 1 || !Array.isArray(raw.outputs) || !Array.isArray(raw.gaps)) {
+    || !Number.isSafeInteger(raw.attempts) || (raw.attempts as number) < 1 || !Array.isArray(raw.outputs)) {
     throw new Error("Invalid Wiki delegate receipt");
   }
   const role = raw.role as WikiDelegateRole;
+  const expectedKind: WikiArtifactKind = role === "research" ? "research-handoff" : role === "write" ? "write-handoff" : "review-handoff";
+  const outputs = raw.outputs.map(parseWikiArtifactRef);
+  if (outputs.some((output) => output.kind !== expectedKind)) throw new Error("Wiki delegate output kind does not match role");
   const review = raw.review === undefined ? undefined : parseWikiReviewResult(raw.review);
   if ((review !== undefined) !== (role === "review" && raw.status === "complete")) throw new Error("Only complete review receipts may contain a review result");
   const error = raw.error === undefined ? undefined : parseWikiDelegateError(raw.error);
   if (raw.status === "complete" && error || raw.status === "failed" && !error) throw new Error("Invalid Wiki delegate receipt error/status combination");
   const contractId = safeId(raw.contractId, "Wiki delegate receipt contract id");
   const contractDigest = digest(raw.contractDigest, "Wiki delegate receipt contract digest");
+  const completedAssignmentIds = raw.completedAssignmentIds === undefined ? undefined : strings(raw.completedAssignmentIds, "Wiki delegate completedAssignmentIds");
+  const needsFollowup = raw.needsFollowup;
+  if (needsFollowup !== undefined && typeof needsFollowup !== "boolean") throw new Error("Invalid Wiki delegate needsFollowup");
+  const followups = raw.followups === undefined ? undefined : parseDelegateFollowups(raw.followups);
+  if (role === "research" && raw.status !== "failed" && (completedAssignmentIds === undefined || needsFollowup === undefined || followups === undefined)) {
+    throw new Error("Research receipts require completion controls");
+  }
+  if (role === "research" && followups && needsFollowup !== (followups.length > 0)) throw new Error("Research receipt needsFollowup must match followups");
+  if (role !== "research" && (completedAssignmentIds !== undefined || needsFollowup !== undefined || followups !== undefined)) {
+    throw new Error("Only research receipts may contain completion controls");
+  }
   return {
     id,
     role,
     status: raw.status as WikiDelegateStatus,
     summary: nonEmpty(raw.summary, "Wiki delegate receipt summary"),
-    outputs: raw.outputs.map(parseWikiArtifactRef),
-    coverage: strings(raw.coverage, "Wiki delegate receipt coverage"),
-    gaps: raw.gaps.map(parseWikiDelegateGap),
+    outputs,
+    ...(raw.coverage === undefined ? {} : { coverage: strings(raw.coverage, "Wiki delegate receipt coverage") }),
+    ...(raw.gaps === undefined ? {} : { gaps: parseReceiptGaps(raw.gaps) }),
     ...(error ? { error } : {}),
     attempts: raw.attempts as number,
+    ...(completedAssignmentIds ? { completedAssignmentIds } : {}),
+    ...(needsFollowup !== undefined ? { needsFollowup } : {}),
+    ...(followups ? { followups } : {}),
     ...(review ? { review } : {}),
     contractId,
     contractDigest,
@@ -308,8 +376,10 @@ export function projectWikiAgentOutcome(value: unknown): WikiAgentOutcome {
     role: receipt.role,
     status: receipt.status,
     summary: receipt.summary,
-    coverage: [...receipt.coverage],
-    gaps: structuredClone(receipt.gaps),
+    coverage: [...(receipt.coverage ?? receipt.completedAssignmentIds ?? [])],
+    gaps: structuredClone(receipt.gaps ?? []),
+    ...(receipt.completedAssignmentIds ? { completedAssignmentIds: [...receipt.completedAssignmentIds] } : {}),
+    ...(receipt.followups ? { followups: structuredClone(receipt.followups) } : {}),
     ...(receipt.error ? { error: { ...receipt.error } } : {}),
     attempts: receipt.attempts,
     ...(receipt.review ? { review: structuredClone(receipt.review) } : {}),
@@ -371,12 +441,13 @@ function digest(value: unknown, label: string): string {
 
 export function parseWikiArtifactRef(value: unknown): WikiArtifactRef {
   const raw = record(value, "Wiki artifact reference");
-  exactKeys(raw, ["version", "runId", "nodeId", "attempt", "kind", "relativePath", "sha256", "sizeBytes", "mediaType"], "Wiki artifact reference");
-  if (raw.version !== 1 || raw.kind !== "research" || raw.mediaType !== "text/markdown"
-    || !Number.isSafeInteger(raw.attempt) || (raw.attempt as number) < 1 || !Number.isSafeInteger(raw.sizeBytes) || (raw.sizeBytes as number) < 0) throw new Error("Invalid Wiki artifact reference");
+  exactKeys(raw, ["version", "runId", "nodeId", "attempt", "scope", "kind", "relativePath", "sha256", "sizeBytes", "mediaType"], "Wiki artifact reference");
+  if (raw.version !== 1 || !["research-handoff", "write-handoff", "review-handoff"].includes(String(raw.kind)) || raw.mediaType !== "text/markdown"
+    || !Number.isSafeInteger(raw.attempt) || (raw.attempt as number) < 1 || !Number.isSafeInteger(raw.sizeBytes) || (raw.sizeBytes as number) < 0 || (raw.sizeBytes as number) > MAX_WIKI_RESEARCH_ARTIFACT_BYTES) throw new Error("Invalid Wiki artifact reference");
   const sha256 = digest(raw.sha256, "Wiki artifact digest");
   if (raw.relativePath !== `.okf-wiki/blobs/${sha256}.md`) throw new Error("Invalid Wiki artifact path");
-  return { version: 1, runId: safeId(raw.runId, "Wiki artifact run id"), nodeId: safeId(raw.nodeId, "Wiki artifact node id"), attempt: raw.attempt as number, kind: "research", relativePath: raw.relativePath, sha256, sizeBytes: raw.sizeBytes as number, mediaType: "text/markdown" };
+  const scope = strings(raw.scope, "Wiki artifact scope");
+  return { version: 1, runId: safeId(raw.runId, "Wiki artifact run id"), nodeId: safeId(raw.nodeId, "Wiki artifact node id"), attempt: raw.attempt as number, scope, kind: raw.kind as WikiArtifactKind, relativePath: raw.relativePath, sha256, sizeBytes: raw.sizeBytes as number, mediaType: "text/markdown" };
 }
 
 export function parseWikiDelegateGap(value: unknown): WikiDelegateGap {
@@ -393,3 +464,44 @@ function safeAssignedWikiPath(value: string): boolean {
 }
 
 function hashContract(value: unknown): string { return createHash("sha256").update(stableStringify(value)).digest("hex"); }
+
+function parseResearchFollowups(value: unknown): WikiResearchFollowupDraft[] {
+  if (!Array.isArray(value)) throw new Error("Invalid Wiki research followups");
+  return value.map((item) => {
+    const raw = record(item, "Wiki research followup");
+    exactKeys(raw, ["kind", "question", "sourceScopeIds"], "Wiki research followup");
+    const kind = parseFollowupKind(raw.kind);
+    const question = nonEmpty(raw.question, "Wiki research followup question");
+    if (Buffer.byteLength(question, "utf8") > 512) throw new Error("Wiki research followup question exceeds 512 bytes");
+    const sourceScopeIds = strings(raw.sourceScopeIds, "Wiki research followup sourceScopeIds");
+    if (new Set(sourceScopeIds).size !== sourceScopeIds.length) throw new Error("Wiki research followup sourceScopeIds must be unique");
+    return { kind, question, sourceScopeIds };
+  });
+}
+
+function parseFollowupKind(value: unknown): WikiFollowupKind {
+  if (!(WIKI_FOLLOWUP_KINDS as readonly string[]).includes(String(value))) throw new Error("Invalid Wiki delegate followup kind");
+  return value as WikiFollowupKind;
+}
+
+function parseDelegateFollowups(value: unknown): WikiDelegateFollowup[] {
+  if (!Array.isArray(value)) throw new Error("Invalid Wiki delegate followups");
+  const result = value.map((item) => {
+    const raw = record(item, "Wiki delegate followup");
+    exactKeys(raw, ["id", "kind", "question", "sourceScopeIds"], "Wiki delegate followup");
+    const draft = parseResearchFollowups([{ kind: raw.kind, question: raw.question, sourceScopeIds: raw.sourceScopeIds }])[0];
+    return { id: safeId(raw.id, "Wiki delegate followup id"), ...draft };
+  });
+  if (new Set(result.map((followup) => followup.id)).size !== result.length) throw new Error("Wiki delegate followup IDs must be unique");
+  return result;
+}
+
+function parseReceiptGaps(value: unknown): WikiDelegateGap[] {
+  if (!Array.isArray(value)) throw new Error("Invalid Wiki delegate receipt gaps");
+  return value.map(parseWikiDelegateGap);
+}
+
+export function canonicalWikiFollowupId(contractId: string, followup: WikiResearchFollowupDraft): string {
+  const digest = createHash("sha256").update(stableStringify({ contractId, ...followup })).digest("hex").slice(0, 24);
+  return `f-${digest}`;
+}

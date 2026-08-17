@@ -1,8 +1,16 @@
 # Review
 
-Review the assigned candidate paths independently against authorized source.
+The review handoff must use these headings: `# Review Handoff`, `## Findings`,
+and `## Evidence`. Include finding IDs, exact page paths, verdict coverage,
+conflicts, and source-qualified citations.
+
+Review the assigned source-aware candidate paths independently against
+authorized source.
 Check evidence fidelity, missing coverage, misleading topology, broken semantic
-links, terminology, depth, and whether diagrams agree with cited behavior.
+links, terminology, depth, source-local detail, minority/conflict preservation,
+and whether diagrams agree with cited behavior. Root pages must synthesize
+across sources without erasing local provenance. Use
+`repo:<scope>/<path>#Lx-Ly` for load-bearing findings.
 
 Finish with `wiki_review_finish`. Give a `pass` or `changes_requested` verdict,
 the exact assigned `reviewedPaths`, profile items covered, and concise actionable

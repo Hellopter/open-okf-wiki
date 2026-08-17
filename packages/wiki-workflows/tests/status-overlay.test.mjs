@@ -665,8 +665,8 @@ test("navigation and batch inspector show a cluster label from the task id", asy
       currentBatch: {
         batch: 2, status: "running", completed: 0, total: 2,
         tasks: [
-          { id: "wiki/core/runtime/concept.md", role: "write", status: "running" },
-          { id: "wiki/core/runtime/flows.md", role: "review", status: "queued" },
+          { id: "wiki/api/core/runtime/concept.md", role: "write", status: "running" },
+          { id: "wiki/api/core/runtime/flows.md", role: "review", status: "queued" },
         ],
       },
     },
@@ -674,12 +674,12 @@ test("navigation and batch inspector show a cluster label from the task id", asy
   const { component } = await componentFor(handle({ async view() { return clustered; } }));
   await new Promise((resolve) => setImmediate(resolve));
   const nav = plain(component.render(80).join("\n"));
-  assert.match(nav, /write  core\/runtime  wiki\/core\/runtime\/concept\.md/);
-  assert.match(nav, /review  core\/runtime  wiki\/core\/runtime\/flows\.md/);
+  assert.match(nav, /write  api\/core\/runtime  wiki\/api\/core\/runtime\/concept\.md/);
+  assert.match(nav, /review  api\/core\/runtime  wiki\/api\/core\/runtime\/flows\.md/);
   component.handleInput("j");
   await new Promise((resolve) => setImmediate(resolve));
   const inspector = plain(component.render(120).join("\n"));
-  assert.match(inspector, /write  core\/runtime  wiki\/core\/runtime\/concept\.md/);
+  assert.match(inspector, /write  api\/core\/runtime  wiki\/api\/core\/runtime\/concept\.md/);
   component.dispose();
 });
 

@@ -1,39 +1,49 @@
 # Cluster topology
 
-Plan only these page paths. The host derives pageType from the path
-(`models.md` → data, `sequences.md` → flow, `modules.md` → module) and
-rejects illegal paths. Host-owned `index.md` files are generated; never plan
-or write them.
+Plan a source-aware Wiki with the shape **Source -> Domain -> Concept**. The
+host derives `pageType` from the path and owns every `index.md`; never plan or
+write an index. Root pages are the cross-source synthesis. A source page owns
+the overview of that source.
 
 ```text
 wiki/
-  index.md                 # host
-  overview.md
-  architecture.md          # optional
-  <domain>/
-    index.md               # host
-    domain.md
-    <concept>/             # only when evidence exists
-      index.md
-      concept.md
-      models.md            # or models/<slug>.md
-      flows.md             # processes; sequence diagrams live here by default
-      sequences.md         # only if multiple interactions overflow flows.md
-      states.md
-      data.md
-      modules.md
+  index.md                         # host
+  overview.md                      # cross-source synthesis
+  architecture.md                  # optional cross-source architecture
+  <source>/
+    index.md                       # host
+    source.md                      # source overview
+    <domain>/
+      index.md                     # host
+      domain.md                     # domain overview within this source
+      <concept>/
+        index.md                   # host
+        concept.md
+        models.md                  # or models/<slug>.md
+        flows.md                   # processes; sequence diagrams live here
+        sequences.md               # only when interactions overflow flows.md
+        states.md
+        data.md
+        modules.md
 ```
 
-A **cluster** is one dispatch unit:
+Legal authored paths are exactly `overview.md`, optional `architecture.md`,
+`<source>/source.md`, `<source>/<domain>/domain.md`, and the supported concept
+pages shown above. Source, domain, and concept directory names are lowercase
+ASCII slugs. A domain slug may occur under more than one source: those are
+distinct clusters and must retain their source-qualified paths.
 
-- Root: `overview.md` and optional `architecture.md`
-- Domain: `<domain>/domain.md`
-- Concept: the evidence-backed pages under `<domain>/<concept>/`
+The implicit single-source workspace uses the same source tier. Give that
+source a stable lowercase slug such as `source`; do not collapse it into a
+domain or put pages directly under the Wiki root.
 
-Add a concept directory only when source evidence supports that concept. Add
-`sequences.md` only when multiple interactions overflow `flows.md`. Split
+Cluster ids are deterministic:
+
+- Root: `_root` for `overview.md` and `architecture.md`.
+- Source: `<source>/_source` for `<source>/source.md`.
+- Domain: `<source>/<domain>` for `<source>/<domain>/domain.md`.
+- Concept: `<source>/<domain>/<concept>` for all pages below a concept.
+
+Only add a source, domain, or concept when source evidence supports it. Split
 models into `models/<slug>.md` only when one `models.md` cannot hold the
 verified models.
-
-Page paths sit beside their concept. Do not use type buckets (`concepts/`,
-`flows/` as directories of slugs).

@@ -43,7 +43,7 @@ async function fixture() {
 }
 
 function spec(pages) {
-  return { pages: pages ?? ["overview.md", "architecture.md", "core/domain.md"] };
+  return { pages: pages ?? ["overview.md", "architecture.md", "api/source.md", "api/core/domain.md"] };
 }
 
 async function writeSpecPages(root, target, contents = {}) {
@@ -76,6 +76,7 @@ function expectedPageType(relative) {
   if (relative === "overview.md") return "Overview";
   if (relative === "architecture.md") return "Architecture";
   const filename = relative.split("/").at(-1);
+  if (filename === "source.md") return "Source";
   if (filename === "domain.md") return "Domain";
   if (filename === "concept.md") return "Concept";
   if (filename === "flows.md" || filename === "sequences.md") return "Flow";
@@ -97,9 +98,11 @@ test("validation is read-only and checks the materialized OKF index projection",
   const target = spec();
   await writeSpecPages(root, target, {
     "overview.md": page({
-      body: "[Architecture](./architecture.md)\n[Core index](./core/index.md)\n",
+      body: "[Architecture](./architecture.md)\n[Core index](./api/core/index.md)\n",
     }),
     "architecture.md": page({ body: "```mermaid\nflowchart TD\n  A --> B\n```\n" }),
+    "api/source.md": page(),
+    "api/core/domain.md": page(),
   });
   await writePage(root, "legacy.md");
   await materializeWikiIndexes(root, target);
@@ -108,7 +111,7 @@ test("validation is read-only and checks the materialized OKF index projection",
   assert.deepEqual(await validateWiki(root, target), {
     ok: true,
     issues: [],
-    pages: ["architecture.md", "core/domain.md", "overview.md"],
+    pages: ["api/core/domain.md", "api/source.md", "architecture.md", "overview.md"],
     obsoletePages: ["legacy.md"],
   });
   assert.equal(await readFile(path.join(root, "wiki", "index.md"), "utf8"), indexBefore);
@@ -185,12 +188,13 @@ test("review indexes materialize only after all pages pass final deterministic c
   await writeSpecPages(root, target, {
     "overview.md": page({ body: "## Required\n" }),
     "architecture.md": page({ body: "## Required\n" }),
-    "core/domain.md": page({ body: "## Required\n" }),
+    "api/source.md": page({ body: "## Required\n" }),
+    "api/core/domain.md": page({ body: "## Required\n" }),
   });
 
   assert.deepEqual(
     await materializeValidatedWikiIndexes(root, target, "wiki", undefined, ["Required"]),
-    ["core/index.md", "index.md"],
+    ["api/core/index.md", "api/index.md", "index.md"],
   );
   await writePage(root, "architecture.md");
   const indexBefore = await readFile(path.join(root, "wiki", "index.md"), "utf8");
@@ -391,10 +395,11 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
 
 test("returns precisely routed issues for missing pages, frontmatter, evidence, and undeclared internal links", async () => {
   const root = await fixture();
-  const target = spec(["overview.md", "core/domain.md", "core/broken/concept.md", "core/missing/modules.md"]);
+  const target = spec(["overview.md", "api/source.md", "api/core/domain.md", "api/core/broken/concept.md", "api/core/missing/modules.md"]);
   await writePage(root, "overview.md");
-  await writePage(root, "core/domain.md");
-  await writePage(root, "core/broken/concept.md", [
+  await writePage(root, "api/source.md");
+  await writePage(root, "api/core/domain.md");
+  await writePage(root, "api/core/broken/concept.md", [
     "---",
     "type: Concept",
     "title: Broken",
@@ -418,16 +423,17 @@ test("returns precisely routed issues for missing pages, frontmatter, evidence, 
   const result = await validateWiki(root, target);
 
   assert.equal(result.ok, false);
-  assert.deepEqual(result.pages, ["core/broken/concept.md", "core/domain.md", "overview.md"]);
+  assert.deepEqual(result.pages, ["api/core/broken/concept.md", "api/core/domain.md", "api/source.md", "overview.md"]);
   assert.deepEqual(result.issues, [
-    { code: "frontmatter", page: "core/broken/concept.md", message: "Frontmatter requires a non-empty description" },
-    { code: "frontmatter", page: "core/broken/concept.md", message: "Frontmatter tags must be a non-empty string array" },
-    { code: "source-reference", page: "core/broken/concept.md", message: "frontmatter source broken-source line range exceeds file: repo:api/src/index.ts#L3-L3" },
-    { code: "internal-link", page: "core/broken/concept.md", message: "Internal Markdown link target is not in the target Wiki: ./not-planned.md" },
-    { code: "missing-page", page: "core/missing/modules.md", message: "Target page is missing: core/missing/modules.md" },
-    { code: "wiki-index", page: "core/broken/index.md", message: "Required Wiki index is missing: core/broken/index.md" },
-    { code: "wiki-index", page: "core/index.md", message: "Required Wiki index is missing: core/index.md" },
-    { code: "wiki-index", page: "core/missing/index.md", message: "Required Wiki index is missing: core/missing/index.md" },
+    { code: "frontmatter", page: "api/core/broken/concept.md", message: "Frontmatter requires a non-empty description" },
+    { code: "frontmatter", page: "api/core/broken/concept.md", message: "Frontmatter tags must be a non-empty string array" },
+    { code: "source-reference", page: "api/core/broken/concept.md", message: "frontmatter source broken-source line range exceeds file: repo:api/src/index.ts#L3-L3" },
+    { code: "internal-link", page: "api/core/broken/concept.md", message: "Internal Markdown link target is not in the target Wiki: ./not-planned.md" },
+    { code: "missing-page", page: "api/core/missing/modules.md", message: "Target page is missing: api/core/missing/modules.md" },
+    { code: "wiki-index", page: "api/core/broken/index.md", message: "Required Wiki index is missing: api/core/broken/index.md" },
+    { code: "wiki-index", page: "api/core/index.md", message: "Required Wiki index is missing: api/core/index.md" },
+    { code: "wiki-index", page: "api/core/missing/index.md", message: "Required Wiki index is missing: api/core/missing/index.md" },
+    { code: "wiki-index", page: "api/index.md", message: "Required Wiki index is missing: api/index.md" },
     { code: "wiki-index", page: "index.md", message: "Required Wiki index is missing: index.md" },
   ]);
 });
@@ -449,10 +455,10 @@ test("finalization removes obsolete Markdown, rebuilds exact indexes, and preser
   const result = await finalizeWiki(root, target);
 
   assert.deepEqual(result, {
-    pages: ["architecture.md", "core/domain.md", "overview.md"],
+    pages: ["api/core/domain.md", "api/source.md", "architecture.md", "overview.md"],
     obsoletePages: [".legacy.md", "removed/old.md"],
     removedPages: [".legacy.md", "removed/old.md"],
-    rebuiltIndexes: ["core/index.md", "index.md"],
+    rebuiltIndexes: ["api/core/index.md", "api/index.md", "index.md"],
   });
   assert.equal(await readFile(path.join(root, "wiki", "removed", "diagram.png"), "utf8"), "asset\n");
   assert.equal(await readFile(path.join(root, "wiki", ".asset"), "utf8"), "hidden asset\n");
@@ -460,10 +466,10 @@ test("finalization removes obsolete Markdown, rebuilds exact indexes, and preser
   await assert.rejects(readFile(path.join(root, "wiki", "removed", "old.md"), "utf8"));
   assert.equal(
     await readFile(path.join(root, "wiki", "index.md"), "utf8"),
-    "---\nokf_version: \"0.2\"\n---\n\n# Wiki\n\n## Directories\n\n- [Example](./core/index.md): Example documentation\n\n## Pages\n\n- [Example](./architecture.md): Example documentation\n- [Example](./overview.md): Example documentation\n",
+    "---\nokf_version: \"0.2\"\n---\n\n# Wiki\n\n## Directories\n\n- [Example](./api/index.md): Example documentation\n\n## Pages\n\n- [Example](./architecture.md): Example documentation\n- [Example](./overview.md): Example documentation\n",
   );
   assert.equal(
-    await readFile(path.join(root, "wiki", "core", "index.md"), "utf8"),
+    await readFile(path.join(root, "wiki", "api", "core", "index.md"), "utf8"),
     "# Example\n\nExample documentation\n\n## Pages\n\n- [Example](./domain.md): Example documentation\n",
   );
 });
@@ -475,7 +481,7 @@ test("index materialization is idempotent and never removes concept pages", asyn
   await writePage(root, "obsolete.md");
   await writeFile(path.join(root, "wiki", "index.md"), "stale\n");
 
-  const expected = ["core/index.md", "index.md"];
+  const expected = ["api/core/index.md", "api/index.md", "index.md"];
   assert.deepEqual(await materializeWikiIndexes(root, target), expected);
   assert.equal(await readFile(path.join(root, "wiki", "obsolete.md"), "utf8"), page({ type: "Concept" }));
   const first = await readFile(path.join(root, "wiki", "index.md"), "utf8");
@@ -485,13 +491,13 @@ test("index materialization is idempotent and never removes concept pages", asyn
 
 test("concept directory indexes fall back to the directory name", async () => {
   const root = await fixture();
-  const target = spec(["overview.md", "core/domain.md", "core/request/flows.md"]);
+  const target = spec(["overview.md", "api/core/domain.md", "api/core/request/flows.md"]);
   await writeSpecPages(root, target);
 
   await materializeWikiIndexes(root, target);
 
   assert.equal(
-    await readFile(path.join(root, "wiki", "core", "request", "index.md"), "utf8"),
+    await readFile(path.join(root, "wiki", "api", "core", "request", "index.md"), "utf8"),
     "# request\n\n## Pages\n\n- [Example](./flows.md): Example documentation\n",
   );
 });
@@ -501,24 +507,25 @@ test("standard topology creates root, domain, and concept indexes", async () => 
   const target = spec([
     "overview.md",
     "architecture.md",
-    "payments/domain.md",
-    "payments/invoice/concept.md",
-    "payments/invoice/flows.md",
-    "payments/invoice/states.md",
-    "payments/invoice/data.md",
+    "api/payments/domain.md",
+    "api/payments/invoice/concept.md",
+    "api/payments/invoice/flows.md",
+    "api/payments/invoice/states.md",
+    "api/payments/invoice/data.md",
   ]);
   await writeSpecPages(root, target, {
-    "payments/domain.md": page({ title: "Payments", description: "Payment lifecycle" }),
-    "payments/invoice/concept.md": page({ title: "Invoice", description: "Invoice lifecycle" }),
+    "api/payments/domain.md": page({ title: "Payments", description: "Payment lifecycle" }),
+    "api/payments/invoice/concept.md": page({ title: "Invoice", description: "Invoice lifecycle" }),
   });
 
   assert.deepEqual(await materializeWikiIndexes(root, target), [
+    "api/index.md",
+    "api/payments/index.md",
+    "api/payments/invoice/index.md",
     "index.md",
-    "payments/index.md",
-    "payments/invoice/index.md",
   ]);
-  assert.match(await readFile(path.join(root, "wiki", "payments", "index.md"), "utf8"), /^# Payments\n\nPayment lifecycle/m);
-  assert.match(await readFile(path.join(root, "wiki", "payments", "invoice", "index.md"), "utf8"), /^# Invoice\n\nInvoice lifecycle/m);
+  assert.match(await readFile(path.join(root, "wiki", "api", "payments", "index.md"), "utf8"), /^# Payments\n\nPayment lifecycle/m);
+  assert.match(await readFile(path.join(root, "wiki", "api", "payments", "invoice", "index.md"), "utf8"), /^# Invoice/m);
   assert.deepEqual((await validateWiki(root, target)).issues, []);
 });
 
@@ -530,7 +537,7 @@ test("index projection renders all model-authored metadata as inert text", async
       title: '"<script>alert(1)</script>"',
       description: '"<img src=x onerror=alert(1)>"',
     }),
-    "core/domain.md": page({
+    "api/core/domain.md": page({
       title: '"<img src=x onerror=alert(1)>"',
       description: '"[unsafe](javascript:alert(1))"',
     }),
@@ -539,7 +546,7 @@ test("index projection renders all model-authored metadata as inert text", async
   await materializeWikiIndexes(root, target);
 
   const rootIndex = await readFile(path.join(root, "wiki", "index.md"), "utf8");
-  const domainIndex = await readFile(path.join(root, "wiki", "core", "index.md"), "utf8");
+  const domainIndex = await readFile(path.join(root, "wiki", "api", "core", "index.md"), "utf8");
   assert.equal(rootIndex.includes("<img"), false);
   assert.equal(domainIndex.includes("<script>"), false);
   assert.match(rootIndex, /&lt;img src=x onerror=alert\(1\)&gt;/);
@@ -616,15 +623,15 @@ test("a partially failed finalization can be retried", async () => {
   const root = await fixture();
   const target = spec();
   await writeSpecPages(root, target);
-  await mkdir(path.join(root, "wiki", "core", "index.md"));
-  await writeFile(path.join(root, "wiki", "core", "index.md", "asset.txt"), "collision\n");
+  await mkdir(path.join(root, "wiki", "api", "core", "index.md"));
+  await writeFile(path.join(root, "wiki", "api", "core", "index.md", "asset.txt"), "collision\n");
 
   await assert.rejects(finalizeWiki(root, target), /unexpected Wiki entry/);
-  await rm(path.join(root, "wiki", "core", "index.md"), { recursive: true });
+  await rm(path.join(root, "wiki", "api", "core", "index.md"), { recursive: true });
 
   const result = await finalizeWiki(root, target);
-  assert.deepEqual(result.pages, ["architecture.md", "core/domain.md", "overview.md"]);
-  assert.equal(await readFile(path.join(root, "wiki", "core", "index.md"), "utf8"), "# Example\n\nExample documentation\n\n## Pages\n\n- [Example](./domain.md): Example documentation\n");
+  assert.deepEqual(result.pages, ["api/core/domain.md", "api/source.md", "architecture.md", "overview.md"]);
+  assert.equal(await readFile(path.join(root, "wiki", "api", "core", "index.md"), "utf8"), "# Example\n\nExample documentation\n\n## Pages\n\n- [Example](./domain.md): Example documentation\n");
 });
 
 test("rejects an unsafe writer-requested page path before reading the Wiki tree", async () => {

@@ -20,7 +20,9 @@ import {
   WikiTaskExecutionError,
   WikiTaskPauseError,
   type WikiDelegateContract,
-  type WikiDelegateGap,
+  type WikiResearchCompletion,
+  WIKI_FOLLOWUP_KINDS,
+  parseWikiResearchCompletion,
 } from "./delegate-contracts.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
 import type { WikiLeadObservation, WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
@@ -33,6 +35,7 @@ import {
   createWikiDelegateStartTool,
   createWikiFinishTool,
   createWikiPlanTool,
+  createWikiTaxonomyTool,
   createWikiReviewFinishTool,
   derivedIndexPaths,
   parseWikiSpec,
@@ -135,6 +138,7 @@ async function runLeadSession(
         language: request.language,
         assertActive: () => ledger.assertActive(request.runId, { attempt: request.attempt, executionToken: request.executionToken }),
         executionToken: request.executionToken,
+        maxDelegatedTasks: (request.budgets ?? options.budgets)?.maxDelegatedTasks,
       });
       let specRecord = leadRun.specRecord;
       const controller = new AbortController();
@@ -239,12 +243,17 @@ async function runLeadSession(
         onTask,
         reportObservability: async (input) => await observe({ kind: "health", ...input }),
       });
-      const policy = pinnedWorkspaceToolPolicy(request.sourcePlan, request.candidateWikiRoot, request.skillRoot);
+      const policy = pinnedWorkspaceToolPolicy(request.sourcePlan, request.candidateWikiRoot, request.skillRoot, runBoardPath(request.runId));
       await tasks.resume(controller.signal);
       let finishSummary: string | undefined;
       let pause: WikiTaskPauseError | undefined;
       const leadTools = withExecutionModes([
         ...workflowTools(policy, "lead", undefined, request.sourcePlan.sources.map((source) => source.scopeId), undefined, pageWriter),
+        createWikiTaxonomyTool(async (input) => withBoard(
+          request.runId,
+          leadRun.compactionObserved,
+          await leadRun.saveTaxonomy(input),
+        )),
         createWikiPlanTool(async (input) => {
           const spec = parseWikiSpec(input);
           specRecord = await leadRun.saveSpec(spec, specRecord?.revision ?? 0);
@@ -411,7 +420,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const declaredSources = [...task.sourceScopeIds, ...artifactRelativePaths];
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
     let review: WikiReviewResult | undefined;
-    let research: ResearchCompletion | undefined;
+      let research: WikiResearchCompletion | undefined;
     const spec = this.currentSpec?.();
     const reviewIndexes = task.role === "review" && spec
       ? derivedIndexPaths(wikiSpecPagePaths(spec)).map(addWikiPrefix)
@@ -429,6 +438,13 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       })] : []),
       ...(role === "researcher" ? [researchFinishTool((result) => {
         if (research) throw new Error("wiki_research_finish may be accepted only once");
+        if (task.role !== "research") throw new Error("Research completion requires a research contract");
+        const assigned = new Set(task.assignmentIds);
+        if (result.completedAssignmentIds.some((id) => !assigned.has(id))) throw new Error("wiki_research_finish completedAssignmentIds must come from the host assignment set");
+        if (Buffer.byteLength(result.summary, "utf8") > 1024) throw new Error("wiki_research_finish summary must be at most 1024 bytes");
+        if (result.followups.some((followup) => followup.sourceScopeIds.some((scope) => !task.sourceScopeIds.includes(scope)))) {
+          throw new Error("wiki_research_finish followup sourceScopeIds must use pinned source scopes");
+        }
         research = result;
       })] : []),
     ]);
@@ -473,7 +489,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       markdown,
       usage: sessionResult.usage,
       ...(review ? { review } : {}),
-      ...(research ? { status: research.status, coverage: research.coverage, gaps: research.gaps } : {}),
+      ...(research ? { status: research.status, research } : {}),
     };
   }
 }
@@ -505,33 +521,26 @@ function withExecutionModes(tools: ToolDefinition<any, any, any>[]): ToolDefinit
   } as ToolDefinition<any, any, any>));
 }
 
-interface ResearchCompletion {
-  status: "complete" | "incomplete";
-  summary: string;
-  coverage: string[];
-  gaps: WikiDelegateGap[];
-}
-
-const researchGapSchema = Type.Object({
-  question: Type.String({ minLength: 1, description: "Unresolved evidence question" }),
-  sourceScopeIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-}, { additionalProperties: false });
-
-function researchFinishTool(finish: (result: ResearchCompletion) => void): ToolDefinition<any, any, any> {
+function researchFinishTool(finish: (result: WikiResearchCompletion) => void): ToolDefinition<any, any, any> {
   return {
     name: "wiki_research_finish",
     label: "Finish Wiki research",
-    description: "Submit structured coverage and gaps for the Markdown research handoff that the host will persist.",
+    description: "Submit the small host-checked research completion receipt; put evidence, coverage detail, gaps, and conflicts in Markdown.",
     promptSnippet: "Submit the structured research completion receipt",
     parameters: Type.Object({
       status: StringEnum(["complete", "incomplete"]),
       summary: Type.String({ minLength: 1, maxLength: 1024 }),
-      coverage: Type.Array(Type.String({ minLength: 1 })),
-      gaps: Type.Array(researchGapSchema),
+      completedAssignmentIds: Type.Array(Type.String({ minLength: 1 })),
+      needsFollowup: Type.Boolean(),
+      followups: Type.Array(Type.Object({
+        kind: StringEnum([...WIKI_FOLLOWUP_KINDS]),
+        question: Type.String({ minLength: 1, maxLength: 512 }),
+        sourceScopeIds: Type.Array(Type.String({ minLength: 1 })),
+      }, { additionalProperties: false })),
     }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
-      finish(params as ResearchCompletion);
+      finish(parseWikiResearchCompletion(params));
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;
@@ -554,11 +563,12 @@ function writerFrontmatterPrompt(generation?: WikiGenerationProfile): string {
     "type: Domain",
     "title: Example",
     "description: One-sentence reader summary",
+    "source: source-a",
     "sources:",
     "  - id: source-a",
     "    resource: repo:source/path.ts#L1-L1",
     "---",
-    "Frontmatter type must match the WikiSpec pageType (Overview/Domain/Architecture/Module/Flow/Concept/State/Data).",
+    "Frontmatter type must match the WikiSpec pageType (Overview/Source/Domain/Architecture/Module/Flow/Concept/State/Data).",
     required.length ? `Required sections: ${required.join(", ")}.` : "",
   ].filter((line) => line.length > 0).join("\n");
 }
@@ -572,8 +582,12 @@ function runBoardPath(runId: string): string {
 }
 
 function leadSessionPrompt(prompt: string, runId: string): string {
-  if (prompt.includes("board.md")) return prompt;
-  return `${prompt}\nBoard: ${runBoardPath(runId)}. Read board.md before dispatch or wiki_finish. Read topology.md before wiki_plan.`;
+  const additions = [
+    prompt.includes("board.md") ? "" : `Board: ${runBoardPath(runId)}. Read board.md before dispatch or wiki_finish.`,
+    prompt.includes("wiki_taxonomy") ? "" : "Submit wiki_taxonomy after discovery and before wiki_plan.",
+    prompt.includes("topology.md") ? "" : "Read topology.md before wiki_plan.",
+  ].filter(Boolean);
+  return additions.length ? `${prompt}\n${additions.join(" ")}` : prompt;
 }
 
 function withBoard<T extends object>(runId: string, compactionObserved: boolean, value: T): T & { board: string; note?: string } {

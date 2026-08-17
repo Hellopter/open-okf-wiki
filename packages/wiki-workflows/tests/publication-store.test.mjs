@@ -11,13 +11,21 @@ import { createWikiPublicationStore } from "../dist/publication-store.js";
 import { verifyWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const finalSpec = {
-  pages: ["overview.md", "core/domain.md"],
+  pages: ["overview.md", "api/source.md", "api/core/domain.md"],
 };
 
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
 
 function page(type, title, body = "new") {
   return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: repo:source/a.ts#L1-L1", "---", "", `${body}.[^source-a]`, "", "[^source-a]: [Source](repo:source/a.ts#L1-L1)", ""].join("\n");
+}
+
+async function acceptTaxonomy(run) {
+  await run.saveTaxonomy({
+    revision: 1,
+    decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }],
+    conflictIds: [],
+  });
 }
 
 async function fixture(t, afterStep) {
@@ -40,15 +48,19 @@ async function fixture(t, afterStep) {
 async function sealCandidate(workspace, runId, candidate, extra = {}) {
   const run = await WikiLeadRun.open({
     workspace, runId, candidateWikiRoot: candidate, policy,
+    allowedSourceScopeIds: ["source"],
     assertActive: async () => {},
     executionToken: `execution-${runId}`,
   });
+  await acceptTaxonomy(run);
   await run.saveSpec(finalSpec);
   await run.replacePage({ path: "wiki/overview.md", content: page("Overview", "Overview", extra.body ?? "new"), actor: "lead" });
-  await run.replacePage({ path: "wiki/core/domain.md", content: page("Domain", "Core", extra.body ?? "new"), actor: "lead" });
+  await run.replacePage({ path: "wiki/api/source.md", content: page("Source", "API", extra.body ?? "new"), actor: "lead" });
+  await run.replacePage({ path: "wiki/api/core/domain.md", content: page("Domain", "Core", extra.body ?? "new"), actor: "lead" });
   const { contracts } = await run.dispatch([
     { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/source.md"] },
+    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/core/domain.md"] },
   ]);
   for (const contract of contracts) {
     await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
@@ -101,7 +113,7 @@ test("candidate is isolated and completely empty", async (t) => {
   assert.equal(metadata.version, 1);
   assert.equal(metadata.sourceFingerprint, "source-sha256");
   assert.equal(metadata.summary, "complete");
-  assert.deepEqual([...metadata.pages].sort(), ["core/domain.md", "overview.md"]);
+  assert.deepEqual([...metadata.pages].sort(), ["api/core/domain.md", "api/source.md", "overview.md"]);
   assert.match(metadata.finalTreeDigest, /^[a-f0-9]{64}$/);
 });
 
@@ -125,9 +137,11 @@ test("published metadata carries a validated final WikiSpec and remains loadable
   const second = await createWikiPublicationStore({ workspace }).prepareCandidate("invalid-spec");
   const invalidLead = await WikiLeadRun.open({
     workspace, runId: "invalid-spec", candidateWikiRoot: second, policy,
+    allowedSourceScopeIds: ["source"],
     assertActive: async () => {}, executionToken: "execution-invalid-spec",
   });
-  await assert.rejects(invalidLead.saveSpec({ pages: ["overview.md", "core/invoice/concept.md"] }), /domain\.md/);
+  await acceptTaxonomy(invalidLead);
+  await assert.rejects(invalidLead.saveSpec({ pages: ["overview.md", "api/source.md", "api/core/invoice/concept.md"] }), /domain\.md/);
 });
 
 test("publication rejects a valid seal issued for a different Run before mutating the published Wiki", async (t) => {
@@ -367,7 +381,7 @@ test("reconcile projects a published terminal fact after install crashes before 
   assert.deepEqual(await recoveryStore.reconcile("terminal-gap"), {
     state: "published",
     runId: "terminal-gap",
-    pages: ["core/domain.md", "overview.md"],
+    pages: ["api/core/domain.md", "api/source.md", "overview.md"],
     sourceFingerprint: "source-sha256",
     finalTreeDigest,
   });

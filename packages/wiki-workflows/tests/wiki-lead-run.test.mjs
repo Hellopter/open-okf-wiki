@@ -9,7 +9,7 @@ import { verifyWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
 
-const spec = { pages: ["overview.md", "core/domain.md"] };
+const spec = { pages: ["overview.md", "source/source.md", "source/core/domain.md"] };
 
 function content(type, title, suffix = "") {
   return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: repo:source/a.ts#L1-L1", "---", "", `Runtime behavior${suffix}.[^source-a]`, "", "[^source-a]: [Source](repo:source/a.ts#L1-L1)", ""].join("\n");
@@ -35,7 +35,8 @@ async function fixture(t, fault, finalizeFault) {
   ].join("\n"));
   const candidate = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
   const fence = createFence("execution-1");
-  const run = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, fault, finalizeFault, ...fence });
+  const run = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, fault, finalizeFault, allowedSourceScopeIds: ["source"], ...fence });
+  await run.saveTaxonomy({ revision: 1, decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }], conflictIds: [] });
   await run.saveSpec(spec);
   return { root, candidate, run, fence };
 }
@@ -71,10 +72,12 @@ async function settleReviews(run, tasks) {
 
 async function completeAndApprove(run) {
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
   return await settleReviews(run, [
     { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/source.md"] },
+    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
   ]);
 }
 
@@ -118,16 +121,18 @@ test("candidate recovery rejects an externally modified target it cannot prove",
 
 test("candidate rejects a symlink page and globally invalidates accepted review after any page write", async (t) => {
   const { root, candidate, run } = await fixture(t);
-  await mkdir(path.join(candidate, "core"), { recursive: true });
+  await mkdir(path.join(candidate, "source", "core"), { recursive: true });
   await symlink(path.join(root, "source", "a.ts"), path.join(candidate, "overview.md"));
   await assert.rejects(run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }), /regular file|escapes/);
   await rm(path.join(candidate, "overview.md"));
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
-  const reviewPaths = ["wiki/overview.md", "wiki/core/domain.md"];
+  await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
+  const reviewPaths = ["wiki/overview.md", "wiki/source/source.md", "wiki/source/core/domain.md"];
   await settleReviews(run, [
     { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-domain", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/source.md"] },
+    { id: "review-domain", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
   ]);
   await run.finish(reviewPaths, []);
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview", " changed"), actor: "lead" });
@@ -139,10 +144,10 @@ test("independent WikiLeadRun instances serialize page commits without losing a 
   const second = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
   await Promise.all([
     first.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }),
-    second.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
+    second.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
   ]);
   assert.match(await readFile(path.join(candidate, "overview.md"), "utf8"), /Runtime behavior/);
-  assert.match(await readFile(path.join(candidate, "core", "domain.md"), "utf8"), /Runtime behavior/);
+  assert.match(await readFile(path.join(candidate, "source", "core", "domain.md"), "utf8"), /Runtime behavior/);
   const state = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json"), "utf8"));
   assert.equal(state.candidateRevision, 3);
 });
@@ -150,13 +155,14 @@ test("independent WikiLeadRun instances serialize page commits without losing a 
 test("each review contract persists an exact independent path basis", async (t) => {
   const { run } = await fixture(t);
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
   const { contracts } = await run.dispatch([
     { id: "overview-review", role: "review", instruction: "Review overview", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "domain-review", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+    { id: "domain-review", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
   ]);
   assert.deepEqual(contracts[0].reviewBasis.paths, ["wiki/overview.md"]);
-  assert.deepEqual(contracts[1].reviewBasis.paths, ["wiki/core/domain.md"]);
+  assert.deepEqual(contracts[1].reviewBasis.paths, ["wiki/source/core/domain.md"]);
   assert.equal(contracts[0].reviewBasis.treeDigest, contracts[1].reviewBasis.treeDigest);
 });
 
@@ -181,6 +187,7 @@ test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => 
     attempt: 1,
     receipt: {
       id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
+      completedAssignmentIds: [], needsFollowup: false, followups: [],
       contractId: contract.contractId, contractDigest: contract.contractDigest,
     },
   });
@@ -239,10 +246,10 @@ test("durable execution token fence blocks stale write, settle, and seal after s
   await stale.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   const { contracts: [contract] } = await stale.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
   await stale.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-  const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: contract.contractDigest };
+  const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1, completedAssignmentIds: [], needsFollowup: false, followups: [], contractId: contract.contractId, contractDigest: contract.contractDigest };
   staleFence.retire("execution-new");
   await assert.rejects(
-    stale.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
+    stale.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
     /no longer active/,
   );
   await assert.rejects(stale.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt }), /no longer active/);
@@ -287,6 +294,15 @@ test("saveSpec writes host-owned board.md for the run", async (t) => {
   assert.match(board, /run: run-1/);
 });
 
+test("reopening a run regenerates a missing host-owned board from durable state", async (t) => {
+  const { root, candidate, fence } = await fixture(t);
+  const boardPath = path.join(root, ".okf-wiki", "runs", "run-1", "board.md");
+  await rm(boardPath);
+  await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
+  assert.match(await readFile(boardPath, "utf8"), /# Wiki board/);
+  assert.match(await readFile(boardPath, "utf8"), /digest:/);
+});
+
 test("observeCompaction projects compaction onto the board and disables direct writes", async (t) => {
   const { root, run } = await fixture(t);
   await run.observeCompaction();
@@ -297,19 +313,21 @@ test("observeCompaction projects compaction onto the board and disables direct w
 
 test("three terminal write or review tasks on one cluster block wiki_finish", async (t) => {
   const { run } = await fixture(t);
-  await settleWrite(run, "write-1", ["wiki/core/domain.md"]);
-  await settleWrite(run, "write-2", ["wiki/core/domain.md"]);
-  await settleWrite(run, "write-3", ["wiki/core/domain.md"]);
-  await assert.rejects(run.finish(["wiki/overview.md", "wiki/core/domain.md"], []), /blocked.*core/);
+  await settleWrite(run, "write-1", ["wiki/source/core/domain.md"]);
+  await settleWrite(run, "write-2", ["wiki/source/core/domain.md"]);
+  await settleWrite(run, "write-3", ["wiki/source/core/domain.md"]);
+  await assert.rejects(run.finish(["wiki/overview.md", "wiki/source/core/domain.md"], []), /blocked.*core/);
 });
 
 test("changes_requested and a later spec revision block finish", async (t) => {
   const { run } = await fixture(t);
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  await run.replacePage({ path: "wiki/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
   const { contracts } = await run.dispatch([
     { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/core/domain.md"] },
+    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/source.md"] },
+    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
   ]);
   for (const contract of contracts) {
     const requestChanges = contract.reviewPaths.includes("wiki/overview.md");
@@ -324,19 +342,19 @@ test("changes_requested and a later spec revision block finish", async (t) => {
           verdict: requestChanges ? "changes_requested" : "pass",
           reviewedPaths: contract.reviewPaths,
           findings: requestChanges
-            ? [{ path: "wiki/overview.md", severity: "major", message: "Missing evidence", evidence: ["src/a.ts#L1"], suggestion: "Add evidence" }]
+            ? [{ id: "missing-evidence", path: "wiki/overview.md", severity: "major" }]
             : [],
           profileCoverage: [],
         },
       },
     });
   }
-  await assert.rejects(run.finish(["wiki/overview.md", "wiki/core/domain.md"], []), /requested changes/);
+  await assert.rejects(run.finish(["wiki/overview.md", "wiki/source/source.md", "wiki/source/core/domain.md"], []), /requested changes/);
 
   const stale = await fixture(t);
   await completeAndApprove(stale.run);
   await stale.run.saveSpec(spec);
-  await assert.rejects(stale.run.finish(["wiki/overview.md", "wiki/core/domain.md"], []), /lacks passing independent review/);
+  await assert.rejects(stale.run.finish(["wiki/overview.md", "wiki/source/source.md", "wiki/source/core/domain.md"], []), /lacks passing independent review/);
 });
 
 for (const point of ["afterFinalizeJournal", "afterValidation", "afterObsoleteRemoval", "afterStamp", "afterIndexes", "afterCleanup", "afterFinalize", "afterSeal"]) {

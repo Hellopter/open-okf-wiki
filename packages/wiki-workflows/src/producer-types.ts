@@ -194,12 +194,14 @@ export interface WikiAgentOutcome {
   summary: string;
   coverage: string[];
   gaps: Array<{ question: string; sourceScopeIds?: string[] }>;
+  completedAssignmentIds?: string[];
+  followups?: Array<{ id: string; kind: "unread_scope" | "evidence_gap" | "conflict" | "taxonomy_uncertain" | "tool_failure"; question: string; sourceScopeIds: string[] }>;
   error?: { code: string; message: string; retryable: boolean; retryAfterMs?: number };
   attempts: number;
   review?: {
     verdict: "pass" | "changes_requested";
     reviewedPaths: string[];
-    findings: Array<{ path: string; severity: "critical" | "major" | "minor"; message: string; evidence: string[]; suggestion: string }>;
+    findings: Array<{ id: string; path: string; severity: "critical" | "major" | "minor" }>;
     profileCoverage: string[];
   };
 }

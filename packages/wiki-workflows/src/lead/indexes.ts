@@ -161,10 +161,12 @@ async function directoryDescriptor(
   if (!relativeDirectory) return { title: "Wiki", description: "" };
   const segments = relativeDirectory.split("/");
   const descriptorPage = segments.length === 1
-    ? `${relativeDirectory}/domain.md`
+    ? `${relativeDirectory}/source.md`
     : segments.length === 2
-      ? `${relativeDirectory}/concept.md`
-      : undefined;
+      ? `${relativeDirectory}/domain.md`
+      : segments.length === 3
+        ? `${relativeDirectory}/concept.md`
+        : undefined;
   if (descriptorPage && spec.pages.includes(descriptorPage)) {
     const parsed = parsePage(await readText(safeWikiPath(wikiRoot, descriptorPage)));
     const title = normalizeIndexText(parsed.frontmatter.title);

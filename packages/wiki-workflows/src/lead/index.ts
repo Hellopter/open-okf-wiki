@@ -6,10 +6,14 @@ export {
   wikiSpecClusterPaths,
   wikiSpecClusters,
   wikiSpecDomainIds,
+  wikiSpecDomainId,
+  wikiSpecDomainKey,
   wikiSpecPagePaths,
   wikiSpecPageType,
   wikiSpecPages,
   wikiSpecRelativePath,
+  wikiSpecSourceId,
+  wikiSpecSourceIds,
   type WikiSpec,
   type WikiSpecPage,
   type WikiSpecPageType,
@@ -23,7 +27,20 @@ export {
   type WikiBoardModel,
   type WikiBoardProjectionInput,
   type WikiBoardTask,
+  type WikiBoardWave,
+  type WikiBoardWaveName,
+  type WikiBoardWaveStatus,
+  type WikiBoardResearchAssignment,
+  type WikiBoardTaxonomyCheckpoint,
+  type WikiBoardTaxonomyDecision,
 } from "./board.js";
+export {
+  assertDispatchable,
+  wikiDispatchWave,
+  type WikiDispatchInput,
+  type WikiDispatchTaskInput,
+  type WikiLogicalWave,
+} from "./dispatch.js";
 export { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
 export { derivedIndexPaths } from "./validate.js";
 export {
@@ -34,6 +51,7 @@ export {
   type WikiLeadFinalizeFaultPoint,
   type WikiLeadRunOptions,
   type WikiLeadSpecRecord,
+  type WikiTaxonomyInput,
   type WikiTaskRuntimeTransitions,
 } from "./run.js";
 export {
@@ -42,6 +60,7 @@ export {
   createWikiDelegateStartTool,
   createWikiFinishTool,
   createWikiPlanTool,
+  createWikiTaxonomyTool,
   createWikiReviewFinishTool,
   type WikiLeadDelegateTask,
 } from "./host-tools.js";

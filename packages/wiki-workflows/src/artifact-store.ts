@@ -6,12 +6,16 @@ import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
 
 export const MAX_WIKI_RESEARCH_ARTIFACT_BYTES = 256 * 1024;
 
+export type WikiArtifactKind = "research-handoff" | "write-handoff" | "review-handoff";
+
 export interface WikiArtifactRef {
   version: 1;
   runId: string;
   nodeId: string;
   attempt: number;
-  kind: "research";
+  /** Host-derived source/domain/lens scope. Model output never supplies this. */
+  scope: string[];
+  kind: WikiArtifactKind;
   relativePath: string;
   sha256: string;
   sizeBytes: number;
@@ -22,7 +26,9 @@ export interface WikiArtifactWrite {
   runId: string;
   nodeId: string;
   attempt: number;
-  kind: "research";
+  /** Host-derived source/domain/lens scope. Model output never supplies this. */
+  scope: readonly string[];
+  kind: WikiArtifactKind;
   content: string;
 }
 
@@ -65,12 +71,14 @@ export function createWikiArtifactStore(options: { workspace: string }): WikiArt
         assertSize(bytes);
         const sha256 = digest(bytes);
         const relativePath = `.okf-wiki/blobs/${sha256}.md`;
+        const scope = [...input.scope];
         const ref: WikiArtifactRef = {
           version: 1,
           runId: input.runId,
           nodeId: input.nodeId,
           attempt: input.attempt,
-          kind: "research",
+          scope,
+          kind: input.kind,
           relativePath,
           sha256,
           sizeBytes: bytes.byteLength,
@@ -88,7 +96,12 @@ export function createWikiArtifactStore(options: { workspace: string }): WikiArt
         }
         const manifestFile = path.join(runsRoot, input.runId, "manifest.json");
         const manifest = await readManifest(okfRoot, manifestFile);
-        const artifacts = [...manifest.artifacts.filter((entry) => !sameLocation(entry, ref)), ref]
+        const previous = manifest.artifacts.find((entry) => sameLocation(entry, ref));
+        if (previous && (previous.sha256 !== ref.sha256 || previous.sizeBytes !== ref.sizeBytes || previous.relativePath !== ref.relativePath
+          || previous.scope.length !== ref.scope.length || previous.scope.some((value, index) => value !== ref.scope[index]))) {
+          throw new Error(`Wiki handoff artifact is immutable: ${ref.runId}/${ref.nodeId}/${ref.attempt}/${ref.kind}`);
+        }
+        const artifacts = [...manifest.artifacts.filter((entry) => !sameLocation(entry, ref)), previous ?? ref]
           .sort((left, right) => `${left.nodeId}:${left.attempt}`.localeCompare(`${right.nodeId}:${right.attempt}`));
         await ensureSafeDirectory(okfRoot, path.dirname(manifestFile));
         await writeText(manifestFile, `${JSON.stringify({ version: 1, artifacts })}\n`);
@@ -127,7 +140,7 @@ async function readManifest(root: string, file: string): Promise<WikiArtifactMan
 
 function validateRef(value: WikiArtifactRef): WikiArtifactRef {
   validateLocation(value);
-  if (value.version !== 1 || value.mediaType !== "text/markdown" || !/^[a-f0-9]{64}$/.test(value.sha256)
+    if (value.version !== 1 || value.mediaType !== "text/markdown" || !/^[a-f0-9]{64}$/.test(value.sha256)
     || !Number.isInteger(value.sizeBytes) || value.sizeBytes < 0 || value.sizeBytes > MAX_WIKI_RESEARCH_ARTIFACT_BYTES
     || value.relativePath !== `.okf-wiki/blobs/${value.sha256}.md`) {
     throw new Error("Invalid Wiki handoff artifact reference");
@@ -135,11 +148,14 @@ function validateRef(value: WikiArtifactRef): WikiArtifactRef {
   return value;
 }
 
-function validateLocation(value: Pick<WikiArtifactWrite, "runId" | "nodeId" | "attempt" | "kind">): void {
+function validateLocation(value: Pick<WikiArtifactWrite, "runId" | "nodeId" | "attempt" | "kind" | "scope">): void {
   if (!SAFE_COMPONENT.test(value.runId)) throw new Error("Invalid Wiki handoff run ID");
   if (!SAFE_COMPONENT.test(value.nodeId)) throw new Error("Invalid Wiki handoff node ID");
   if (!Number.isInteger(value.attempt) || value.attempt < 1 || value.attempt > 1_000_000) throw new Error("Invalid Wiki handoff attempt");
-  if (value.kind !== "research") throw new Error("Invalid Wiki handoff artifact kind");
+  if (!isWikiArtifactKind(value.kind)) throw new Error("Invalid Wiki handoff artifact kind");
+  if (!Array.isArray(value.scope) || value.scope.some((scope) => typeof scope !== "string" || !SAFE_COMPONENT.test(scope))) {
+    throw new Error("Invalid Wiki handoff artifact scope");
+  }
 }
 
 function sameLocation(left: WikiArtifactRef, right: WikiArtifactRef): boolean {
@@ -154,6 +170,10 @@ function assertSize(bytes: Uint8Array): void {
   if (bytes.byteLength > MAX_WIKI_RESEARCH_ARTIFACT_BYTES) {
     throw new Error(`Wiki handoff artifact exceeds the ${MAX_WIKI_RESEARCH_ARTIFACT_BYTES}-byte limit (${bytes.byteLength})`);
   }
+}
+
+function isWikiArtifactKind(value: unknown): value is WikiArtifactKind {
+  return value === "research-handoff" || value === "write-handoff" || value === "review-handoff";
 }
 
 function decode(bytes: Uint8Array): string {

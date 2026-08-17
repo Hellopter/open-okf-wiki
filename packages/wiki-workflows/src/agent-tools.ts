@@ -152,6 +152,7 @@ function readRootsForPolicy(
     assigned.push(root);
   }
   for (const writerPath of writerPaths ?? []) assigned.push(exactWorkspaceFileRoot(writerPath));
+  if (candidateWide && policy.boardPath) assigned.push(exactWorkspaceFileRoot(policy.boardPath));
   if (assigned.length === 0 && !candidateWide) {
     throw new Error("Workflow configuration error: agent requests require declared source roots or exact artifact paths");
   }

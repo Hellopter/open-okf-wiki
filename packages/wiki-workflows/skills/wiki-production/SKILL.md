@@ -9,25 +9,39 @@ The host already started this run. Inspect authorized source and the candidate,
 then finish through the supplied tools. Do not create workflow manifests,
 source copies, or alternate plans.
 
-1. Inspect authorized source and the candidate. Done when you can name the
-   domains and which concept clusters have evidence.
-2. Read [topology](references/topology.md), then submit the complete page path
-   list with `wiki_plan`. Done when the host accepts the plan. The host
-   derives pageType and cluster identity; it will reject illegal paths.
-3. Before every `wiki_delegate_start` or `wiki_finish`, read
+1. Inspect authorized source deterministically. Inventory every declared source
+   root, entry point, public boundary, important flow, persistence boundary,
+   and candidate semantic domain. Keep source names as provenance scopes; do
+   not promote a repository name to a domain without evidence.
+2. Start one discovery logical wave for all ready, independent coverage
+   assignments. Give each task disjoint `assignmentIds`, explicit source,
+   domain, and lens scopes, a stop condition, and a role-specific Markdown
+   handoff. Queue the complete ready wave in one `wiki_delegate_start`;
+   runtime concurrency controls actual sessions and retries remain attempts.
+3. Collect discovery and reconcile taxonomy once, then submit the compact
+   `wiki_taxonomy` checkpoint before `wiki_plan`. Record
+   merge/split/rename decisions, source-local detail, cross-source relations,
+   conflicts, and minority evidence. Root pages are cross-source synthesis;
+   source/domain/concept pages retain local provenance. Then read
+   [topology](references/topology.md) and submit the complete source-aware page
+   path list with `wiki_plan`.
+4. Before every `wiki_delegate_start` or `wiki_finish`, read
    `.okf-wiki/runs/<id>/board.md`. Dispatch from Remaining using those cluster
-   ids. One Source×Domain or one cluster for research; one cluster for write
-   or review. If the board shows `directWriteAllowed: yes`, write that cluster
-   yourself. Continue useful Lead work, then `wiki_delegate_collect` with the
-   batch id shown on the board. Use `wiki_delegate_cancel` when pending work
-   is no longer useful.
-4. Read delegated Markdown artifacts by reference with bounded `read` calls.
+   ids. One cluster for write or review. If the board shows
+   `directWriteAllowed: yes`, write that cluster yourself. Continue useful Lead
+   work, then `wiki_delegate_collect` with the batch id shown on the board. Use
+   `wiki_delegate_cancel` when pending work is no longer useful.
+5. Read delegated Markdown artifacts by reference with bounded `read` calls.
    When passing an artifact to another task, copy its exact
    `receipt.outputs[].nodeId` into that task's `contextRefs`. Treat failed or
    incomplete receipts as missing coverage, never as evidence of absence.
-5. Delegate independent review of every current cluster. Reviewers call
+6. A supplement is allowed only for a concrete unresolved gap, conflict, or
+   failed task shown on the board. Use `mode: supplement` and put the exact
+   blocker IDs in `resolvesIds`; never repeat a broad survey because writing
+   has started or because a result was inconvenient.
+7. Delegate independent review of every current cluster. Reviewers call
    `wiki_review_finish`. A write or plan revision invalidates prior passes.
-6. Call `wiki_finish` only after the board shows every current page with
+8. Call `wiki_finish` only after the board shows every current page with
    passing review coverage.
 
 `wiki_plan` envelope:
@@ -36,14 +50,16 @@ source copies, or alternate plans.
 {
   "pages": [
     "overview.md",
-    "billing/domain.md",
-    "billing/invoice/concept.md",
-    "billing/invoice/models.md"
+    "api/source.md",
+    "api/billing/domain.md",
+    "api/billing/invoice/concept.md",
+    "api/billing/invoice/models.md"
   ]
 }
 ```
 
-JSON is a small control envelope, not a prose handoff format.
+JSON is only for small control envelopes (`wiki_plan`, task dispatch, and finish
+tools), not for research, writing, review, or other prose handoffs.
 
 ## References
 

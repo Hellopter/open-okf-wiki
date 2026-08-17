@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,27 +17,47 @@ function store() {
     writes,
     async write(input) {
       writes.push(input);
-      return { version: 1, ...input, relativePath: `.okf-wiki/blobs/${input.nodeId}-${input.attempt}.md`, sha256: "a".repeat(64), sizeBytes: input.content.length, mediaType: "text/markdown" };
+      const sha256 = createHash("sha256").update(input.content, "utf8").digest("hex");
+      return { version: 1, runId: input.runId, nodeId: input.nodeId, attempt: input.attempt, scope: [...input.scope], kind: input.kind, relativePath: `.okf-wiki/blobs/${sha256}.md`, sha256, sizeBytes: Buffer.byteLength(input.content, "utf8"), mediaType: "text/markdown" };
     },
   };
 }
 
 function task(id, values = {}) {
-  return { id, role: "research", instruction: `Research ${id}`, sourceScopeIds: ["api"], contextRefs: [], ...values };
+  return { id, role: "research", instruction: `Research ${id}`, sourceScopeIds: ["api"], contextRefs: [], mode: "discovery", assignmentIds: [`${id}-assignment`], domainScopeIds: [], lensScopeIds: [], resolvesIds: [], ...values };
 }
 
 function runtime(agent, values = {}) {
   const { onStateChanged, restoredState, ...options } = values;
   const durable = normalizeState(restoredState ?? { batches: [] });
+  const handoffAgent = {
+    ...agent,
+    async run(contract, context) {
+      const result = await agent.run(contract, context);
+      return result?.markdown ? { ...result, markdown: testHandoff(contract, result.markdown) } : result;
+    },
+  };
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], contextArtifacts: {},
-    artifactStore: store(), agent, sleep: async () => {}, random: () => 0,
+    artifactStore: store(), agent: handoffAgent, sleep: async () => {}, random: () => 0,
     restoredState: durable,
     transitions: memoryTransitions(durable, onStateChanged),
     ...options,
   });
   nextBatches.set(subject, durable.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1));
   return subject;
+}
+
+function testHandoff(contract, body) {
+  const role = contract.role === "research" ? "Research" : contract.role === "write" ? "Write" : "Review";
+  const ids = contract.role === "research"
+    ? contract.assignmentIds.map((id) => `assignment:${id}`).join("\n")
+    : contract.role === "write"
+      ? contract.writePaths.map((path) => `page:${path}`).join("\n")
+      : "";
+  const section = contract.role === "research" ? `## Assignments\n${ids}\n## Coverage\n${ids}\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone`
+    : contract.role === "write" ? `## Pages\n${ids}` : "## Findings\n";
+  return `# ${role} Handoff\n${section}\n## Evidence\nrepo:api/test.ts#L1-L1\n\n${body}`;
 }
 
 async function runBatch(subject, tasks, signal = new AbortController().signal) {
@@ -102,7 +123,7 @@ test("durable queued contract commit completes before an Agent can launch", asyn
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run() { launched = true; return { summary: "ok", markdown: "ok" }; } },
+    agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok") }; } },
     transitions: { ...transitions, async batchQueued(contracts) { await queued; await transitions.batchQueued(contracts); } },
   });
   const starting = subject.start([contract(1, task("ordered"))], new AbortController().signal);
@@ -118,7 +139,7 @@ test("durable transition failure is consumed and surfaced by collect", async () 
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run() { return { summary: "ok", markdown: "ok" }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok") }; } },
     transitions: { ...transitions, async taskSettled() { throw new Error("durable settle failed"); } },
   });
   const { batchId } = await subject.start([contract(1, task("persist-failure"))], new AbortController().signal);
@@ -478,7 +499,7 @@ test("failed start that never registered does not poison a later start of the sa
   let failQueue = true;
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run() { return { summary: "ok", markdown: "ok" }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok") }; } },
     transitions: {
       ...transitions,
       async batchQueued(contracts) {
@@ -821,7 +842,7 @@ test("duplicate task ids produce independent batch-qualified artifact handles", 
     transitions: memoryTransitions(durable),
     agent: { async run(value, context) {
       if (value.id === "consumer") consumedHandles = Object.keys(context.contextArtifacts).sort();
-      return { summary: value.id, markdown: `${value.id}:${context.batch}` };
+      return { summary: value.id, markdown: testHandoff(value, `${value.id}:${context.batch}`) };
     } },
   });
   const first = await runBatch(r, [task("reused")]);

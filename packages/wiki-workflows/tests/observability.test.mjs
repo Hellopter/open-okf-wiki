@@ -123,7 +123,7 @@ test("run projection maps recent tool outcomes without inventing start verbs", (
 
 test("cluster labels come from a path-like or domain/concept task id only", () => {
   assert.equal(wikiTaskClusterLabel({ id: "core/runtime" }), "core/runtime");
-  assert.equal(wikiTaskClusterLabel({ id: "wiki/billing/invoice/models/line-item.md" }), "billing/invoice");
+  assert.equal(wikiTaskClusterLabel({ id: "wiki/billing/invoice/models/line-item.md" }), undefined);
   assert.equal(wikiTaskClusterLabel({ id: "wiki/overview.md" }), "_root");
   assert.equal(wikiTaskClusterLabel({ id: "overview.md" }), "_root");
   assert.equal(wikiTaskClusterLabel({ id: "write-auth" }), undefined);

@@ -12,6 +12,8 @@ export interface WorkspaceToolPolicy {
   candidateWikiRoot?: string;
   /** Optional materialized production skill; read-only for every role. */
   skillRoot?: string;
+  /** Exact run board exposed read-only to the Lead after compaction. */
+  boardPath?: string;
 }
 
 export interface PermittedToolRoot {
@@ -51,6 +53,7 @@ export function pinnedWorkspaceToolPolicy(
   plan: WikiPinnedSourcePlan,
   candidateWikiRoot?: string,
   skillRoot?: string,
+  boardPath?: string,
 ): WorkspaceToolPolicy {
   const workspaceRoot = path.resolve(plan.workspaceRoot);
   const sourceRoots = new Map(plan.sources.map((source) => [
@@ -62,6 +65,7 @@ export function pinnedWorkspaceToolPolicy(
   ]));
   const resolvedCandidateRoot = candidateWikiRoot === undefined ? undefined : insideWorkspace(workspaceRoot, candidateWikiRoot);
   const resolvedSkillRoot = skillRoot === undefined ? undefined : insideWorkspace(workspaceRoot, skillRoot);
+  const resolvedBoardPath = boardPath === undefined ? undefined : insideWorkspace(workspaceRoot, boardPath);
   if (resolvedCandidateRoot === workspaceRoot) throw new Error("Workflow configuration error: candidate Wiki root must be a workspace subdirectory");
   if (resolvedSkillRoot === workspaceRoot) throw new Error("Workflow configuration error: production skill root must be a workspace subdirectory");
   return {
@@ -70,6 +74,7 @@ export function pinnedWorkspaceToolPolicy(
     wikiRoot: path.join(workspaceRoot, "wiki"),
     ...(resolvedCandidateRoot ? { candidateWikiRoot: resolvedCandidateRoot } : {}),
     ...(resolvedSkillRoot ? { skillRoot: resolvedSkillRoot } : {}),
+    ...(resolvedBoardPath ? { boardPath: resolvedBoardPath } : {}),
   };
 }
 

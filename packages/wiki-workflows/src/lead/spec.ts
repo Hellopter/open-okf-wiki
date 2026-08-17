@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 
-const DOMAIN_ID = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const TOPOLOGY_VERSION = 2 as const;
+const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const PAGE_SLUG = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.md$/;
 const TYPE_BUCKETS = new Set(["concepts", "flows", "states", "data", "modules"]);
 const CLUSTER_FILES: Readonly<Record<string, WikiSpecPageType>> = {
@@ -13,29 +14,33 @@ const CLUSTER_FILES: Readonly<Record<string, WikiSpecPageType>> = {
   "modules.md": "module",
 };
 
-export type WikiSpecPageType = "overview" | "domain" | "architecture" | "module" | "flow" | "concept" | "state" | "data";
+export type WikiSpecPageType = "overview" | "architecture" | "source" | "domain" | "module" | "flow" | "concept" | "state" | "data";
 export type WikiSpecPage = { path: string; pageType: WikiSpecPageType };
-/** Wiki-relative paths, no wiki/ prefix; unique; input order preserved. */
-export type WikiSpec = { pages: string[] };
+/** Wiki-relative authored paths, no wiki/ prefix; unique; input order preserved. */
+export type WikiSpec = { pages: string[]; topologyVersion?: 2 };
 
 export const wikiPlanParameters = Type.Object({
-  pages: Type.Array(Type.String(), { minItems: 2 }),
+  pages: Type.Array(Type.String(), { minItems: 3 }),
+  topologyVersion: Type.Optional(Type.Literal(TOPOLOGY_VERSION)),
 }, { additionalProperties: false });
 
 export function wikiSpecRelativePath(pagePath: string): string {
   return pagePath.startsWith("wiki/") ? pagePath.slice("wiki/".length) : pagePath;
 }
 
-export function wikiSpecPageType(path: string): WikiSpecPageType | undefined {
-  const relative = wikiSpecRelativePath(path);
+/** Return the page type implied by a source-aware authored path. */
+export function wikiSpecPageType(pagePath: string): WikiSpecPageType | undefined {
+  const relative = wikiSpecRelativePath(pagePath);
   if (relative === "overview.md") return "overview";
   if (relative === "architecture.md") return "architecture";
   const segments = relative.split("/");
-  if (segments.length === 2 && segments[1] === "domain.md" && DOMAIN_ID.test(segments[0])) return "domain";
-  if (segments.length < 3) return undefined;
-  const [domain, concept] = segments;
-  const tail = segments.slice(2).join("/");
-  if (!DOMAIN_ID.test(domain) || !PAGE_SLUG.test(`${concept}.md`) || TYPE_BUCKETS.has(concept)) return undefined;
+  if (segments.length === 2 && segments[1] === "source.md" && SLUG.test(segments[0])) return "source";
+  if (segments.length === 3 && segments[2] === "domain.md" && SLUG.test(segments[0]) && SLUG.test(segments[1])) return "domain";
+  if (segments.length < 4) return undefined;
+
+  const [source, domain, concept] = segments;
+  const tail = segments.slice(3).join("/");
+  if (!SLUG.test(source) || !SLUG.test(domain) || !PAGE_SLUG.test(`${concept}.md`) || TYPE_BUCKETS.has(concept)) return undefined;
   if (CLUSTER_FILES[tail]) return CLUSTER_FILES[tail];
   if (tail.startsWith("models/") && PAGE_SLUG.test(tail.slice("models/".length))) return "data";
   return undefined;
@@ -49,24 +54,64 @@ export function wikiSpecPagePaths(spec: WikiSpec): string[] {
   return spec.pages;
 }
 
-export function wikiSpecDomainIds(spec: WikiSpec): string[] {
-  const ids: string[] = [];
-  for (const path of spec.pages) {
-    const relative = wikiSpecRelativePath(path);
-    const slash = relative.indexOf("/");
-    if (slash > 0 && relative.slice(slash + 1) === "domain.md" && DOMAIN_ID.test(relative.slice(0, slash))) {
-      ids.push(relative.slice(0, slash));
-    }
+/** Extract the source namespace from any source/domain/concept page. */
+export function wikiSpecSourceId(pagePath: string): string | undefined {
+  const relative = wikiSpecRelativePath(pagePath);
+  const pageType = wikiSpecPageType(relative);
+  if (!pageType || pageType === "overview" || pageType === "architecture") return undefined;
+  return relative.split("/")[0];
+}
+
+/** Extract the domain slug from a domain or concept page. */
+export function wikiSpecDomainId(pagePath: string): string | undefined {
+  const relative = wikiSpecRelativePath(pagePath);
+  const pageType = wikiSpecPageType(relative);
+  if (!pageType || pageType === "overview" || pageType === "architecture" || pageType === "source") return undefined;
+  return relative.split("/")[1];
+}
+
+/** Extract a collision-free source/domain key from a domain or concept page. */
+export function wikiSpecDomainKey(pagePath: string): string | undefined {
+  const source = wikiSpecSourceId(pagePath);
+  const domain = wikiSpecDomainId(pagePath);
+  return source && domain ? `${source}/${domain}` : undefined;
+}
+
+export function wikiSpecSourceIds(spec: WikiSpec): string[] {
+  const ids = new Set<string>();
+  for (const page of spec.pages) {
+    const source = wikiSpecSourceId(page);
+    if (source) ids.add(source);
   }
-  return ids;
+  return [...ids];
+}
+
+/**
+ * Return qualified domain keys for a multi-source spec. Passing a source
+ * filters the result and returns its local domain slugs.
+ */
+export function wikiSpecDomainIds(spec: WikiSpec, sourceId?: string): string[] {
+  const ids = new Set<string>();
+  for (const page of spec.pages) {
+    const source = wikiSpecSourceId(page);
+    const domain = wikiSpecDomainId(page);
+    if (!source || !domain || (sourceId !== undefined && source !== sourceId)) continue;
+    ids.add(sourceId === undefined ? `${source}/${domain}` : domain);
+  }
+  return [...ids];
 }
 
 export function wikiSpecClusterId(pagePath: string): string | undefined {
   const relative = wikiSpecRelativePath(pagePath);
-  if (relative === "overview.md" || relative === "architecture.md") return "_root";
-  const segments = relative.split("/");
-  if (segments.length < 2) return undefined;
-  return segments.length === 2 ? segments[0] : `${segments[0]}/${segments[1]}`;
+  const pageType = wikiSpecPageType(relative);
+  if (pageType === "overview" || pageType === "architecture") return "_root";
+  if (pageType === "source") return `${relative.split("/")[0]}/_source`;
+  if (pageType === "domain") return `${relative.split("/")[0]}/${relative.split("/")[1]}`;
+  if (pageType && ["module", "flow", "concept", "state", "data"].includes(pageType)) {
+    const segments = relative.split("/");
+    return segments.slice(0, 3).join("/");
+  }
+  return undefined;
 }
 
 export function wikiSpecClusterPaths(spec: WikiSpec, clusterId: string): string[] {
@@ -89,37 +134,56 @@ export function sameWikiCluster(paths: readonly string[]): boolean {
   return paths.every((pagePath) => wikiSpecClusterId(pagePath) === clusterId);
 }
 
-/** Parse an untrusted persisted or Agent-produced WikiSpec and enforce its complete topology. */
+/** Parse an untrusted persisted or Agent-produced WikiSpec and enforce v2 topology. */
 export function parseWikiSpec(value: unknown): WikiSpec {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("WikiSpec must be an object");
   }
   const record = value as Record<string, unknown>;
-  const extras = Object.keys(record).filter((key) => key !== "pages");
+  const extras = Object.keys(record).filter((key) => key !== "pages" && key !== "topologyVersion");
   if (extras.length) throw new Error(`WikiSpec has unknown field: ${extras[0]}`);
+  if (record.topologyVersion !== undefined && record.topologyVersion !== TOPOLOGY_VERSION) {
+    throw new Error("WikiSpec topologyVersion must be 2");
+  }
   if (!("pages" in record)) throw new Error("WikiSpec pages is required");
   const pages = record.pages;
   if (!Array.isArray(pages) || pages.some((page) => typeof page !== "string")) {
     throw new Error("WikiSpec pages must be an array of strings");
   }
   if (new Set(pages).size !== pages.length) throw new Error("WikiSpec page paths must be unique");
-  for (const path of pages) {
-    if (path !== wikiSpecRelativePath(path) || !wikiSpecPageType(path)) {
-      throw new Error(`WikiSpec page is not a legal cluster path: ${path}`);
+  for (const page of pages) {
+    if (page !== wikiSpecRelativePath(page) || !wikiSpecPageType(page)) {
+      throw new Error(`WikiSpec page is not a legal Source -> Domain -> Concept path: ${page}`);
     }
   }
   if (!pages.includes("overview.md")) throw new Error("WikiSpec must include overview.md");
-  const domainIds = new Set<string>();
-  const prefixes = new Set<string>();
-  for (const path of pages) {
-    const segments = path.split("/");
-    if (segments.length < 2) continue;
-    prefixes.add(segments[0]);
-    if (segments.length === 2 && segments[1] === "domain.md") domainIds.add(segments[0]);
+
+  const sources = new Set<string>();
+  const sourcePages = new Set<string>();
+  const domains = new Set<string>();
+  const domainPages = new Set<string>();
+  for (const page of pages) {
+    const source = wikiSpecSourceId(page);
+    if (!source) continue;
+    sources.add(source);
+    if (wikiSpecPageType(page) === "source") sourcePages.add(source);
+    const domain = wikiSpecDomainId(page);
+    if (domain) {
+      const key = `${source}/${domain}`;
+      domains.add(key);
+      if (wikiSpecPageType(page) === "domain") domainPages.add(key);
+    }
   }
-  if (!domainIds.size) throw new Error("WikiSpec must include at least one domain.md");
-  for (const domainId of prefixes) {
-    if (!domainIds.has(domainId)) throw new Error(`WikiSpec domain ${domainId} must include exactly one domain.md`);
+  if (!sources.size) throw new Error("WikiSpec must include at least one source.md");
+  for (const source of sources) {
+    if (!sourcePages.has(source)) throw new Error(`WikiSpec source ${source} must include exactly one source.md`);
   }
-  return { pages: [...pages] };
+  if (!domains.size) throw new Error("WikiSpec must include at least one domain.md");
+  for (const domain of domains) {
+    if (!domainPages.has(domain)) throw new Error(`WikiSpec domain ${domain} must include exactly one domain.md`);
+  }
+  return {
+    pages: [...pages],
+    ...(record.topologyVersion === TOPOLOGY_VERSION ? { topologyVersion: TOPOLOGY_VERSION } : {}),
+  };
 }

@@ -18,7 +18,7 @@ async function fixture(t) {
   return root;
 }
 
-const spec = () => ({ pages: ["overview.md", "runtime/domain.md"] });
+const spec = () => ({ pages: ["overview.md", "api/source.md", "api/runtime/domain.md"] });
 const markdown = (type, title) => ["---", `type: ${type}`, `title: ${title}`, "description: Runtime", "sources:", "  - id: runtime", "    resource: repo:src/index.ts#L1-L1", "---", "", "Runtime.[^runtime]", "", "[^runtime]: [Source](repo:src/index.ts#L1-L1)", ""].join("\n");
 
 function leadFence(request) {
@@ -29,15 +29,27 @@ function leadFence(request) {
   };
 }
 
+async function acceptTaxonomy(lead) {
+  await lead.saveTaxonomy({
+    revision: 1,
+    decisions: [{ sourceScopeId: ".", domainId: "runtime", conceptIds: [] }],
+    conflictIds: [],
+  });
+}
+
 async function writeComplete(request) {
   const lead = await WikiLeadRun.open({ workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot, policy: request.generation, requiredSections: request.generation.templates.requiredSections,
+    allowedSourceScopeIds: ["."],
     ...leadFence(request) });
+  await acceptTaxonomy(lead);
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: markdown("Overview", "Overview"), actor: "lead" });
-  await lead.replacePage({ path: "wiki/runtime/domain.md", content: markdown("Domain", "Runtime"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/api/source.md", content: markdown("Source", "API"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/api/runtime/domain.md", content: markdown("Domain", "Runtime"), actor: "lead" });
   const { batchId, contracts } = await lead.dispatch([
     { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/runtime/domain.md"] },
+    { id: "review-source", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/source.md"] },
+    { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/runtime/domain.md"] },
   ]);
   for (const contract of contracts) {
     await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
@@ -71,13 +83,16 @@ test("invalid full candidate fails deterministic validation and leaves published
   await writeFile(path.join(root, "wiki", "sentinel.md"), "published\n");
   const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
     const lead = await WikiLeadRun.open({ workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot, policy: request.generation,
+      allowedSourceScopeIds: ["."],
       ...leadFence(request) });
+    await acceptTaxonomy(lead);
     await lead.saveSpec(spec());
     await mkdir(path.join(request.candidateWikiRoot, "runtime"), { recursive: true });
     await writeFile(path.join(request.candidateWikiRoot, "overview.md"), "# invalid\n");
     await lead.dispatch([
       { id: "review-root", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-      { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/runtime/domain.md"] },
+      { id: "review-source", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/source.md"] },
+      { id: "review-runtime", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/runtime/domain.md"] },
     ]);
     return { kind: "complete", summary: "invalid" };
   } }) });
@@ -157,13 +172,13 @@ test("successful publication keeps provenance and run history while removing tra
     await mkdir(request.runSessionDirectory, { recursive: true });
     await writeFile(path.join(request.runSessionDirectory, "lead.jsonl"), "session\n");
     await writeFile(path.join(root, ".okf-wiki", "runs", request.runId, ".orphan.tmp-1"), "temporary\n");
-    artifact = await createWikiArtifactStore({ workspace: root }).write({ runId: request.runId, nodeId: "research", attempt: 1, kind: "research", content: "handoff\n" });
+    artifact = await createWikiArtifactStore({ workspace: root }).write({ runId: request.runId, nodeId: "research", attempt: 1, scope: ["api"], kind: "research-handoff", content: "handoff\n" });
     await writeComplete(request);
     return { kind: "complete", summary: "done" };
   } }) });
   const run = await producer.start({ cwd: root });
   const result = await run.result();
-  assert.deepEqual(result.pages, ["overview.md", "runtime/domain.md"]);
+  assert.deepEqual(result.pages, ["api/runtime/domain.md", "api/source.md", "overview.md"]);
   const runRoot = path.join(root, ".okf-wiki", "runs", run.id);
   const state = JSON.parse(await readFile(path.join(runRoot, "run-state.json"), "utf8"));
   assert.equal(state.status, "succeeded");

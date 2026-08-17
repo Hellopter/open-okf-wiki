@@ -14,13 +14,12 @@ import {
   parseWikiReviewBasis,
   type WikiDelegateContract,
   type WikiDelegateReceipt,
-  type WikiDelegateTask,
   type WikiReviewBasis,
 } from "../delegate-contracts.js";
 import type { WikiPinnedSourcePlan, WikiTaskRuntimeState } from "../runtime-types.js";
 import type { WikiDelegateBatchSnapshot } from "../delegate-contracts.js";
 import { finalizeWiki, materializeValidatedWikiIndexes, type WikiFinalizeFaultPoint } from "./finalize.js";
-import { parseWikiSpec, wikiSpecClusterPaths, wikiSpecPagePaths, type WikiSpec } from "./spec.js";
+import { parseWikiSpec, wikiSpecClusterPaths, wikiSpecDomainId, wikiSpecDomainIds, wikiSpecPagePaths, wikiSpecSourceId, wikiSpecSourceIds, type WikiSpec } from "./spec.js";
 import { canonicalizeWikiPageContent, formatIssue, resolvePinnedWikiRoots, validateWikiPageContent, type ResolvedWikiRoots } from "./validate.js";
 import { parseWikiReviewResult, type WikiReviewResult } from "../delegate-contracts.js";
 import {
@@ -29,7 +28,7 @@ import {
   type WikiPublicationSeal,
 } from "../wiki-publication-seal.js";
 import { sameStringSet, stableStringify } from "../util.js";
-import { projectWikiBoard, renderWikiBoard, wikiLeadMayWrite, type WikiBoardProjectionInput } from "./board.js";
+import { projectWikiBoard, renderWikiBoard, wikiLeadMayWrite, wikiOpenResearchBlockerIds, type WikiBoardProjectionInput, type WikiBoardTaxonomyCheckpoint, type WikiBoardTaxonomyDecision } from "./board.js";
 import { assertDispatchable } from "./dispatch.js";
 import { UnsupportedWikiRunVersionError, WIKI_FORMAT } from "../run-ledger.js";
 
@@ -48,7 +47,9 @@ interface WikiLeadRunState {
   specRevision: number;
   policyDigest: string;
   compactionObserved: boolean;
+  sourceScopeIds: string[];
   spec?: WikiSpec;
+  taxonomy?: WikiBoardTaxonomyCheckpoint;
   reviews: AcceptedReview[];
   delegates: WikiTaskRuntimeState;
 }
@@ -56,6 +57,12 @@ interface WikiLeadRunState {
 export interface WikiLeadSpecRecord {
   revision: number;
   spec: WikiSpec;
+}
+
+export interface WikiTaxonomyInput {
+  revision: number;
+  decisions: readonly WikiBoardTaxonomyDecision[];
+  conflictIds: readonly string[];
 }
 
 interface CandidateTransaction {
@@ -83,7 +90,11 @@ export interface WikiLeadRunOptions {
   assertActive: () => Promise<void>;
   executionToken: string;
   sourcePlan?: WikiPinnedSourcePlan;
+  /** Host-owned source scope IDs used when a pinned source plan is unavailable. */
+  allowedSourceScopeIds?: readonly string[];
   language?: "zh" | "en";
+  /** Run-wide queue budget; admission/concurrency is enforced by WikiTaskRuntime. */
+  maxDelegatedTasks?: number;
 }
 
 export interface WikiTaskRuntimeTransitions {
@@ -143,6 +154,7 @@ export class WikiLeadRun {
     private readonly assertActive: WikiLeadRunOptions["assertActive"],
     private readonly executionToken: string,
     private readonly pinnedRoots: ResolvedWikiRoots | undefined,
+    private readonly maxDelegatedTasks: number | undefined,
     private state: WikiLeadRunState,
   ) {}
 
@@ -159,20 +171,24 @@ export class WikiLeadRun {
     const journalFile = path.join(runRoot, "candidate-transaction.json");
     const lockFile = path.join(runRoot, "lead-operation.lock");
     const policyDigest = hash(stableStringify(options.policy));
+    const configuredSourceScopeIds = unique(options.sourcePlan?.sources.map((source) => source.scopeId) ?? options.allowedSourceScopeIds ?? []);
     let state = await readState(stateFile, options.runId);
-    state ??= emptyState(options.runId, policyDigest);
+    if (state && configuredSourceScopeIds.length && !sameStringSet(state.sourceScopeIds, configuredSourceScopeIds)) {
+      throw new Error("Pinned source scope IDs do not match the durable Wiki Lead run");
+    }
+    state ??= emptyState(options.runId, policyDigest, configuredSourceScopeIds);
+    if (!state.sourceScopeIds.length && configuredSourceScopeIds.length) state = { ...state, sourceScopeIds: configuredSourceScopeIds };
     const pinnedRoots = options.sourcePlan
       ? await resolvePinnedWikiRoots(options.sourcePlan, options.language ?? "en", candidateDirectory(workspace, candidate))
       : undefined;
-    const subject = new WikiLeadRun(workspace, options.runId, candidate, stateFile, journalFile, lockFile, options.requiredSections ?? [], options.fault, options.finalizeFault, options.assertActive, options.executionToken, pinnedRoots, state);
+    const subject = new WikiLeadRun(workspace, options.runId, candidate, stateFile, journalFile, lockFile, options.requiredSections ?? [], options.fault, options.finalizeFault, options.assertActive, options.executionToken, pinnedRoots, options.maxDelegatedTasks, state);
     await subject.serial(async () => {
       await subject.recover();
       if (subject.state.policyDigest !== policyDigest) {
         subject.state = { ...subject.state, policyDigest, candidateRevision: subject.state.candidateRevision + 1, reviews: [] };
-        await subject.writeState(subject.state);
-      } else if (!(await fileExists(stateFile))) {
-        await subject.writeState(subject.state);
       }
+      // Re-materialize the host board on every reopen so a missing or stale projection cannot survive compaction.
+      await subject.writeState(subject.state);
     });
     return subject;
   }
@@ -181,15 +197,38 @@ export class WikiLeadRun {
     return this.state.spec ? { revision: this.state.specRevision, spec: structuredClone(this.state.spec) } : undefined;
   }
 
+  get taxonomyCheckpoint(): WikiBoardTaxonomyCheckpoint | undefined {
+    return this.state.taxonomy ? structuredClone(this.state.taxonomy) : undefined;
+  }
+
   get compactionObserved(): boolean { return this.state.compactionObserved; }
 
   get taskRuntimeState(): WikiTaskRuntimeState { return structuredClone(this.state.delegates); }
 
+  async saveTaxonomy(value: unknown): Promise<WikiBoardTaxonomyCheckpoint> {
+    return await this.serial(async () => {
+      await this.recover();
+      if (this.state.spec) throw new Error("Wiki taxonomy must be accepted before wiki_plan");
+      const checkpoint = parseTaxonomyCheckpoint(value);
+      assertTaxonomySources(checkpoint, this.state.sourceScopeIds);
+      if (this.state.taxonomy && checkpoint.revision <= this.state.taxonomy.revision) {
+        throw new Error(`Wiki taxonomy revision must advance beyond ${this.state.taxonomy.revision}`);
+      }
+      const next = { ...this.state, taxonomy: checkpoint };
+      await this.writeState(next);
+      this.state = next;
+      return structuredClone(checkpoint);
+    });
+  }
+
   async saveSpec(specValue: unknown, expectedRevision = this.state.specRevision): Promise<WikiLeadSpecRecord> {
     return await this.serial(async () => {
       await this.recover();
+      if (!this.state.taxonomy?.accepted) throw new Error("Accept a Wiki taxonomy checkpoint with wiki_taxonomy before wiki_plan");
+      assertResearchReady(this.state);
       if (expectedRevision !== this.state.specRevision) throw new Error(`WikiSpec revision conflict: expected ${expectedRevision}, found ${this.state.specRevision}`);
       const spec = parseWikiSpec(specValue);
+      assertTaxonomyOwnership(this.state.taxonomy, spec, this.state.sourceScopeIds);
       const next = { ...this.state, spec, specRevision: this.state.specRevision + 1, candidateRevision: this.state.candidateRevision + 1, reviews: [] };
       await this.writeState(next);
       this.state = next;
@@ -258,7 +297,17 @@ export class WikiLeadRun {
         knownContextRefs: knownContextRefs(this.state),
         delegatedTasks: delegatedTaskCount(this.state),
         delegateBatches: this.state.delegates.batches.length,
+        maxDelegatedTasks: this.maxDelegatedTasks,
+        existingResearchTasks: this.state.delegates.batches.flatMap((batch) => batch.tasks)
+          .map((task) => task.task)
+          .filter((task) => task.role === "research")
+          .map((task) => ({ id: task.id, mode: task.mode, assignmentIds: task.assignmentIds, resolvesIds: task.resolvesIds })),
+        knownResearchBlockerIds: wikiOpenResearchBlockerIds(this.state.delegates.batches.flatMap((batch) => batch.tasks).map(researchBlockerTask)),
       });
+      if ((values.some((value) => taskRole(value) === "write" || taskRole(value) === "review"))
+        && (!this.state.taxonomy?.accepted || !this.state.spec || !researchReady(this.state))) {
+        throw new Error("Wiki write/review dispatch requires an accepted taxonomy, WikiSpec, and complete research wave");
+      }
       const parsed = values.map((value) => parseWikiDelegateTask(expandDispatchTask(value, this.state.spec)));
       const batchId = this.state.delegates.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1);
       if (!Number.isSafeInteger(batchId)) throw new Error("Delegate batch identity is exhausted");
@@ -621,8 +670,8 @@ export class WikiLeadExecutionFencedError extends Error {
   constructor(message: string) { super(message); this.name = "WikiLeadExecutionFencedError"; }
 }
 
-function emptyState(runId: string, policyDigest: string): WikiLeadRunState {
-  return { version: WIKI_FORMAT, runId, candidateRevision: 0, specRevision: 0, policyDigest, compactionObserved: false, reviews: [], delegates: { batches: [] } };
+function emptyState(runId: string, policyDigest: string, sourceScopeIds: readonly string[]): WikiLeadRunState {
+  return { version: WIKI_FORMAT, runId, candidateRevision: 0, specRevision: 0, policyDigest, compactionObserved: false, sourceScopeIds: [...sourceScopeIds], reviews: [], delegates: { batches: [] } };
 }
 
 async function readState(location: string, runId: string): Promise<WikiLeadRunState | undefined> {
@@ -633,13 +682,13 @@ async function readState(location: string, runId: string): Promise<WikiLeadRunSt
 function parseState(value: unknown, runId: string, requireDigest = true): WikiLeadRunState {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki Lead run state for ${runId}`);
   const raw = value as unknown as Record<string, unknown>;
-  if (Object.keys(raw).some((key) => !["version", "runId", "candidateRevision", "specRevision", "policyDigest", "compactionObserved", "spec", "reviews", "delegates", "stateDigest"].includes(key))) throw new Error(`Invalid Wiki Lead run state for ${runId}`);
+  if (Object.keys(raw).some((key) => !["version", "runId", "candidateRevision", "specRevision", "policyDigest", "compactionObserved", "sourceScopeIds", "spec", "taxonomy", "reviews", "delegates", "stateDigest"].includes(key))) throw new Error(`Invalid Wiki Lead run state for ${runId}`);
   const { stateDigest, ...body } = raw;
   if (requireDigest && (typeof stateDigest !== "string" || stateDigest !== hash(stableStringify(body)))) throw new Error(`Wiki Lead run state integrity check failed for ${runId}`);
   if (raw.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/lead-state.json`, raw.version);
   if (raw.runId !== runId || !Number.isSafeInteger(raw.candidateRevision) || (raw.candidateRevision as number) < 0
     || !Number.isSafeInteger(raw.specRevision) || (raw.specRevision as number) < 0 || typeof raw.policyDigest !== "string" || !/^[a-f0-9]{64}$/.test(raw.policyDigest)
-    || typeof raw.compactionObserved !== "boolean" || !Array.isArray(raw.reviews) || !raw.delegates
+    || typeof raw.compactionObserved !== "boolean" || raw.sourceScopeIds !== undefined && (!Array.isArray(raw.sourceScopeIds) || raw.sourceScopeIds.some((id) => typeof id !== "string" || !id) || new Set(raw.sourceScopeIds).size !== raw.sourceScopeIds.length) || !Array.isArray(raw.reviews) || !raw.delegates
     || (raw.spec === undefined) !== (raw.specRevision === 0)) throw new Error(`Invalid Wiki Lead run state for ${runId}`);
   return {
     version: WIKI_FORMAT,
@@ -648,11 +697,92 @@ function parseState(value: unknown, runId: string, requireDigest = true): WikiLe
     specRevision: raw.specRevision as number,
     policyDigest: raw.policyDigest as string,
     compactionObserved: raw.compactionObserved,
+    sourceScopeIds: raw.sourceScopeIds === undefined ? [] : [...raw.sourceScopeIds] as string[],
     ...(raw.spec ? { spec: parseWikiSpec(raw.spec) } : {}),
+    ...(raw.taxonomy ? { taxonomy: parseTaxonomyCheckpoint(raw.taxonomy) } : {}),
     reviews: raw.reviews.map(parseAcceptedReview),
     delegates: parseDelegateState(raw.delegates),
   };
 }
+
+function parseTaxonomyCheckpoint(value: unknown): WikiBoardTaxonomyCheckpoint {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Wiki taxonomy checkpoint");
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => !["accepted", "revision", "decisions", "conflictIds", "digest"].includes(key))) throw new Error("Invalid Wiki taxonomy checkpoint");
+  if (raw.accepted !== undefined && raw.accepted !== true || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 1 || !Array.isArray(raw.decisions) || !Array.isArray(raw.conflictIds)) {
+    throw new Error("Invalid Wiki taxonomy checkpoint");
+  }
+  const decisions: WikiBoardTaxonomyDecision[] = raw.decisions.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Invalid Wiki taxonomy decision");
+    const decision = entry as Record<string, unknown>;
+    if (Object.keys(decision).some((key) => !["sourceScopeId", "domainId", "conceptIds"].includes(key))
+      || typeof decision.sourceScopeId !== "string" || !decision.sourceScopeId
+      || typeof decision.domainId !== "string" || !decision.domainId
+      || !Array.isArray(decision.conceptIds) || decision.conceptIds.some((id) => typeof id !== "string" || !id)) {
+      throw new Error("Invalid Wiki taxonomy decision");
+    }
+    return { sourceScopeId: decision.sourceScopeId, domainId: decision.domainId, conceptIds: [...decision.conceptIds] as string[] };
+  });
+  const conflictIds = raw.conflictIds.map((id) => {
+    if (typeof id !== "string" || !id) throw new Error("Invalid Wiki taxonomy conflict ID");
+    return id;
+  });
+  const body = { revision: raw.revision, decisions, conflictIds };
+  const digest = raw.digest === undefined ? hash(stableStringify(body)) : raw.digest;
+  if (typeof digest !== "string" || digest !== hash(stableStringify(body))) throw new Error("Wiki taxonomy checkpoint digest mismatch");
+  return { accepted: true, revision: raw.revision as number, decisions, conflictIds, digest };
+}
+
+function assertTaxonomySources(checkpoint: WikiBoardTaxonomyCheckpoint, allowedSourceScopeIds: readonly string[]): void {
+  const allowed = new Set(allowedSourceScopeIds);
+  for (const decision of checkpoint.decisions) {
+    if (!allowed.has(decision.sourceScopeId)) throw new Error(`Wiki taxonomy references undeclared source scope: ${decision.sourceScopeId}`);
+  }
+}
+
+function assertTaxonomyOwnership(checkpoint: WikiBoardTaxonomyCheckpoint, spec: WikiSpec, allowedSourceScopeIds: readonly string[]): void {
+  assertTaxonomySources(checkpoint, allowedSourceScopeIds);
+  const specSourceIds = wikiSpecSourceIds(spec);
+  for (const decision of checkpoint.decisions) {
+    // Source scopes are pinned physical IDs; a single-source spec may use a different
+    // authored namespace, while multi-source specs must identify their authored source.
+    const ownedSources = specSourceIds.includes(decision.sourceScopeId) ? [decision.sourceScopeId] : specSourceIds.length === 1 ? specSourceIds : [];
+    if (!ownedSources.some((sourceId) => wikiSpecDomainIds(spec, sourceId).includes(decision.domainId))) {
+      throw new Error(`Wiki taxonomy domain is not owned by source ${decision.sourceScopeId}: ${decision.domainId}`);
+    }
+    const concepts = new Set(spec.pages.flatMap((page) => {
+      if (!ownedSources.includes(wikiSpecSourceId(page) ?? "") || wikiSpecDomainId(page) !== decision.domainId) return [];
+      const segments = page.split("/");
+      return segments.length >= 4 ? [segments[2]] : [];
+    }));
+    for (const conceptId of decision.conceptIds) {
+      if (!concepts.has(conceptId)) throw new Error(`Wiki taxonomy concept is not owned by ${decision.sourceScopeId}/${decision.domainId}: ${conceptId}`);
+    }
+  }
+}
+
+function assertResearchReady(state: WikiLeadRunState): void {
+  if (!researchReady(state)) throw new Error("Wiki taxonomy cannot be planned until the discovery research wave is complete");
+}
+
+function researchReady(state: WikiLeadRunState): boolean {
+  const research = state.delegates.batches.flatMap((batch) => batch.tasks).filter((task) => task.task.role === "research");
+  return research.every((task) => task.phase === "terminal" && task.receipt?.status === "complete")
+    && wikiOpenResearchBlockerIds(research.map(researchBlockerTask)).length === 0;
+}
+
+function researchBlockerTask(task: WikiTaskRuntimeState["batches"][number]["tasks"][number]) {
+  const base = { id: task.task.id, role: task.task.role, phase: task.phase, ...(task.receipt ? { receipt: task.receipt } : {}) };
+  return task.task.role === "research" ? { ...base, mode: task.task.mode, resolvesIds: task.task.resolvesIds } : base;
+}
+
+function taskRole(value: unknown): string | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>).role === "string"
+    ? (value as Record<string, unknown>).role as string
+    : undefined;
+}
+
+function unique(values: readonly string[]): string[] { return [...new Set(values)]; }
 
 function parseAcceptedReview(value: unknown): AcceptedReview {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid accepted Wiki review");
@@ -814,6 +944,7 @@ function boardInput(state: WikiLeadRunState): WikiBoardProjectionInput {
     runId: state.runId,
     specRevision: state.specRevision,
     candidateRevision: state.candidateRevision,
+    ...(state.taxonomy ? { taxonomy: state.taxonomy } : {}),
     compactionObserved: state.compactionObserved,
     spec: state.spec,
     reviews: state.reviews.map((review) => ({ verdict: review.verdict, reviewedPaths: review.reviewedPaths })),
@@ -824,17 +955,37 @@ function boardInput(state: WikiLeadRunState): WikiBoardProjectionInput {
           id: task.task.id,
           role: task.task.role,
           phase: task.phase,
+          ...(task.task.role === "research" ? {
+            mode: task.task.mode,
+            sourceScopeIds: task.task.sourceScopeIds,
+            contextRefs: task.task.contextRefs,
+            assignmentIds: task.task.assignmentIds,
+            domainScopeIds: task.task.domainScopeIds,
+            lensScopeIds: task.task.lensScopeIds,
+            resolvesIds: task.task.resolvesIds,
+          } : {}),
           ...(task.task.role === "write" ? { writePaths: task.task.writePaths } : {}),
           ...(task.task.role === "review" ? { reviewPaths: task.task.reviewPaths } : {}),
-          ...(task.receipt ? { receipt: { status: task.receipt.status, ...(task.receipt.error ? { error: { code: task.receipt.error.code } } : {}) } } : {}),
+          ...(task.receipt ? { receipt: {
+            status: task.receipt.status,
+            ...(task.receipt.error ? { error: { code: task.receipt.error.code } } : {}),
+            ...(task.receipt.outputs ? { outputs: task.receipt.outputs } : {}),
+            ...(task.receipt.completedAssignmentIds ? { completedAssignmentIds: task.receipt.completedAssignmentIds } : {}),
+            ...(task.receipt.needsFollowup !== undefined ? { needsFollowup: task.receipt.needsFollowup } : {}),
+            ...(task.receipt.followups ? { followups: task.receipt.followups } : {}),
+            ...(task.receipt.coverage ? { coverage: task.receipt.coverage } : {}),
+            ...(task.receipt.gaps ? { gaps: task.receipt.gaps } : {}),
+          } } : {}),
         })),
       })),
     },
   };
 }
-function dispatchTaskInput(value: unknown): { id?: string; role?: string; instruction?: string; cluster?: string; writePaths?: readonly string[]; reviewPaths?: readonly string[]; contextRefs?: readonly string[] } {
+function dispatchTaskInput(value: unknown): { id?: string; role?: string; instruction?: string; cluster?: string; writePaths?: readonly string[]; reviewPaths?: readonly string[]; contextRefs?: readonly string[]; mode?: "discovery" | "supplement"; assignmentIds?: readonly string[]; domainScopeIds?: readonly string[]; lensScopeIds?: readonly string[]; resolvesIds?: readonly string[] } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const task = value as Record<string, unknown>;
+  const id = typeof task.id === "string" ? task.id : undefined;
+  const role = typeof task.role === "string" ? task.role : undefined;
   return {
     ...(typeof task.id === "string" ? { id: task.id } : {}),
     ...(typeof task.role === "string" ? { role: task.role } : {}),
@@ -843,6 +994,7 @@ function dispatchTaskInput(value: unknown): { id?: string; role?: string; instru
     ...(Array.isArray(task.writePaths) ? { writePaths: task.writePaths.filter((path): path is string => typeof path === "string") } : {}),
     ...(Array.isArray(task.reviewPaths) ? { reviewPaths: task.reviewPaths.filter((path): path is string => typeof path === "string") } : {}),
     ...(Array.isArray(task.contextRefs) ? { contextRefs: task.contextRefs.filter((path): path is string => typeof path === "string") } : {}),
+    ...(role === "research" ? { mode: task.mode === "supplement" ? "supplement" : "discovery", assignmentIds: Array.isArray(task.assignmentIds) ? task.assignmentIds.filter((value): value is string => typeof value === "string") : (id ? [id] : []), domainScopeIds: Array.isArray(task.domainScopeIds) ? task.domainScopeIds.filter((value): value is string => typeof value === "string") : [], lensScopeIds: Array.isArray(task.lensScopeIds) ? task.lensScopeIds.filter((value): value is string => typeof value === "string") : [], resolvesIds: Array.isArray(task.resolvesIds) ? task.resolvesIds.filter((value): value is string => typeof value === "string") : [] } : {}),
   };
 }
 
@@ -853,6 +1005,14 @@ function expandDispatchTask(value: unknown, spec: WikiSpec | undefined): unknown
   delete task.cluster;
   if (!Array.isArray(task.sourceScopeIds)) task.sourceScopeIds = [];
   if (!Array.isArray(task.contextRefs)) task.contextRefs = [];
+  if (task.role === "research") {
+    if (task.mode !== "discovery" && task.mode !== "supplement") task.mode = "discovery";
+    if (!Array.isArray(task.assignmentIds)) task.assignmentIds = typeof task.id === "string" ? [task.id] : [];
+    if (!Array.isArray(task.domainScopeIds)) task.domainScopeIds = [];
+    if (!Array.isArray(task.lensScopeIds)) task.lensScopeIds = [];
+    if (!Array.isArray(task.resolvesIds)) task.resolvesIds = [];
+    return task;
+  }
   if (task.role !== "write" && task.role !== "review") return task;
   if (!cluster?.trim()) return task;
   if (!spec) throw new Error(`Submit an accepted WikiSpec before delegating ${task.role} tasks`);
@@ -880,7 +1040,6 @@ function serializeState(state: WikiLeadRunState): string {
   return `${JSON.stringify({ ...body, stateDigest: hash(stableStringify(body)) }, null, 2)}\n`;
 }
 function hash(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex"); }
-async function fileExists(location: string): Promise<boolean> { try { await lstat(location); return true; } catch (error) { if (isMissing(error)) return false; throw error; } }
 function isMissing(error: unknown): error is NodeJS.ErrnoException { return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT"); }
 
 async function acquireRunLease(location: string): Promise<() => Promise<void>> {

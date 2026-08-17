@@ -150,14 +150,16 @@ test("Pi leaf reopens its exact persisted session without overriding the saved m
     },
   }, { async replacePage() {} });
   await agent.run(
-    { id: "resumed-leaf", role: "write", instruction: "write resumed-leaf", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/resumed-leaf.md"] },
+    { id: "source-cluster", role: "write", instruction: "write source-cluster", sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/source/core/domain.md"] },
     { ...leafContext(root, candidateWikiRoot), attempt: 3, sessionFile },
   );
   assert.equal(receivedOptions.sessionManager.getSessionFile(), sessionFile);
   assert.equal(Object.hasOwn(receivedOptions, "model"), false);
   assert.equal(Object.hasOwn(receivedOptions, "thinkingLevel"), false);
   assert.ok(!prompt.startsWith("/skill:"));
-  assert.match(prompt, /# Writer|Write one cluster|write resumed-leaf/);
+  assert.match(prompt, /# Writer|Write one cluster|write source-cluster/);
+  assert.match(prompt, /source: source-a/);
+  assert.match(prompt, /Frontmatter type must match the WikiSpec pageType \(Overview\/Source\/Domain\/Architecture\/Module\/Flow\/Concept\/State\/Data\)\./);
 });
 
 test("Pi Lead rejects model fallback while reopening a persisted session", async (t) => {
@@ -400,15 +402,43 @@ test("Pi leaf looks up declared source scopeIds, not absolute source paths", asy
       assert.match(JSON.stringify(read), /export const a/);
       await assert.rejects(execute(options.customTools, "read", { path: "." }), /outside the permitted workspace scope[\s\S]*source/);
       await assert.rejects(execute(options.customTools, "grep", { path: root, pattern: "export" }), /outside the permitted workspace scope[\s\S]*source/);
-      await execute(options.customTools, "wiki_research_finish", { status: "complete", summary: "surveyed", coverage: ["source"], gaps: [] });
+      await execute(options.customTools, "wiki_research_finish", { status: "complete", summary: "surveyed", completedAssignmentIds: ["assignment-1"], needsFollowup: false, followups: [] });
     }, { text: "# surveyed" })(options),
   });
   await agent.run(
-    { id: "survey", role: "research", instruction: "Survey source", sourceScopeIds: ["source"], contextRefs: [] },
+    { id: "survey", role: "research", instruction: "Survey source", sourceScopeIds: ["source"], contextRefs: [], mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [] },
     leafContext(root, candidateWikiRoot),
   );
   assert.match(prompt, /Readable source trees \(cwd-relative\): source/);
   assert.doesNotMatch(prompt, new RegExp(sourceAbs.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("Lead can read the host-owned board through its explicit read seam", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let board;
+  const runtime = createPiLeadRuntime({
+    createSession: async (options) => sessionFactory(async () => {
+      board = await execute(options.customTools, "read", { path: ".okf-wiki/runs/run-1/board.md" });
+    }, { text: "done" })(options),
+  });
+  await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /without wiki_finish/);
+  assert.match(JSON.stringify(board), /# Wiki board/);
+});
+
+test("Lead taxonomy tool durably accepts a compact source-qualified checkpoint", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let taxonomy;
+  const runtime = createPiLeadRuntime({
+    createSession: async (options) => sessionFactory(async () => {
+      taxonomy = await execute(options.customTools, "wiki_taxonomy", {
+        revision: 1,
+        decisions: [{ sourceScopeId: "source", domainId: "runtime", conceptIds: ["session"] }],
+        conflictIds: ["conflict-runtime"],
+      });
+    }, { text: "done" })(options),
+  });
+  await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /without wiki_finish/);
+  assert.match(JSON.stringify(taxonomy), /conflict-runtime/);
 });
 
 test("Pi research leaf with empty sourceScopeIds and no artifacts fails closed", async (t) => {

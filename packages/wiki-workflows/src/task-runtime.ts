@@ -11,7 +11,11 @@ import {
   type WikiDelegateRole,
   type WikiDelegateContract,
   type WikiTaskFailureCode,
+  type WikiResearchCompletion,
+  canonicalWikiFollowupId,
+  type WikiDelegateFollowup,
 } from "./delegate-contracts.js";
+import { ingestEvidenceHandoff } from "./evidence-ledger.js";
 import { classifyWikiAttemptFailure, decideWikiAgentAttempt } from "./agent-attempt-policy.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
 import { WIKI_MANUAL_PAUSE } from "./runtime-types.js";
@@ -58,6 +62,7 @@ export interface WikiLeafResult {
   status?: "complete" | "incomplete";
   usage?: WikiContextStats;
   review?: WikiReviewResult;
+  research?: WikiResearchCompletion;
 }
 
 export interface WikiLeafAgent {
@@ -492,8 +497,15 @@ export class WikiTaskRuntime {
         };
         await this.fireProgress({ batchId: batch, phase: "start", task, telemetry: startedTelemetry });
         const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry, record.state.sessionFile));
+        const completion = result.research;
         const output = await this.persist(task, batch, attempt, result.markdown);
-        const successReceipt = receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt, result.review);
+        ingestEvidenceHandoff({
+          artifact: output,
+          markdown: result.markdown,
+          contract: task,
+          ...(completion ? { completedAssignmentIds: completion.completedAssignmentIds, followups: completion.followups } : {}),
+        });
+        const successReceipt = receipt(task, result.status ?? completion?.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt, result.review, completion);
         return { kind: "terminal", receipt: successReceipt, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry };
       } catch (error) {
         if (pauseInterruption(signal) !== undefined) throw error;
@@ -583,9 +595,8 @@ export class WikiTaskRuntime {
         runId: this.options.runId,
         nodeId: artifactNodeId(batch, task.id),
         attempt,
-        // The current artifact store assigns Markdown media type to research.
-        // Receipt.role carries the task meaning; the payload remains model-friendly Markdown.
-        kind: "research",
+        kind: task.role === "research" ? "research-handoff" : task.role === "write" ? "write-handoff" : "review-handoff",
+        scope: scopeForTask(task),
         content: markdown.endsWith("\n") ? markdown : `${markdown}\n`,
       });
     } catch (error) {
@@ -781,20 +792,33 @@ function receipt(
   failure?: WikiDelegateError,
   attempts = 1,
   review?: WikiReviewResult,
+  research?: WikiResearchCompletion,
 ): WikiDelegateReceipt {
+  const researchFollowupDrafts = task.role === "research"
+    ? (research?.followups ?? (status === "complete" ? [] : [{ kind: "tool_failure" as const, question: summary, sourceScopeIds: task.sourceScopeIds }]))
+    : [];
+  const followups: WikiDelegateFollowup[] | undefined = task.role === "research"
+    ? researchFollowupDrafts.map((followup) => ({ ...followup, id: canonicalWikiFollowupId(task.contractId, followup) }))
+    : undefined;
+  const completedAssignmentIds = task.role === "research"
+    ? task.assignmentIds.filter((id) => research?.completedAssignmentIds.includes(id) ?? false)
+    : undefined;
   return {
     id: task.id,
     role: task.role,
     status,
     summary: boundedDelegateSummary(summary),
     outputs,
-    coverage: [...new Set(coverage)],
-    gaps,
     error: failure && { code: failure.code, message: failure.message, retryable: failure.retryable, retryAfterMs: failure.retryAfterMs },
     attempts,
     contractId: task.contractId,
     contractDigest: task.contractDigest,
     ...(review ? { review } : {}),
+    ...(task.role === "research" ? {
+      completedAssignmentIds: [...(completedAssignmentIds ?? [])],
+      needsFollowup: research?.needsFollowup ?? status !== "complete",
+      ...(followups ? { followups } : {}),
+    } : {}),
   };
 }
 
@@ -804,6 +828,14 @@ function partialResult(error: unknown): { markdown?: string; coverage?: string[]
     coverage: error.options.coverage,
     gaps: error.options.gaps,
   } : {};
+}
+
+function scopeForTask(task: WikiDelegateContract): string[] {
+  return [...new Set([
+    ...task.sourceScopeIds,
+    ...(task.role === "research" ? task.domainScopeIds : []),
+    ...(task.role === "research" ? task.lensScopeIds : []),
+  ])];
 }
 
 async function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
