@@ -47,11 +47,12 @@ export function parseWikiResearchCompletion(value: unknown): WikiResearchComplet
   if (raw.status !== "complete" && raw.status !== "incomplete") throw new Error("Invalid Wiki research completion status");
   const summary = nonEmpty(raw.summary, "Wiki research completion summary");
   if (Buffer.byteLength(summary, "utf8") > 1024) throw new Error("Wiki research completion summary exceeds 1024 bytes");
-  const completedAssignmentIds = nonEmptyStrings(raw.completedAssignmentIds, "Wiki research completedAssignmentIds");
+  const completedAssignmentIds = strings(raw.completedAssignmentIds, "Wiki research completedAssignmentIds");
   if (new Set(completedAssignmentIds).size !== completedAssignmentIds.length) throw new Error("Wiki research completedAssignmentIds must be unique");
   if (typeof raw.needsFollowup !== "boolean") throw new Error("Invalid Wiki research needsFollowup");
   const followups = parseResearchFollowups(raw.followups);
   if (raw.needsFollowup !== (followups.length > 0)) throw new Error("Wiki research needsFollowup must match followups");
+  if (raw.status === "incomplete" && !raw.needsFollowup) throw new Error("Incomplete Wiki research requires followups");
   return { status: raw.status, summary, completedAssignmentIds, needsFollowup: raw.needsFollowup, followups };
 }
 
@@ -339,6 +340,7 @@ export function parseWikiDelegateReceipt(value: unknown): WikiDelegateReceipt {
   const contractId = safeId(raw.contractId, "Wiki delegate receipt contract id");
   const contractDigest = digest(raw.contractDigest, "Wiki delegate receipt contract digest");
   const completedAssignmentIds = raw.completedAssignmentIds === undefined ? undefined : strings(raw.completedAssignmentIds, "Wiki delegate completedAssignmentIds");
+  if (completedAssignmentIds && new Set(completedAssignmentIds).size !== completedAssignmentIds.length) throw new Error("Wiki delegate completedAssignmentIds must be unique");
   const needsFollowup = raw.needsFollowup;
   if (needsFollowup !== undefined && typeof needsFollowup !== "boolean") throw new Error("Invalid Wiki delegate needsFollowup");
   const followups = raw.followups === undefined ? undefined : parseDelegateFollowups(raw.followups);
@@ -346,6 +348,7 @@ export function parseWikiDelegateReceipt(value: unknown): WikiDelegateReceipt {
     throw new Error("Research receipts require completion controls");
   }
   if (role === "research" && followups && needsFollowup !== (followups.length > 0)) throw new Error("Research receipt needsFollowup must match followups");
+  if (role === "research" && raw.status === "incomplete" && needsFollowup === false) throw new Error("Incomplete research receipt requires followups");
   if (role !== "research" && (completedAssignmentIds !== undefined || needsFollowup !== undefined || followups !== undefined)) {
     throw new Error("Only research receipts may contain completion controls");
   }

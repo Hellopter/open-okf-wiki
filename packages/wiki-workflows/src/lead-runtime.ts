@@ -441,6 +441,10 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         if (task.role !== "research") throw new Error("Research completion requires a research contract");
         const assigned = new Set(task.assignmentIds);
         if (result.completedAssignmentIds.some((id) => !assigned.has(id))) throw new Error("wiki_research_finish completedAssignmentIds must come from the host assignment set");
+        if (result.status === "complete"
+          && (result.completedAssignmentIds.length !== assigned.size || task.assignmentIds.some((id) => !result.completedAssignmentIds.includes(id)))) {
+          throw new Error("wiki_research_finish completedAssignmentIds must exactly match the host assignment set when status is complete");
+        }
         if (Buffer.byteLength(result.summary, "utf8") > 1024) throw new Error("wiki_research_finish summary must be at most 1024 bytes");
         if (result.followups.some((followup) => followup.sourceScopeIds.some((scope) => !task.sourceScopeIds.includes(scope)))) {
           throw new Error("wiki_research_finish followup sourceScopeIds must use pinned source scopes");
@@ -458,6 +462,9 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         task.instruction,
         leafLanguageInstruction(role, this.options.language),
         `\nReadable source trees (cwd-relative): ${task.sourceScopeIds.join(", ") || "(none)"}`,
+        task.role === "research"
+          ? `\nExact research assignment IDs: ${JSON.stringify(task.assignmentIds)}. Return only completed IDs; status complete requires every ID, while status incomplete may return none.`
+          : "",
         task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
         task.reviewPaths?.length ? `\nExact required review paths: ${JSON.stringify(task.reviewPaths)}` : "",
         reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
@@ -530,12 +537,12 @@ function researchFinishTool(finish: (result: WikiResearchCompletion) => void): T
     parameters: Type.Object({
       status: StringEnum(["complete", "incomplete"]),
       summary: Type.String({ minLength: 1, maxLength: 1024 }),
-      completedAssignmentIds: Type.Array(Type.String({ minLength: 1 })),
+      completedAssignmentIds: Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
       needsFollowup: Type.Boolean(),
       followups: Type.Array(Type.Object({
         kind: StringEnum([...WIKI_FOLLOWUP_KINDS]),
         question: Type.String({ minLength: 1, maxLength: 512 }),
-        sourceScopeIds: Type.Array(Type.String({ minLength: 1 })),
+        sourceScopeIds: Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
       }, { additionalProperties: false })),
     }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,

@@ -767,7 +767,13 @@ function assertResearchReady(state: WikiLeadRunState): void {
 
 function researchReady(state: WikiLeadRunState): boolean {
   const research = state.delegates.batches.flatMap((batch) => batch.tasks).filter((task) => task.task.role === "research");
-  return research.every((task) => task.phase === "terminal" && task.receipt?.status === "complete")
+  const discoveryAssignments = new Set(research
+    .filter((task) => task.task.role === "research" && task.task.mode === "discovery")
+    .flatMap((task) => task.task.role === "research" ? task.task.assignmentIds : []));
+  const completedAssignments = new Set(research
+    .filter((task) => task.phase === "terminal")
+    .flatMap((task) => task.receipt?.completedAssignmentIds ?? []));
+  return [...discoveryAssignments].every((id) => completedAssignments.has(id))
     && wikiOpenResearchBlockerIds(research.map(researchBlockerTask)).length === 0;
 }
 
@@ -931,6 +937,23 @@ function assertReceiptForContract(receipt: WikiDelegateReceipt, contract: WikiDe
   if (mismatches.length) throw new Error(`Delegate receipt does not match durable contract ${contract.contractId}: ${mismatches.join(", ")}`);
   if (contract.role === "review" && receipt.review && !sameStringSet(receipt.review.reviewedPaths, contract.reviewPaths)) {
     throw new Error(`Review receipt paths do not match durable contract ${contract.contractId}`);
+  }
+  if (contract.role === "research") {
+    const assignments = new Set(contract.assignmentIds);
+    const completed = receipt.completedAssignmentIds ?? [];
+    if (completed.some((id) => !assignments.has(id))) {
+      throw new Error(`Research receipt completedAssignmentIds do not match durable contract ${contract.contractId}`);
+    }
+    if (receipt.status === "complete" && (completed.length !== contract.assignmentIds.length
+      || contract.assignmentIds.some((id) => !completed.includes(id)))) {
+      throw new Error(`Research complete receipt completedAssignmentIds must exactly match durable contract ${contract.contractId}`);
+    }
+    const sourceScopes = new Set(contract.sourceScopeIds);
+    for (const followup of receipt.followups ?? []) {
+      if (followup.sourceScopeIds.some((id) => !sourceScopes.has(id))) {
+        throw new Error(`Research receipt followup sourceScopeIds do not match durable contract ${contract.contractId}`);
+      }
+    }
   }
 }
 function replaceBatch(state: WikiLeadRunState, index: number, batch: WikiTaskRuntimeState["batches"][number]): WikiLeadRunState {

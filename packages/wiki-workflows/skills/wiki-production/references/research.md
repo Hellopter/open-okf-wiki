@@ -16,10 +16,12 @@ gaps, and conflict IDs. The host persists it as an artifact; do not write an
 artifact file yourself.
 
 Finish with `wiki_research_finish`, including a concise summary, completed
-assignment IDs, and blocker follow-ups with stable IDs, kinds, questions, and
-source scopes. The Markdown handoff remains the detailed evidence record.
+assignment IDs, and blocker follow-ups with kinds, questions, and source scopes.
+The host generates stable follow-up IDs; submit only the follow-up kind,
+question, and source scope IDs. The Markdown handoff remains the detailed
+evidence record.
 
 If context becomes tight, preserve verified findings in the artifact and return
-an incomplete receipt with clear blocker IDs. Do not turn a timeout, tool
+an incomplete receipt with clear blocker follow-ups. Do not turn a timeout, tool
 failure, or unread scope into "nothing found". Supplements answer only
 explicit gap, conflict, or failure blockers.

@@ -187,7 +187,7 @@ test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => 
     attempt: 1,
     receipt: {
       id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
-      completedAssignmentIds: [], needsFollowup: false, followups: [],
+      completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [],
       contractId: contract.contractId, contractDigest: contract.contractDigest,
     },
   });
@@ -205,6 +205,44 @@ test("semantic task transitions reject rollback, collection before terminal, and
   await assert.rejects(run.taskTransitions.taskStarted(1, contract.id, { attempt: 3 }), /not monotonic/);
   const forged = { id: contract.id, role: contract.role, status: "failed", summary: "failed", outputs: [], coverage: [], gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: "f".repeat(64), error: { code: "schema", message: "bad", retryable: false } };
   await assert.rejects(run.taskTransitions.taskSettled(1, contract.id, { attempt: 1, receipt: forged }), /does not match durable contract/);
+});
+
+test("durable research receipts must cover only, and then all, contract assignments", async (t) => {
+  const { run } = await fixture(t);
+  const { contracts: [empty] } = await run.dispatch([{ id: "empty-assignment", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [], assignmentIds: ["assignment"] }]);
+  await run.taskTransitions.taskStarted(empty.batchId, empty.id, { attempt: 1 });
+  await assert.rejects(run.taskTransitions.taskSettled(empty.batchId, empty.id, {
+    attempt: 1,
+    receipt: {
+      id: empty.id, role: "research", status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
+      completedAssignmentIds: [], needsFollowup: false, followups: [], contractId: empty.contractId, contractDigest: empty.contractDigest,
+    },
+  }), /must exactly match durable contract/);
+
+  const { contracts: [unknown] } = await run.dispatch([{ id: "unknown-assignment", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [], assignmentIds: ["assignment-2"] }]);
+  await run.taskTransitions.taskStarted(unknown.batchId, unknown.id, { attempt: 1 });
+  await assert.rejects(run.taskTransitions.taskSettled(unknown.batchId, unknown.id, {
+    attempt: 1,
+    receipt: {
+      id: unknown.id, role: "research", status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
+      completedAssignmentIds: ["not-assigned"], needsFollowup: false, followups: [], contractId: unknown.contractId, contractDigest: unknown.contractDigest,
+    },
+  }), /do not match durable contract/);
+});
+
+test("durable research followups must stay within contract source scopes", async (t) => {
+  const { run } = await fixture(t);
+  const { contracts: [contract] } = await run.dispatch([{ id: "scoped-research", role: "research", instruction: "Research", sourceScopeIds: ["source"], contextRefs: [], assignmentIds: ["assignment"] }]);
+  await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+  await assert.rejects(run.taskTransitions.taskSettled(contract.batchId, contract.id, {
+    attempt: 1,
+    receipt: {
+      id: contract.id, role: "research", status: "incomplete", summary: "needs evidence", outputs: [], coverage: [], gaps: [], attempts: 1,
+      completedAssignmentIds: [], needsFollowup: true,
+      followups: [{ id: "outside-scope", kind: "evidence_gap", question: "Need evidence", sourceScopeIds: ["other"] }],
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    },
+  }), /followup sourceScopeIds do not match durable contract/);
 });
 
 test("persisted delegate history cannot delete queued tasks or forge a phase rollback", async (t) => {
@@ -246,7 +284,7 @@ test("durable execution token fence blocks stale write, settle, and seal after s
   await stale.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   const { contracts: [contract] } = await stale.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
   await stale.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-  const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1, completedAssignmentIds: [], needsFollowup: false, followups: [], contractId: contract.contractId, contractDigest: contract.contractDigest };
+  const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1, completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [], contractId: contract.contractId, contractDigest: contract.contractDigest };
   staleFence.retire("execution-new");
   await assert.rejects(
     stale.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),

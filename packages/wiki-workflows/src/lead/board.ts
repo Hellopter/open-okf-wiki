@@ -165,7 +165,7 @@ export function wikiOpenResearchBlockerIds(tasks: readonly WikiResearchBlockerTa
     if (task.phase === "terminal" && receipt?.status === "complete" && task.mode === "supplement") {
       for (const id of task.resolvesIds ?? []) resolved.add(id);
     }
-    if (receipt?.error?.code) {
+    if (receipt?.error?.code && !(receipt.followups?.length || receipt.gaps?.length)) {
       blockers.add(`failure:${task.id}:${receipt.error.code}`);
     }
     for (let index = 0; index < (receipt?.gaps?.length ?? 0); index += 1) blockers.add(`gap:${task.id}:${index + 1}`);
@@ -194,6 +194,9 @@ export function projectWikiBoard(input: WikiBoardProjectionInput): WikiBoardMode
     .flatMap((task) => task.resolvesIds ?? []));
   const boardTasks = projectedTasks.map((task) => withoutResolvedBlockers(task, resolvedBlockers));
   const waves = projectWaves(boardTasks);
+  const completedResearchAssignments = new Set(boardTasks
+    .filter((task) => task.role === "research" && task.phase === "terminal")
+    .flatMap((task) => task.completedAssignmentIds ?? []));
   const researchAssignments = boardTasks.flatMap((task) => task.role === "research"
     ? (task.assignmentIds ?? []).map((id) => ({
       id,
@@ -202,7 +205,7 @@ export function projectWikiBoard(input: WikiBoardProjectionInput): WikiBoardMode
       sourceScopeIds: [...(task.sourceScopeIds ?? [])],
       domainScopeIds: [...(task.domainScopeIds ?? [])],
       lensScopeIds: [...(task.lensScopeIds ?? [])],
-      completed: task.completedAssignmentIds?.includes(id) ?? false,
+      completed: completedResearchAssignments.has(id),
     }))
     : []);
   for (const assignment of researchAssignments) {
@@ -311,7 +314,7 @@ function toBoardTask(task: WikiBoardProjectionTask, batchId?: number): WikiBoard
   const blockingReasons = [
     ...gaps,
     ...(receipt?.needsFollowup ? followups.map((followup) => followup.id) : []),
-    ...(receipt?.error?.code ? [`failure:${task.id}:${receipt.error.code}`] : []),
+    ...(receipt?.error?.code && !(gaps.length || followups.length) ? [`failure:${task.id}:${receipt.error.code}`] : []),
   ];
   return {
     id: task.id,

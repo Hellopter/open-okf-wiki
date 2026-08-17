@@ -410,7 +410,34 @@ test("Pi leaf looks up declared source scopeIds, not absolute source paths", asy
     leafContext(root, candidateWikiRoot),
   );
   assert.match(prompt, /Readable source trees \(cwd-relative\): source/);
+  assert.match(prompt, /Exact research assignment IDs: \["assignment-1"\]/);
   assert.doesNotMatch(prompt, new RegExp(sourceAbs.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("Pi research leaf accepts an empty incomplete receipt but requires every assignment for complete", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    skillRoot,
+    createSession: async (options) => sessionFactory(async () => {
+      await assert.rejects(
+        execute(options.customTools, "wiki_research_finish", {
+          status: "complete", summary: "incorrectly complete", completedAssignmentIds: [], needsFollowup: false, followups: [],
+        }),
+        /completedAssignmentIds must exactly match/,
+      );
+      await execute(options.customTools, "wiki_research_finish", {
+        status: "incomplete", summary: "source read failed", completedAssignmentIds: [], needsFollowup: true,
+        followups: [{ kind: "tool_failure", question: "Retry the source read", sourceScopeIds: ["source"] }],
+      });
+    }, { text: "# Research Handoff\n\nNo assignment completed." })(options),
+  });
+  const result = await agent.run(
+    { id: "survey", role: "research", instruction: "Survey source", sourceScopeIds: ["source"], contextRefs: [], mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [] },
+    leafContext(root, candidateWikiRoot),
+  );
+  assert.equal(result.status, "incomplete");
+  assert.deepEqual(result.research.completedAssignmentIds, []);
 });
 
 test("Lead can read the host-owned board through its explicit read seam", async (t) => {

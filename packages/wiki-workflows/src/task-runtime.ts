@@ -498,6 +498,31 @@ export class WikiTaskRuntime {
         await this.fireProgress({ batchId: batch, phase: "start", task, telemetry: startedTelemetry });
         const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry, record.state.sessionFile));
         const completion = result.research;
+        if (task.role === "research" && !completion) {
+          throw new WikiTaskExecutionError(
+            "Research leaf completed without wiki_research_finish",
+            "schema",
+            { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
+          );
+        }
+        if (task.role === "research" && completion) {
+          const assigned = new Set(task.assignmentIds);
+          const completed = completion.completedAssignmentIds;
+          const invalid = new Set(completed).size !== completed.length
+            || completed.some((id) => !assigned.has(id))
+            || (completion.status === "complete" && (completed.length !== assigned.size || task.assignmentIds.some((id) => !completed.includes(id))))
+            || completion.needsFollowup !== (completion.followups.length > 0)
+            || (completion.status === "incomplete" && !completion.needsFollowup)
+            || (result.status !== undefined && result.status !== completion.status)
+            || completion.followups.some((followup) => followup.sourceScopeIds.some((scope) => !task.sourceScopeIds.includes(scope)));
+          if (invalid) {
+            throw new WikiTaskExecutionError(
+              "Research completion does not match its durable contract",
+              "schema",
+              { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
+            );
+          }
+        }
         const output = await this.persist(task, batch, attempt, result.markdown);
         ingestEvidenceHandoff({
           artifact: output,
@@ -795,7 +820,7 @@ function receipt(
   research?: WikiResearchCompletion,
 ): WikiDelegateReceipt {
   const researchFollowupDrafts = task.role === "research"
-    ? (research?.followups ?? (status === "complete" ? [] : [{ kind: "tool_failure" as const, question: summary, sourceScopeIds: task.sourceScopeIds }]))
+    ? (research?.followups ?? (status === "incomplete" ? [{ kind: "tool_failure" as const, question: summary, sourceScopeIds: task.sourceScopeIds }] : []))
     : [];
   const followups: WikiDelegateFollowup[] | undefined = task.role === "research"
     ? researchFollowupDrafts.map((followup) => ({ ...followup, id: canonicalWikiFollowupId(task.contractId, followup) }))
@@ -814,9 +839,11 @@ function receipt(
     contractId: task.contractId,
     contractDigest: task.contractDigest,
     ...(review ? { review } : {}),
+    ...(coverage.length ? { coverage: [...coverage] } : {}),
+    ...(gaps.length ? { gaps: structuredClone(gaps) } : {}),
     ...(task.role === "research" ? {
       completedAssignmentIds: [...(completedAssignmentIds ?? [])],
-      needsFollowup: research?.needsFollowup ?? status !== "complete",
+      needsFollowup: research?.needsFollowup ?? status === "incomplete",
       ...(followups ? { followups } : {}),
     } : {}),
   };

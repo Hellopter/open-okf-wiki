@@ -224,6 +224,7 @@ export function createWikiReviewFinishTool(finish: (result: WikiReviewResult) =>
       verdict: StringEnum(["pass", "changes_requested"], { description: "Independent review verdict for the assigned paths" }),
       reviewedPaths: Type.Array(Type.String({ minLength: 1 }), {
         minItems: 1,
+        uniqueItems: true,
         description: "Exact assigned reviewPaths that were reviewed",
       }),
       findings: Type.Array(reviewFindingSchema, { description: "Issues found on assigned paths" }),

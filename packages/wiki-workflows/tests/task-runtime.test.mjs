@@ -28,13 +28,26 @@ function task(id, values = {}) {
 }
 
 function runtime(agent, values = {}) {
-  const { onStateChanged, restoredState, ...options } = values;
+  const { onStateChanged, restoredState, autoResearchCompletion = true, ...options } = values;
   const durable = normalizeState(restoredState ?? { batches: [] });
   const handoffAgent = {
     ...agent,
     async run(contract, context) {
       const result = await agent.run(contract, context);
-      return result?.markdown ? { ...result, markdown: testHandoff(contract, result.markdown) } : result;
+      return result?.markdown ? {
+        ...result,
+        ...(contract.role === "research" && autoResearchCompletion && !result.research ? {
+          status: "complete",
+          research: {
+            status: "complete",
+            summary: result.summary,
+            completedAssignmentIds: [...contract.assignmentIds],
+            needsFollowup: false,
+            followups: [],
+          },
+        } : {}),
+        markdown: testHandoff(contract, result.markdown),
+      } : result;
     },
   };
   const subject = new WikiTaskRuntime({
@@ -123,7 +136,7 @@ test("durable queued contract commit completes before an Agent can launch", asyn
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok") }; } },
+    agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", completedAssignmentIds: [...value.assignmentIds], needsFollowup: false, followups: [] } }; } },
     transitions: { ...transitions, async batchQueued(contracts) { await queued; await transitions.batchQueued(contracts); } },
   });
   const starting = subject.start([contract(1, task("ordered"))], new AbortController().signal);
@@ -139,7 +152,7 @@ test("durable transition failure is consumed and surfaced by collect", async () 
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok") }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", completedAssignmentIds: [...value.assignmentIds], needsFollowup: false, followups: [] } }; } },
     transitions: { ...transitions, async taskSettled() { throw new Error("durable settle failed"); } },
   });
   const { batchId } = await subject.start([contract(1, task("persist-failure"))], new AbortController().signal);
@@ -181,6 +194,57 @@ test("preserves successful branches when a fanout is partial", async () => {
   assert.equal(result.status, "partial");
   assert.equal(result.receipts.find((value) => value.id === "good").outputs.length, 1);
   assert.equal(result.receipts.find((value) => value.id === "bad").status, "failed");
+});
+
+test("research leaf without completion becomes schema-incomplete and retains its Markdown artifact", async () => {
+  const artifacts = store();
+  const r = runtime({ run: async () => ({ summary: "partial findings", markdown: "# Findings" }) }, {
+    artifactStore: artifacts,
+    autoResearchCompletion: false,
+  });
+  const result = await runBatch(r, [task("missing-completion")]);
+  assert.equal(result.receipts[0].status, "incomplete");
+  assert.equal(result.receipts[0].error?.code, "schema");
+  assert.equal(result.receipts[0].outputs.length, 1);
+  assert.equal(artifacts.writes.length, 1);
+  assert.match(artifacts.writes[0].content, /# Research Handoff/);
+});
+
+test("research completion must match its durable contract inside TaskRuntime", async () => {
+  for (const research of [
+    { status: "complete", summary: "missing assignment", completedAssignmentIds: [], needsFollowup: false, followups: [] },
+    { status: "incomplete", summary: "missing blocker", completedAssignmentIds: [], needsFollowup: false, followups: [] },
+  ]) {
+    const r = runtime({ run: async () => ({
+      summary: research.summary, markdown: "# Findings", status: research.status, research,
+    }) }, { autoResearchCompletion: false });
+    const result = await runBatch(r, [task(`invalid-${research.status}`)]);
+    assert.equal(result.receipts[0].status, "incomplete");
+    assert.equal(result.receipts[0].error?.code, "schema");
+    assert.equal(result.receipts[0].completedAssignmentIds.length, 0);
+  }
+});
+
+test("receipts omit empty coverage and gaps while retaining non-empty values", async () => {
+  const r = runtime({
+    async run(value) {
+      return {
+        summary: value.id,
+        markdown: value.id,
+        ...(value.id === "with-details" ? {
+          coverage: ["entrypoint"],
+          gaps: [{ question: "Need one more source", sourceScopeIds: ["api"] }],
+        } : {}),
+      };
+    },
+  });
+  const result = await runBatch(r, [task("without-details"), task("with-details")]);
+  const empty = result.receipts.find((receipt) => receipt.id === "without-details");
+  const detailed = result.receipts.find((receipt) => receipt.id === "with-details");
+  assert.equal(Object.hasOwn(empty, "coverage"), false);
+  assert.equal(Object.hasOwn(empty, "gaps"), false);
+  assert.deepEqual(detailed.coverage, ["entrypoint"]);
+  assert.deepEqual(detailed.gaps, [{ question: "Need one more source", sourceScopeIds: ["api"] }]);
 });
 
 test("429 honors Retry-After, reduces shared admission to one, and retries once", async () => {
@@ -499,7 +563,7 @@ test("failed start that never registered does not poison a later start of the sa
   let failQueue = true;
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok") }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", completedAssignmentIds: [...value.assignmentIds], needsFollowup: false, followups: [] } }; } },
     transitions: {
       ...transitions,
       async batchQueued(contracts) {

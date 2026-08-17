@@ -28,7 +28,7 @@ function reviewTask(id, cluster, extra = {}) {
 }
 
 function researchTask(id, extra = {}) {
-  return { id, role: "research", instruction: `Research ${id}`, sourceScopeIds: [], contextRefs: [], ...extra };
+  return { id, role: "research", instruction: `Research ${id}`, sourceScopeIds: ["source"], contextRefs: [], ...extra };
 }
 
 async function settleResearch(run, contracts, extra = {}) {
@@ -49,6 +49,7 @@ async function settleResearch(run, contracts, extra = {}) {
         coverage: contract.assignmentIds,
         gaps: [],
         attempts: 1,
+        ...(extra.error ? { error: extra.error } : {}),
         contractId: contract.contractId,
         contractDigest: contract.contractDigest,
       },
@@ -224,6 +225,24 @@ test("discovery blockers close through a supplement before the write wave", asyn
   const writes = await run.dispatch([writeTask("write-core", "source/core")]);
   assert.equal(writes.contracts.length, 1);
 });
+
+for (const status of ["incomplete", "failed"]) {
+  test(`${status} discovery is ready after a same-assignment supplement`, async (t) => {
+    const run = await lead(t);
+    const discovery = await run.dispatch([researchTask("recover", { assignmentIds: ["recover"] })]);
+    const extra = status === "failed"
+      ? { status, error: { code: "timeout", message: "timed out", retryable: true } }
+      : { status, followups: [{ id: "gap-recover", kind: "evidence_gap", question: "Need more evidence", sourceScopeIds: ["source"] }] };
+    await settleResearch(run, discovery.contracts, extra);
+    const supplement = await run.dispatch([researchTask("recover-supplement", {
+      mode: "supplement", assignmentIds: ["recover"],
+      resolvesIds: [status === "failed" ? "failure:recover:timeout" : "gap-recover"],
+    })]);
+    await settleResearch(run, supplement.contracts);
+    const writes = await run.dispatch([writeTask("write-core", "source/core")]);
+    assert.equal(writes.contracts.length, 1);
+  });
+}
 
 test("logical waves accept multiple research and write tasks within one batch", async (t) => {
   const run = await lead(t);

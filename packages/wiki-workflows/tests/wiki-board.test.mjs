@@ -330,3 +330,24 @@ test("subtracts blockers resolved by a completed supplement", () => {
   assert.deepEqual(model.blockers, []);
   assert.equal(renderWikiBoard(model).includes("gap-discover"), false);
 });
+
+test("supplement completion covers the original discovery assignment", () => {
+  const model = projectWikiBoard({
+    runId: "run-1",
+    specRevision: 1,
+    candidateRevision: 1,
+    compactionObserved: true,
+    delegates: { batches: [{ batchId: 1, tasks: [
+      {
+        id: "discover", role: "research", phase: "terminal", mode: "discovery", assignmentIds: ["assignment"],
+        receipt: { status: "incomplete", outputs: [], completedAssignmentIds: [], needsFollowup: true, followups: [{ id: "gap", kind: "evidence_gap", question: "Need evidence", sourceScopeIds: ["api"] }] },
+      },
+      {
+        id: "supplement", role: "research", phase: "terminal", mode: "supplement", assignmentIds: ["assignment"], resolvesIds: ["gap"],
+        receipt: { status: "complete", outputs: [], completedAssignmentIds: ["assignment"], needsFollowup: false, followups: [] },
+      },
+    ] }] },
+  });
+  assert.equal(model.researchAssignments.every((assignment) => assignment.completed), true);
+  assert.deepEqual(model.remaining.filter((line) => line === "research assignment"), []);
+});
