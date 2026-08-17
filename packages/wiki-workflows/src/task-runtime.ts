@@ -764,8 +764,8 @@ function validateLimit(value: number, name: string): void {
 
 function validateCollectOptions(options: { until: "any" | "all"; timeoutSeconds: number }): void {
   if (options.until !== "any" && options.until !== "all") throw new Error("collect until must be any or all");
-  if (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds < 0 || options.timeoutSeconds > 60) {
-    throw new Error("collect timeoutSeconds must be between 0 and 60");
+  if (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds < 0 || options.timeoutSeconds > 1_200) {
+    throw new Error("collect timeoutSeconds must be between 0 and 1200");
   }
 }
 

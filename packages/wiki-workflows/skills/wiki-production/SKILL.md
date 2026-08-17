@@ -17,12 +17,15 @@ to its durable Source, Task Receipt, and Candidate state.
    direction in place only when the generated direction needs refinement, then
    call `wiki_delegate_start` with no arguments. The host binds slots to pinned
    Sources and queues the complete ready wave.
-3. Call `wiki_delegate_collect` with only `until` and `timeoutSeconds`, then
-   re-read the board. When evidence prose is needed, use Pi `read` on the
-   read-only artifact or resource paths shown there. A failed or incomplete
-   Task Receipt is missing coverage, never evidence of absence. When the board
-   makes a supplement ready, call `wiki_delegate_start` again with no
-   arguments; the host derives its scope from current blockers.
+3. After `wiki_delegate_start`, continue useful Lead work. The host follows up
+   when the wave settles; re-read the board then. Use `wiki_delegate_collect`
+   only for a non-blocking snapshot (`timeoutSeconds: 0`) or one long wait
+   (`until: "all"`). Do not poll with short timeouts. When evidence prose is
+   needed, use Pi `read` on the read-only artifact or resource paths shown on
+   the board. A failed or incomplete Task Receipt is missing coverage, never
+   evidence of absence. When the board makes a supplement ready, call
+   `wiki_delegate_start` again with no arguments; the host derives its scope
+   from current blockers.
 4. When research is ready, edit the host-provided
    `.okf-wiki/current/taxonomy.yaml` in place. Preserve its shape, keep each
    `sourceScopeId` as the matching Wiki source folder, and reconcile

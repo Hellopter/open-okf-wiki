@@ -73,10 +73,10 @@ export function workflowTools(
     .filter((root) => !(policy.boardPath && slots.has(insideWorkspace(policy.workspaceRoot, ".okf-wiki/current/board.md"))
       && path.resolve(root.logicalRoot) === path.resolve(policy.boardPath)));
   const readOnly = [
-    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createReadToolDefinition(policy.workspaceRoot, slotReadOptions(slots)), policy, readableRoots, "read", slots), policy, activeWikiRoot), "read"),
-    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createGrepToolDefinition(policy.workspaceRoot), policy, readableRoots, "grep"), policy, activeWikiRoot), "grep"),
-    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createFindToolDefinition(policy.workspaceRoot), policy, readableRoots, "find"), policy, activeWikiRoot), "find"),
-    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createLsToolDefinition(policy.workspaceRoot), policy, readableRoots, "ls"), policy, activeWikiRoot), "ls"),
+    boundSurveyTool(remapToolPath(guardSurveyTool(createReadToolDefinition(policy.workspaceRoot, slotReadOptions(slots)), policy, readableRoots, "read", slots), policy, activeWikiRoot), "read"),
+    boundSurveyTool(remapToolPath(guardSurveyTool(createGrepToolDefinition(policy.workspaceRoot), policy, readableRoots, "grep"), policy, activeWikiRoot), "grep"),
+    boundSurveyTool(remapToolPath(guardSurveyTool(createFindToolDefinition(policy.workspaceRoot), policy, readableRoots, "find"), policy, activeWikiRoot), "find"),
+    boundSurveyTool(remapToolPath(guardSurveyTool(createLsToolDefinition(policy.workspaceRoot), policy, readableRoots, "ls"), policy, activeWikiRoot), "ls"),
   ];
   if (role === "lead") {
     if (!policy.candidateWikiRoot) throw new Error("Workflow configuration error: Lead requires a candidate Wiki root");
@@ -96,8 +96,8 @@ export function workflowTools(
     });
     return [
       ...readOnly,
-      remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", false, slots), policy, candidateRoot),
-      remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", true, slots), policy, candidateRoot),
+      remapToolPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", false, slots), policy, candidateRoot),
+      remapToolPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", true, slots), policy, candidateRoot),
     ];
   }
   if (role !== "writer") return [...readOnly, ...slotMutationTools(policy.workspaceRoot, slots)];
@@ -122,8 +122,8 @@ export function workflowTools(
     ...readOnly,
     // Logical wiki/* inputs are transparently redirected to the run candidate.
     // Guarded operations still receive absolute paths and enforce the exact page.
-    remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", false, slots), policy, activeWikiRoot),
-    remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true, slots), policy, activeWikiRoot),
+    remapToolPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", false, slots), policy, activeWikiRoot),
+    remapToolPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true, slots), policy, activeWikiRoot),
   ];
 }
 
@@ -384,26 +384,41 @@ function resolveActiveWikiPath(policy: WorkspaceToolPolicy, activeWikiRoot: stri
   return insideWorkspace(policy.workspaceRoot, rawPath);
 }
 
-function remapCandidateWikiPath(
+function remapToolPath(
   definition: ToolDefinition<any, any, any>,
   policy: WorkspaceToolPolicy,
   activeWikiRoot: string,
 ): ToolDefinition<any, any, any> {
-  if (!policy.candidateWikiRoot) return definition;
   const execute = definition.execute;
   return {
     ...definition,
     async execute(toolCallId, params, signal, onUpdate, context) {
       const rawPath = valueAt(params, "path");
-      const candidatePath = typeof rawPath === "string" && (rawPath === "wiki" || rawPath.startsWith("wiki/"))
-        ? resolveActiveWikiPath(policy, activeWikiRoot, rawPath)
-        : undefined;
-      const mappedParams = candidatePath
-        ? { ...(params as Record<string, unknown>), path: candidatePath }
+      const mapped = typeof rawPath === "string" ? resolveToolPath(policy, activeWikiRoot, rawPath) : undefined;
+      const mappedParams = mapped
+        ? { ...(params as Record<string, unknown>), path: mapped }
         : params;
       return await execute(toolCallId, mappedParams, signal, onUpdate, context);
     },
   } as ToolDefinition<any, any, any>;
+}
+
+function resolveToolPath(policy: WorkspaceToolPolicy, activeWikiRoot: string, rawPath: string): string | undefined {
+  if (policy.candidateWikiRoot && (rawPath === "wiki" || rawPath.startsWith("wiki/"))) {
+    return resolveActiveWikiPath(policy, activeWikiRoot, rawPath);
+  }
+  return resolveSkillRelativePath(policy, rawPath);
+}
+
+/** Resolve Agent Skills relative paths against the materialized skill root. */
+function resolveSkillRelativePath(policy: WorkspaceToolPolicy, rawPath: string): string | undefined {
+  if (!policy.skillRoot) return undefined;
+  const posix = rawPath.replaceAll("\\", "/");
+  if (posix === "SKILL.md" || posix === "references" || posix.startsWith("references/")
+    || posix === "briefs" || posix.startsWith("briefs/")) {
+    return path.resolve(policy.skillRoot, ...posix.split("/"));
+  }
+  return undefined;
 }
 
 function writerDirectories(wikiRoot: string, allowedPaths: ReadonlySet<string>): Set<string> {

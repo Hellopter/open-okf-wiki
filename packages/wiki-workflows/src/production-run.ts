@@ -47,7 +47,7 @@ import {
 } from "./runtime-types.js";
 import { readWikiSessionTranscript } from "./session-transcript.js";
 import { pin, reopen, skillWorkspacePath } from "./skill-store.js";
-import { loadWikiWorkspace, ensureWikiWorkspaceInternalIgnore, type WikiGenerationProfile, type WikiRoleModelConfig } from "./workspace.js";
+import { loadWikiWorkspace, ensureWikiWorkspaceInternalIgnore, DEFAULT_WORKSPACE_WIKI_CONFIG, type WikiGenerationProfile, type WikiRoleModelConfig } from "./workspace.js";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const UPDATE_IDLE_MS = 1_000;
@@ -242,7 +242,7 @@ class WikiProductionRun {
       const leadRecord = await this.ledger.readAgent(this.runId, { kind: "lead" });
       if (leadRecord?.sessionFile) plan = { ...plan, leadSessionFile: leadRecord.sessionFile, leadSessionAttempt: leadRecord.agent.attempt };
       await this.commitForAttempt(authority, controller.signal, { kind: "stage_entered", at: this.timestamp(), stage: "lead", budgets: plan.budgets });
-      const lead = createProductionLead(plan, this.options);
+      const lead = createProductionLead(plan, this.options, await leadSessionLimits(plan.sourcePlan.workspaceRoot));
       const request: WikiLeadExecutionRequest = {
         runId: this.runId, cwd: state.cwd, focus: state.focus, signal: controller.signal, preparation, attempt, executionToken, ...plan,
         record: async (observation) => {
@@ -657,11 +657,28 @@ async function resumeProductionPlan(plan: WikiProductionPlan, runId: string): Pr
   if (path.resolve(candidateWikiRoot) !== path.resolve(plan.candidateWikiRoot)) throw new Error("Pinned Wiki candidate path changed during resume");
 }
 
-function createProductionLead(plan: WikiProductionPlan, options: ProductionRuntimeOptions): WikiLeadRuntime {
+async function leadSessionLimits(workspaceRoot: string): Promise<{ maxTurnsPerSession: number; maxToolCallsPerSession: number }> {
+  try {
+    const wiki = (await loadWikiWorkspace(workspaceRoot)).wiki;
+    return { maxTurnsPerSession: wiki.maxTurnsPerLeadSession, maxToolCallsPerSession: wiki.maxToolCallsPerLeadSession };
+  } catch {
+    return {
+      maxTurnsPerSession: DEFAULT_WORKSPACE_WIKI_CONFIG.maxTurnsPerLeadSession,
+      maxToolCallsPerSession: DEFAULT_WORKSPACE_WIKI_CONFIG.maxToolCallsPerLeadSession,
+    };
+  }
+}
+
+function createProductionLead(
+  plan: WikiProductionPlan,
+  options: ProductionRuntimeOptions,
+  leadBudgets: { maxTurnsPerSession: number; maxToolCallsPerSession: number },
+): WikiLeadRuntime {
   if (options.createLead) return options.createLead(plan);
   const models = resolveRoleModels(plan.models, options);
   return createPiLeadRuntime({
     model: models.lead.model, thinkingLevel: models.lead.thinkingLevel, models, budgets: plan.budgets,
+    leadBudgets,
     runSessionDirectory: plan.runSessionDirectory, leadSessionFile: plan.leadSessionFile, leadSessionAttempt: plan.leadSessionAttempt,
     language: plan.language, concurrency: plan.maxConcurrentAgents - 1, transientRetries: plan.transientRetries,
     baseRetryDelayMs: plan.baseRetryDelayMs, sessionTimeoutMs: plan.sessionTimeoutMs,

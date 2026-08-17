@@ -70,6 +70,8 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.wiki.maxDelegateBatches, 8);
   assert.equal(workspace.wiki.maxTurnsPerSession, 60);
   assert.equal(workspace.wiki.maxToolCallsPerSession, 120);
+  assert.equal(workspace.wiki.maxTurnsPerLeadSession, 200);
+  assert.equal(workspace.wiki.maxToolCallsPerLeadSession, 400);
   assert.deepEqual(workspace.wiki.models, {});
   assert.deepEqual(workspace.wiki.generation, {
     audience: [], purpose: "", focus: { include: [], exclude: [] },
@@ -120,6 +122,8 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     maxDelegateBatches: 12,
     maxTurnsPerSession: 80,
     maxToolCallsPerSession: 240,
+    maxTurnsPerLeadSession: 200,
+    maxToolCallsPerLeadSession: 400,
     models: { research: { provider: "anthropic", id: "claude-sonnet", thinkingLevel: "high" } },
     generation: {
       audience: [], purpose: "", focus: { include: [], exclude: [] },

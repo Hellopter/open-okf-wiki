@@ -34,6 +34,13 @@ async function call(tools, name, params) {
   return await tool.execute("call-1", params, new AbortController().signal);
 }
 
+test("survey tools resolve skill-relative references against the materialized skill root", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const policy = pinnedWorkspaceToolPolicy(pinnedPlan(root, path.join(root, "source")), candidateWikiRoot, skillRoot);
+  const researcher = workflowTools(policy, "researcher", undefined, ["source"]);
+  assert.match(JSON.stringify(await call(researcher, "read", { path: "references/common.md" })), /evidence/i);
+});
+
 test("Lead and leaves can read the materialized skill but cannot write it", async (t) => {
   const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   const policy = await workspaceToolPolicy(root, candidateWikiRoot, skillRoot);

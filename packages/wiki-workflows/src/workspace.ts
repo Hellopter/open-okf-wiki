@@ -42,10 +42,14 @@ export interface WikiWorkspaceWikiConfig {
   maxDelegatedTasks: number;
   /** Run-wide hard limit for delegation batches. */
   maxDelegateBatches: number;
-  /** Hard turn limit for each Lead or delegated Agent session. */
+  /** Hard turn limit for each delegated Agent session. */
   maxTurnsPerSession: number;
-  /** Hard tool-call limit for each Lead or delegated Agent session. */
+  /** Hard tool-call limit for each delegated Agent session. */
   maxToolCallsPerSession: number;
+  /** Hard turn limit for the Lead session. */
+  maxTurnsPerLeadSession: number;
+  /** Hard tool-call limit for the Lead session. */
+  maxToolCallsPerLeadSession: number;
   /** Optional role-specific Pi model selections. Missing roles inherit the active model. */
   models: WikiRoleModelConfig;
   generation: WikiGenerationProfile;
@@ -89,6 +93,8 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   maxDelegateBatches: 8,
   maxTurnsPerSession: 60,
   maxToolCallsPerSession: 120,
+  maxTurnsPerLeadSession: 200,
+  maxToolCallsPerLeadSession: 400,
   models: {},
   generation: structuredClone(DEFAULT_WIKI_GENERATION_PROFILE),
 };
@@ -354,7 +360,8 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
   const wiki = strictObject(value, "wiki", [
     "exclude", "maxConcurrentAgents", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds",
-    "maxDelegatedTasks", "maxDelegateBatches", "maxTurnsPerSession", "maxToolCallsPerSession", "models", "generation",
+    "maxDelegatedTasks", "maxDelegateBatches", "maxTurnsPerSession", "maxToolCallsPerSession",
+    "maxTurnsPerLeadSession", "maxToolCallsPerLeadSession", "models", "generation",
   ]);
   const exclude = parseStringArray(wiki.exclude, "wiki.exclude");
   return {
@@ -367,6 +374,8 @@ function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
     maxDelegateBatches: parseInteger(wiki.maxDelegateBatches, "wiki.maxDelegateBatches", DEFAULT_WORKSPACE_WIKI_CONFIG.maxDelegateBatches, 1, 1_000),
     maxTurnsPerSession: parseInteger(wiki.maxTurnsPerSession, "wiki.maxTurnsPerSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxTurnsPerSession, 1, 100_000),
     maxToolCallsPerSession: parseInteger(wiki.maxToolCallsPerSession, "wiki.maxToolCallsPerSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxToolCallsPerSession, 1, 1_000_000),
+    maxTurnsPerLeadSession: parseInteger(wiki.maxTurnsPerLeadSession, "wiki.maxTurnsPerLeadSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxTurnsPerLeadSession, 1, 100_000),
+    maxToolCallsPerLeadSession: parseInteger(wiki.maxToolCallsPerLeadSession, "wiki.maxToolCallsPerLeadSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxToolCallsPerLeadSession, 1, 1_000_000),
     models: parseRoleModels(wiki.models),
     generation: parseGenerationProfile(wiki.generation),
   };

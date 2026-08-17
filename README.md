@@ -50,6 +50,8 @@ wiki:
   maxDelegateBatches: 8
   maxTurnsPerSession: 60
   maxToolCallsPerSession: 120
+  maxTurnsPerLeadSession: 200
+  maxToolCallsPerLeadSession: 400
   models: {}
   generation:
     audience: [maintainers, integrators]
@@ -75,8 +77,10 @@ All execution limit values are integers:
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` seconds | Wall-clock deadline applied separately to every Lead and delegated Agent session. |
 | `maxDelegatedTasks` | `24` | `1..10000` tasks | Maximum delegated tasks started across the complete run, including resumed work but excluding retries. |
 | `maxDelegateBatches` | `8` | `1..1000` batches | Maximum asynchronous delegation batches started across the complete run. |
-| `maxTurnsPerSession` | `60` | `1..100000` turns | Hard limit for model turns in each Lead or delegated Pi session. |
-| `maxToolCallsPerSession` | `120` | `1..1000000` calls | Hard limit for tool calls in each Lead or delegated Pi session. |
+| `maxTurnsPerSession` | `60` | `1..100000` turns | Hard limit for model turns in each delegated Pi session. |
+| `maxToolCallsPerSession` | `120` | `1..1000000` calls | Hard limit for tool calls in each delegated Pi session. |
+| `maxTurnsPerLeadSession` | `200` | `1..100000` turns | Hard limit for model turns in the Lead Pi session. |
+| `maxToolCallsPerLeadSession` | `400` | `1..1000000` calls | Hard limit for tool calls in the Lead Pi session. |
 
 Timeouts count as transient failures and consume the same retry budget. Provider
 `Retry-After` values take precedence over the configured backoff base.

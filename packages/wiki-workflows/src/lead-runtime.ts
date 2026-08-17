@@ -1,11 +1,13 @@
 import {
   createAgentSession,
+  createSyntheticSourceInfo,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
   SettingsManager,
   type AgentSession,
   type CreateAgentSessionOptions,
+  type Skill,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
@@ -52,7 +54,7 @@ import {
 } from "./lead.js";
 import { wikiToolRejected } from "./wiki-tool-error.js";
 import type { WikiReviewResult } from "./delegate-contracts.js";
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { WikiAgentRole, WikiGenerationProfile } from "./workspace.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
@@ -83,6 +85,7 @@ export interface PiWikiLeadAgentOptions {
 }
 
 export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
+  leadBudgets?: Pick<WikiExecutionBudgets, "maxTurnsPerSession" | "maxToolCallsPerSession">;
   concurrency?: number;
   transientRetries?: number;
   baseRetryDelayMs?: number;
@@ -167,6 +170,7 @@ async function runLeadSession(
       const roleModels = options.models;
       const runSessionDirectory = request.runSessionDirectory ?? options.runSessionDirectory ?? options.sessionDir;
       const batchTasks = new Map<number, Map<string, WikiTaskSnapshot>>();
+      let leadSession: AgentSession | undefined;
       const snapshotNow = () => new Date((options.now ?? Date.now)()).toISOString();
       const onTask = async (event: WikiTaskProgressEvent): Promise<void> => {
         let projection = batchTasks.get(event.batchId);
@@ -195,7 +199,6 @@ async function runLeadSession(
           applyTelemetry(current, event.telemetry);
           projection.set(taskId, current);
           await observe({ kind: "telemetry", target: event.telemetry.target, telemetry: event.telemetry });
-          await observe({ kind: "batch", phase: "updated", batch: event.batchId, tasks: [...projection.values()], taskId });
           return;
         }
         current.status = event.receipt?.status ?? "failed";
@@ -206,6 +209,10 @@ async function runLeadSession(
         applyTelemetry(current, event.telemetry);
         projection.set(taskId, current);
         if (event.receipt) {
+          const settled = [...projection.values()];
+          if (settled.length > 0 && settled.every((task) => ["complete", "incomplete", "failed"].includes(task.status))) {
+            await leadSession?.followUp(`Wave ${event.batchId} settled. Re-read .okf-wiki/current/board.md before the next transition.`);
+          }
           await observe({
             kind: "task_settled",
             batch: event.batchId,
@@ -345,11 +352,12 @@ async function runLeadSession(
               sessionFile: resumeFile,
               skillRoot: request.skillRoot,
               skillPath: request.skillRoot,
-              budgets,
+              budgets: sessionBudgets(budgets, options.leadBudgets),
             }, async (telemetry) => {
               if (telemetry.activity === "compacting") await leadRun.observeCompaction();
               await observe({ kind: "telemetry", target: telemetry.target, telemetry });
-            }, { target: { kind: "lead" }, attempt, now: options.now, onHealth: async (input) => await observe({ kind: "health", ...input }) });
+            }, { target: { kind: "lead" }, attempt, now: options.now, onHealth: async (input) => await observe({ kind: "health", ...input }) },
+            (session) => { leadSession = session; });
             break;
           } catch (error) {
             if (pause) break;
@@ -435,7 +443,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     let researchSignal: WikiResearchSignal | undefined;
     let writeFinished = false;
     let markdownSnapshot: string | undefined;
-    const roleBrief = await readRoleBrief(this.options.skillRoot, role);
+    if (this.options.skillRoot) roleSkill(this.options.skillRoot, role);
     const taskFileSlots = createTaskFileSlots(policy.workspaceRoot, context, task, role);
     const spec = this.currentSpec?.();
     const reviewIndexes = task.role === "review" && spec
@@ -444,7 +452,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     await writeWikiWorkflowFile(
       policy.workspaceRoot,
       taskFileSlots.brief,
-      taskFileBrief(roleBrief, task, artifactHandoffs, reviewIndexes, this.options.language),
+      taskFileBrief(task, artifactHandoffs, reviewIndexes, this.options.language),
     );
     const tools = withExecutionModes([
       ...workflowTools(policy, role, task.writePaths, declaredSources, task.reviewPaths, this.pageWriter, reviewIndexes, taskFileSlots.slots),
@@ -500,7 +508,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         target: { kind: "task", batch: context.batch, taskId: task.id },
         attempt: context.attempt,
         onHealth: context.reportObservability,
-      });
+      }, undefined, this.options.skillRoot ? role : undefined);
     const markdown = markdownSnapshot?.trim() ?? "";
     if (!markdown) throw new Error("Delegated agent produced empty output");
     if (role === "reviewer" && !review) throw new Error("Reviewer completed without wiki_review_finish");
@@ -701,7 +709,6 @@ function createTaskFileSlots(
 }
 
 function taskFileBrief(
-  roleBrief: string,
   task: WikiDelegateContract,
   artifacts: readonly { id: string; path: string; sha256: string; sizeBytes: number }[],
   reviewIndexes: readonly string[],
@@ -709,8 +716,6 @@ function taskFileBrief(
 ): string {
   return [
     `# ${task.role} task`,
-    "",
-    roleBrief,
     "",
     "## Assignment",
     "",
@@ -812,13 +817,26 @@ function rejectWikiTool(tool: string, error: unknown): never {
   throw wikiToolRejected(tool, error instanceof Error ? error.message : String(error));
 }
 
-async function readRoleBrief(skillRoot: string | undefined, role: "researcher" | "writer" | "reviewer"): Promise<string> {
-  if (!skillRoot) return "";
-  try {
-    return (await readFile(path.join(skillRoot, "briefs", `${role}.md`), "utf8")).trim();
-  } catch {
-    throw new Error(`Wiki ${role} brief is unavailable: briefs/${role}.md`);
-  }
+function roleSkill(skillRoot: string, role: "researcher" | "writer" | "reviewer"): Skill {
+  const filePath = path.join(skillRoot, "briefs", `${role}.md`);
+  if (!existsSync(filePath)) throw new Error(`Wiki ${role} brief is unavailable: briefs/${role}.md`);
+  return {
+    name: `wiki-${role}`,
+    description: `Complete the assigned Wiki ${role} task. Load this skill, then read references relative to its directory.`,
+    filePath,
+    baseDir: skillRoot,
+    sourceInfo: createSyntheticSourceInfo(filePath, { source: "sdk", baseDir: skillRoot }),
+    disableModelInvocation: false,
+  };
+}
+
+function sessionBudgets(
+  base: WikiExecutionBudgets | undefined,
+  override?: Pick<WikiExecutionBudgets, "maxTurnsPerSession" | "maxToolCallsPerSession">,
+): WikiExecutionBudgets | undefined {
+  if (!override) return base;
+  if (!base) return { maxDelegatedTasks: 1, maxDelegateBatches: 1, ...override };
+  return { ...base, ...override };
 }
 
 function firstLine(value: string): string {
@@ -880,6 +898,8 @@ async function runPiSession(
   options: PiWikiLeadAgentOptions,
   onTelemetry?: (telemetry: WikiAgentTelemetry) => void | Promise<void>,
   observer?: ObserverContext,
+  onReady?: (session: AgentSession) => void,
+  role?: "researcher" | "writer" | "reviewer",
 ): Promise<{ text: string; usage?: WikiContextStats }> {
   // TaskRuntime owns configurable transient retries by creating fresh sessions.
   // Disable both Pi turn retry and provider request retry so budgets cannot multiply.
@@ -897,6 +917,7 @@ async function runPiSession(
     noThemes: true,
     noContextFiles: true,
     additionalSkillPaths: options.skillPath ? [options.skillPath] : [],
+    ...(role && options.skillPath ? { skillsOverride: () => ({ skills: [roleSkill(options.skillPath!, role)], diagnostics: [] }) } : {}),
   });
   await loader.reload();
   const sessionFile = options.sessionFile;
@@ -934,6 +955,7 @@ async function runPiSession(
   };
   const created = await (options.createSession ?? createAgentSession)(createOptions);
   session = created.session;
+  onReady?.(session);
   if (created.modelFallbackMessage) {
     session.dispose();
     throw new Error(`Could not restore the persisted Wiki model: ${created.modelFallbackMessage}`);

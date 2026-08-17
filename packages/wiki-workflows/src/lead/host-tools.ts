@@ -72,7 +72,7 @@ export function createWikiDelegateCollectTool(
     promptGuidelines: ["Use timeoutSeconds 0 for a non-blocking status check."],
     parameters: Type.Object({
       until: StringEnum(["any", "all"]),
-      timeoutSeconds: Type.Integer({ minimum: 0, maximum: 60 }),
+      timeoutSeconds: Type.Integer({ minimum: 0, maximum: 1_200 }),
     }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {

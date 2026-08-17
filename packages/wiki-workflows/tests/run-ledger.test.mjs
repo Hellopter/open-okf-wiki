@@ -58,11 +58,18 @@ test("semantic transitions persist current-format snapshots and same-sequence up
   const snapshot = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8"));
   assert.equal(snapshot.version, 1);
   assert.equal(snapshot.operation, undefined);
+  assert.equal(snapshot.productionPlan, undefined);
+  assert.equal(snapshot.progress?.recentActivity, undefined);
+  const pinned = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "production-plan.json"), "utf8"));
+  assert.equal(pinned.sourcePlan.fingerprint, "a".repeat(64));
+  const eventFile = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "events", "0000000000000006.json"), "utf8"));
+  assert.deepEqual(Object.keys(eventFile).sort(), ["event", "version"]);
   const updates = await ledger.updates("run-1");
   assert.deepEqual(updates.map(({ event }) => event.sequence), [1, 2, 3, 4, 5, 6]);
-  for (const update of updates) assert.equal(update.state.lastEventSequence, update.event.sequence);
   assert.equal(updates.at(-1).event.type, "completed");
   assert.equal(updates.at(-1).state.status, "succeeded");
+  assert.equal(updates.at(-1).state.lastEventSequence, 6);
+  assert.equal((await ledger.read("run-1")).productionPlan.sourcePlan.fingerprint, "a".repeat(64));
 });
 
 test("transition table rejects illegal order and terminal snapshots are immutable", async (t) => {
@@ -177,7 +184,8 @@ test("transaction and update envelopes reject extra fields and cross-field misma
   await assert.rejects(ledger.updates("run-1"), /unknown fields/);
 
   await rm(path.join(runRoot, "events"), { recursive: true, force: true });
-  const invalid = { version: 2, state: { ...first.state, lastEventSequence: 2 }, event: first.event, active: "retain", extra: true };
+  const snapshot = JSON.parse(await readFile(path.join(runRoot, "run-state.json"), "utf8"));
+  const invalid = { version: 2, state: { ...snapshot, lastEventSequence: 2 }, event: first.event, active: "retain", extra: true };
   await writeFile(path.join(runRoot, "pending-transaction.json"), `${JSON.stringify(invalid)}\n`);
   await assert.rejects(ledger.read("run-1"), /unknown fields|sequence mismatch/);
 });
@@ -246,13 +254,13 @@ async function plantEventFiles(workspace, count) {
   const lastName = (await eventFileNames(workspace)).at(-1);
   const last = JSON.parse(await readFile(path.join(eventsDir, lastName), "utf8"));
   let sequence = last.event.sequence;
-  let state = last.state;
+  let state = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8"));
   for (let index = 0; index < count; index += 1) {
     sequence += 1;
     const at = `2026-01-01T01:${String(Math.floor(sequence / 60)).padStart(2, "0")}:${String(sequence % 60).padStart(2, "0")}.000Z`;
     state = { ...state, lastEventSequence: sequence, updatedAt: at };
     const event = { version: 1, runId: "run-1", sequence, at, type: "progress", message: `planted ${sequence}` };
-    await writeFile(path.join(eventsDir, `${String(sequence).padStart(16, "0")}.json`), `${JSON.stringify({ version: 1, event, state })}\n`);
+    await writeFile(path.join(eventsDir, `${String(sequence).padStart(16, "0")}.json`), `${JSON.stringify({ version: 1, event })}\n`);
   }
   await writeFile(path.join(workspace, "runs", "run-1", "run-state.json"), `${JSON.stringify(state, null, 2)}\n`);
   return sequence;
@@ -280,12 +288,13 @@ function toolProcess({ toolCallId = "call-1", completed = false, summary = "wiki
 
 test("coalesce telemetry after planted events does not add an event file or bump lastEventSequence", async (t) => {
   const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
+  const writer = createWikiRunLedger(workspace);
+  await started(writer, workspace);
+  await begin(writer);
   const planted = await plantEventFiles(workspace, 18);
   assert.equal(planted, 20);
   assert.equal((await eventFileNames(workspace)).length, 20);
+  const ledger = createWikiRunLedger(workspace);
 
   const event = await ledger.recordObservation("run-1", {
     kind: "telemetry", target: { kind: "lead" },
@@ -302,11 +311,12 @@ test("coalesce telemetry after planted events does not add an event file or bump
 
 test("must-flush tool-start telemetry after planted events adds exactly one event file", async (t) => {
   const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
+  const writer = createWikiRunLedger(workspace);
+  await started(writer, workspace);
+  await begin(writer);
   await plantEventFiles(workspace, 18);
   assert.equal((await eventFileNames(workspace)).length, 20);
+  const ledger = createWikiRunLedger(workspace);
 
   const event = await ledger.recordObservation("run-1", {
     kind: "telemetry", target: { kind: "lead" },
@@ -493,6 +503,24 @@ test("sidecar checkpoint recovery keeps state usage and agent process consistent
     assert.ok(JSON.stringify(pending).length < 2_000);
     await assert.rejects(readFile(path.join(workspace, "runs", "run-1", "pending-sidecar.json"), "utf8"), { code: "ENOENT" });
   }
+});
+
+test("identical persist fingerprint skips a second sidecar write", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({ lastHeartbeatAt: "2026-01-01T02:00:00.000Z" }),
+  }, authority);
+  const agent = path.join(workspace, "runs", "run-1", "agents", "lead.json");
+  const before = await readFile(agent, "utf8");
+  await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({ lastHeartbeatAt: "2026-01-01T02:00:05.000Z" }),
+  }, authority);
+  assert.equal(await readFile(agent, "utf8"), before);
 });
 
 test("health degraded writes one event sequence and healthy health stays sidecar", async (t) => {

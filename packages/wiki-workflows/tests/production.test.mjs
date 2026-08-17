@@ -138,8 +138,11 @@ test("initial production plan pins workspace policy and role models", async (t) 
   assert.equal(pinned.sessionTimeoutMs, 3_600_000);
   assert.deepEqual(pinned.models.research, { provider: "test", id: "research" });
   assert.match(pinned.prompt, /Simplified Chinese/);
-  const disk = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", (await producer.list(root))[0].id, "run-state.json"), "utf8"));
-  assert.deepEqual(disk.productionPlan, pinned);
+  const runDir = path.join(root, ".okf-wiki", "runs", (await producer.list(root))[0].id);
+  const disk = JSON.parse(await readFile(path.join(runDir, "run-state.json"), "utf8"));
+  assert.equal(disk.productionPlan, undefined);
+  const plan = JSON.parse(await readFile(path.join(runDir, "production-plan.json"), "utf8"));
+  assert.deepEqual(plan, pinned);
 });
 
 test("resume keeps pinned language, models and generation settings after workspace config edits", async (t) => {

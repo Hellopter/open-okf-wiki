@@ -678,7 +678,7 @@ test("collect timeout is bounded and does not cancel background work", async () 
   const timedOut = await r.collect(batchId, { until: "any", timeoutSeconds: 0.01 });
   assert.equal(timedOut.status, "running");
   assert.throws(() => r.assertFinishable(), /terminal state/);
-  await assert.rejects(r.collect(batchId, { until: "all", timeoutSeconds: 61 }), /between 0 and 60/);
+  await assert.rejects(r.collect(batchId, { until: "all", timeoutSeconds: 1201 }), /between 0 and 1200/);
   finish();
   assert.equal((await r.collect(batchId, { until: "all", timeoutSeconds: 1 })).status, "complete");
 });

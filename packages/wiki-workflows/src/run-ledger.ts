@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { claimText, removePath, syncDirectory, withExclusiveLock, writeText } from "./files.js";
+import { claimText, exists, removePath, syncDirectory, withExclusiveLock, writeText } from "./files.js";
 import { parseWikiDelegateContract, parseWikiDelegateReceipt, type WikiDelegateContract, type WikiDelegateError, type WikiDelegateReceipt, type WikiTaskFailureCode } from "./delegate-contracts.js";
 import { WIKI_BUDGET_EXHAUSTED_CODES } from "./failures.js";
 import type {
@@ -110,7 +110,13 @@ export interface WikiExecutionOwner {
 interface WikiDurableUpdate {
   version: typeof WIKI_FORMAT;
   event: WikiRunEvent;
+  /** Current snapshot paired at read time; event files no longer embed state. */
   state: WikiRunState;
+}
+
+interface WikiEventRecord {
+  version: typeof WIKI_FORMAT;
+  event: WikiRunEvent;
 }
 
 interface AgentPatch {
@@ -156,8 +162,10 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
   const runsRoot = path.join(root, "runs");
   const activeFile = path.join(root, "active-run");
   const lockPath = path.join(root, ".ledger.lock");
+  const cache = new Map<string, WikiRunState>();
+  const persistFingerprints = new Map<string, string>();
 
-  const serialize = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const writeExclusive = async <T>(operation: () => Promise<T>): Promise<T> => {
     await ensureDirectoryDurable(root);
     return await withExclusiveLock(lockPath, operation);
   };
@@ -168,6 +176,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     return {
       directory,
       state: path.join(directory, "run-state.json"),
+      plan: path.join(directory, "production-plan.json"),
       events: path.join(directory, "events"),
       journal: path.join(directory, "pending-transaction.json"),
       sidecarJournal: path.join(directory, "pending-sidecar.json"),
@@ -179,28 +188,60 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     };
   };
 
+  const remember = (state: WikiRunState): WikiRunState => {
+    cache.set(state.id, state);
+    return state;
+  };
+
+  const overlayUsage = async (state: WikiRunState): Promise<WikiRunState> => {
+    const usage = await readUsageCheckpoint(state.id);
+    if (!usage) return state;
+    return { ...state, progress: { ...(state.progress ?? { stage: "lead" }), usage } };
+  };
+
   const readState = async (runId: string): Promise<WikiRunState | undefined> => {
     const file = paths(runId).state;
     try {
       const raw = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
       const state = parseState(raw, runId);
+      const plan = await readPinnedPlan(runId);
+      if (plan) state.productionPlan = plan;
       if (Object.prototype.hasOwnProperty.call(raw, "usageByAttempt")) await writeState(state);
-      const usage = await readUsageCheckpoint(runId);
-      if (!usage) return state;
-      return {
-        ...state,
-        progress: { ...(state.progress ?? { stage: "lead" }), usage },
-      };
+      return remember(await overlayUsage(state));
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
     }
   };
 
+  const cachedState = async (runId: string): Promise<WikiRunState | undefined> => {
+    const hit = cache.get(runId);
+    if (!hit) return await readState(runId);
+    return await overlayUsage(hit);
+  };
+
   const writeState = async (state: WikiRunState): Promise<void> => {
     const target = paths(state.id).state;
     await ensureDirectoryDurable(path.dirname(target));
-    await writeText(target, `${JSON.stringify(state, null, 2)}\n`);
+    await writeText(target, `${JSON.stringify(durableSnapshot(state), null, 2)}\n`);
+    if (state.productionPlan) await writePinnedPlanOnce(state.id, state.productionPlan);
+    remember(state);
+  };
+
+  const writePinnedPlanOnce = async (runId: string, plan: WikiProductionPlan): Promise<void> => {
+    const target = paths(runId).plan;
+    if (await exists(target)) return;
+    await ensureDirectoryDurable(path.dirname(target));
+    await writeText(target, `${JSON.stringify(plan, null, 2)}\n`);
+  };
+
+  const readPinnedPlan = async (runId: string): Promise<WikiProductionPlan | undefined> => {
+    try {
+      return parseProductionPlan(JSON.parse(await readFile(paths(runId).plan, "utf8")), runId);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
   };
 
   const writeUsageCheckpoint = async (runId: string, usage: WikiContextStats): Promise<void> => {
@@ -244,6 +285,21 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     await applyTransaction(transaction, false);
   };
 
+  const ensure = async (runId: string, mode: "read" | "write" | "fence"): Promise<WikiRunState | undefined> => {
+    if (mode === "write") {
+      return await writeExclusive(async () => {
+        await recover(runId);
+        return await cachedState(runId);
+      });
+    }
+    const runPaths = paths(runId);
+    const dirty = await exists(runPaths.journal) || await exists(runPaths.sidecarJournal);
+    if (dirty) await writeExclusive(async () => { await recover(runId); });
+    if (mode === "fence") return await readState(runId);
+    if (cache.has(runId) && !dirty) return await overlayUsage(cache.get(runId)!);
+    return await cachedState(runId);
+  };
+
   const applyTransaction = async (transaction: WikiLedgerTransaction, injectFaults: boolean): Promise<void> => {
     const runPaths = paths(transaction.state.id);
     if (transaction.execution?.action === "claim") {
@@ -260,8 +316,8 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     if (injectFaults) await options.fault?.("afterState");
     if (!await eventRecordExists(runPaths.events, transaction.event.sequence)) {
       await ensureDirectoryDurable(runPaths.events);
-      const update: WikiDurableUpdate = { version: WIKI_FORMAT, event: transaction.event, state: transaction.state };
-      await writeText(eventRecordPath(runPaths.events, transaction.event.sequence), `${JSON.stringify(update)}\n`);
+      const record: WikiEventRecord = { version: WIKI_FORMAT, event: transaction.event };
+      await writeText(eventRecordPath(runPaths.events, transaction.event.sequence), `${JSON.stringify(record)}\n`);
     }
     await removePath(runPaths.usage, { force: true });
     if (injectFaults) await options.fault?.("afterEvent");
@@ -294,10 +350,10 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     execution?: WikiLedgerTransaction["execution"],
   ): Promise<WikiRunEvent> => {
     await recover(runId);
-    const current = await readState(runId);
+    const current = await cachedState(runId);
     if (!current) throw new Error(`Unknown Wiki run: ${runId}`);
     if (TERMINAL.has(current.status)) throw new Error(`Terminal Wiki run ${runId} is immutable`);
-    let next = mutateState ? parseState(mutateState(structuredClone(current)), runId) : structuredClone(current);
+    let next = mutateState ? mutateState(cloneRunState(current)) : cloneRunState(current);
     if (!allowTerminalTransition && TERMINAL.has(next.status)) {
       throw new Error("Terminal Wiki state transitions require commitTerminal");
     }
@@ -312,7 +368,6 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     const projectedProgress = progressFromEvent(next.progress, event);
     if (projectedProgress) next.progress = projectedProgress;
     if (agentPatch) next = projectAgent(next, agentPatch.agent);
-    next = projectActivity(next, agentPatch?.process ?? []);
     if (next.progress && ["completed", "failed", "paused", "cancelled"].includes(event.type)) {
       if (next.progress.lead) {
         next.progress.lead = {
@@ -336,7 +391,8 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
         record: buildAgentRecord(existing, effectivePatch),
       };
     }
-    const transaction: WikiLedgerTransaction = { version: WIKI_FORMAT, state: parseState(next, runId), event, active, ...(execution ? { execution } : {}), ...(agent ? { agent } : {}) };
+    assertStateLifecycle(next, runId);
+    const transaction: WikiLedgerTransaction = { version: WIKI_FORMAT, state: next, event, active, ...(execution ? { execution } : {}), ...(agent ? { agent } : {}) };
     const journal = paths(runId).journal;
     await writeText(journal, `${JSON.stringify(transaction, null, 2)}\n`);
     await options.fault?.("afterJournal");
@@ -346,7 +402,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
 
   return {
     async create(input: CreateWikiRunState) {
-      return await serialize(async () => {
+      return await writeExclusive(async () => {
         assertSafeId(input.id, "Wiki run ID");
         await ensureDirectoryDurable(root);
         if (await readState(input.id)) throw new Error(`Wiki run ${input.id} already exists`);
@@ -381,33 +437,27 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     },
 
     async read(runId: string) {
-      return await serialize(async () => {
-        await recover(runId);
-        return await readState(runId);
-      });
+      return await ensure(runId, "read");
     },
 
     async list() {
-      return await serialize(async () => {
-        let entries: string[];
-        try {
-          entries = await readdir(runsRoot);
-        } catch (error) {
-          if (isMissing(error)) return [];
-          throw error;
-        }
-        const valid = entries.filter((entry) => SAFE_ID.test(entry));
-        for (const entry of valid) await recover(entry);
-        const states = await Promise.all(valid.map(readState));
-        return states.filter((state): state is WikiRunState => state !== undefined)
-          .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-      });
+      let entries: string[];
+      try {
+        entries = await readdir(runsRoot);
+      } catch (error) {
+        if (isMissing(error)) return [];
+        throw error;
+      }
+      const valid = entries.filter((entry) => SAFE_ID.test(entry));
+      const states = await Promise.all(valid.map((entry) => ensure(entry, "read")));
+      return states.filter((state): state is WikiRunState => state !== undefined)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     },
 
     async transition(runId: string, transition: WikiProductionTransition, authority?: WikiExecutionAuthority) {
-      return await serialize(async () => {
+      return await writeExclusive(async () => {
         await recover(runId);
-        const current = await readState(runId);
+        const current = await cachedState(runId);
         if (!current) throw new Error(`Unknown Wiki run: ${runId}`);
         if (TERMINAL.has(current.status)) throw new Error(`Terminal Wiki run ${runId} is immutable`);
         if (authority && (current.attempt !== authority.attempt || current.executionToken !== authority.executionToken || current.status !== "running")) {
@@ -430,7 +480,7 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
               (state) => ({ ...state, attempt: 1, executionToken: transition.executionToken }), false,
               { action: "claim", lease: executionLease(runId, 1, transition.executionToken, transition.owner, transition.at) });
           case "plan_pinned": {
-            const plan = parseProductionPlan(transition.plan, runId);
+            const plan = Object.freeze(parseProductionPlan(transition.plan, runId));
             if (current.productionPlan) throw new Error("Wiki production plan is already pinned");
             return await commit({ at: transition.at, type: "progress", message: "Pinned Wiki production plan" }, (state) => ({ ...state, productionPlan: plan }));
           }
@@ -491,17 +541,16 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     },
 
     async updates(runId: string, after = 0) {
-      return await serialize(async () => {
-        await recover(runId);
-        if (!(await readState(runId))) throw new Error(`Unknown Wiki run: ${runId}`);
-        return await readUpdatesFile(paths(runId).events, runId, after);
-      });
+      const state = await ensure(runId, "read");
+      if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
+      const events = await readEventRecords(paths(runId).events, runId, after);
+      return events.map((event) => ({ version: WIKI_FORMAT, event, state }));
     },
 
     async recordObservation(runId: string, observation: WikiLeadObservation, authority: WikiExecutionAuthority) {
-      return await serialize(async () => {
+      return await writeExclusive(async () => {
         await recover(runId);
-        const state = await readState(runId);
+        const state = await cachedState(runId);
         if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
         if (state.status !== "running" || state.attempt !== authority.attempt || state.executionToken !== authority.executionToken) return undefined;
         const target = observationTarget(observation);
@@ -522,28 +571,22 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
 
 
     async readAgent(runId: string, target: WikiAgentTarget) {
-      return await serialize(async () => {
-        await recover(runId);
-        const record = await readAgentRecordFile(paths(runId).agent(target));
-        if (record) return record;
-        const state = await readState(runId);
-        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
-        return projectQueuedAgent(state, target);
-      });
+      const state = await ensure(runId, "read");
+      if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
+      const record = await readAgentRecordFile(paths(runId).agent(target));
+      if (record) return record;
+      return projectQueuedAgent(state, target);
     },
 
     async assertActive(runId: string, authority: WikiExecutionAuthority): Promise<void> {
-      await serialize(async () => {
-        await recover(runId);
-        const state = await readState(runId);
-        if (!state || state.status !== "running" || state.attempt !== authority.attempt || state.executionToken !== authority.executionToken) {
-          throw new Error(`Wiki Lead execution ${authority.attempt}/${authority.executionToken} is no longer active`);
-        }
-      });
+      const state = await ensure(runId, "fence");
+      if (!state || state.status !== "running" || state.attempt !== authority.attempt || state.executionToken !== authority.executionToken) {
+        throw new Error(`Wiki Lead execution ${authority.attempt}/${authority.executionToken} is no longer active`);
+      }
     },
 
     async executionOwner(runId: string): Promise<"live" | "stale" | "absent"> {
-      return await serialize(async () => {
+      return await writeExclusive(async () => {
         await recover(runId);
         const state = await readState(runId);
         if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
@@ -587,7 +630,10 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
   async function writeAgentSidecar(runId: string, patch: AgentPatch): Promise<void> {
     const existing = await readAgentRecordFile(paths(runId).agent(patch.target));
     const record = buildAgentRecord(existing, patch);
-    const state = await readState(runId);
+    const key = persistKey(runId, patch.target);
+    const fingerprint = persistAgentFingerprint(record);
+    if (persistFingerprints.get(key) === fingerprint) return;
+    const state = await cachedState(runId);
     if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
     const transaction: WikiSidecarTransaction = {
       version: WIKI_FORMAT,
@@ -599,6 +645,8 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     await writeText(journal, `${JSON.stringify(transaction, null, 2)}\n`);
     await options.fault?.("afterSidecarJournal");
     await applySidecarTransaction(transaction, runId, true);
+    persistFingerprints.set(key, fingerprint);
+    if (transaction.usage) remember({ ...state, progress: { ...(state.progress ?? { stage: "lead" }), usage: transaction.usage } });
   }
 }
 
@@ -627,6 +675,44 @@ function stageMessage(stage: WikiRunStage): string {
     case "validate": return "Validating candidate Wiki";
     case "publish": return "Publishing candidate Wiki";
   }
+}
+
+function cloneRunState(state: WikiRunState): WikiRunState {
+  const { productionPlan, ...rest } = state;
+  const cloned = structuredClone(rest) as WikiRunState;
+  if (productionPlan) cloned.productionPlan = productionPlan;
+  return cloned;
+}
+
+function durableSnapshot(state: WikiRunState): Record<string, unknown> {
+  const { productionPlan: _plan, ...rest } = state;
+  if (!rest.progress) return rest;
+  const { recentActivity: _activity, ...progress } = rest.progress;
+  return { ...rest, progress };
+}
+
+function persistKey(runId: string, target: WikiAgentTarget): string {
+  return target.kind === "lead" ? `${runId}:lead` : `${runId}:${target.batch}:${target.taskId}`;
+}
+
+function persistAgentFingerprint(record: WikiAgentRecord): string {
+  const tools = (record.agent.activeTools ?? [])
+    .map((tool) => `${tool.id ?? ""}\0${tool.name}\0${tool.summary ?? ""}`)
+    .join("\n");
+  const process = (record.process ?? [])
+    .map((entry) => `${entry.sequence}\0${entry.completed ?? ""}\0${entry.summary ?? ""}\0${entry.message}`)
+    .join("\n");
+  const usage = record.agent.usage ? JSON.stringify(record.agent.usage) : "";
+  return [record.agent.activity ?? "", tools, record.agent.lastActivityAt ?? "", process, usage, record.sessionFile ?? "", record.agent.health ?? ""].join("\0");
+}
+
+function assertStateLifecycle(state: WikiRunState, expectedId: string): void {
+  if (state.id !== expectedId) throw new Error(`Invalid Wiki run state: ${expectedId}`);
+  if (state.status === "running" && state.attempt > 0 && !state.executionToken
+    || state.status !== "running" && state.executionToken
+    || TERMINAL.has(state.status) !== Boolean(state.completedAt)
+    || state.status === "succeeded" && (!state.publication || state.leadSummary === undefined)
+    || state.status === "failed" && !state.error) throw new Error(`Invalid Wiki run state lifecycle: ${expectedId}`);
 }
 
 function parseState(value: unknown, expectedId: string): WikiRunState {
@@ -667,11 +753,7 @@ function parseState(value: unknown, expectedId: string): WikiRunState {
     parsed.progress = { stage: "lead", usage: aggregateUsage(Object.values(legacyUsage)) };
   }
   else delete parsed.progress;
-  if (parsed.status === "running" && parsed.attempt > 0 && !parsed.executionToken
-    || parsed.status !== "running" && parsed.executionToken
-    || TERMINAL.has(parsed.status) !== Boolean(parsed.completedAt)
-    || parsed.status === "succeeded" && (!parsed.publication || parsed.leadSummary === undefined)
-    || parsed.status === "failed" && !parsed.error) throw new Error(`Invalid Wiki run state lifecycle: ${expectedId}`);
+  assertStateLifecycle(parsed, expectedId);
   return parsed;
 }
 
@@ -699,7 +781,7 @@ function parseProductionPlan(value: unknown, runId: string): WikiProductionPlan 
     || path.resolve(plan.runSessionDirectory) !== path.join(expectedRunRoot, "sessions")) {
     throw new Error(`Invalid Wiki production plan identity: ${runId}`);
   }
-  return structuredClone(plan as WikiProductionPlan);
+  return Object.freeze(structuredClone(plan as WikiProductionPlan));
 }
 
 function parsePinnedSourcePlan(value: unknown, runId: string): WikiProductionPlan["sourcePlan"] | undefined {
@@ -869,7 +951,6 @@ function parseProgress(value: unknown): WikiRunProgress | undefined {
   const lead = parseAgentSnapshot(raw.lead);
   const currentBatch = parseBatch(raw.currentBatch);
   const batches = Array.isArray(raw.batches) ? raw.batches.map(parseBatch).filter((value): value is NonNullable<typeof value> => !!value) : undefined;
-  const activity = Array.isArray(raw.recentActivity) ? raw.recentActivity.map(parseActivityEntry).filter((value): value is WikiActivityEntry => !!value).slice(-20) : undefined;
   const usage = parseContextStats(raw.usage);
   const budgets = parseExecutionBudgets(raw.budgets);
   return {
@@ -877,7 +958,6 @@ function parseProgress(value: unknown): WikiRunProgress | undefined {
     ...(lead ? { lead } : {}),
     ...(currentBatch ? { currentBatch } : {}),
     ...(batches?.length ? { batches } : {}),
-    ...(activity?.length ? { recentActivity: activity } : {}),
     ...(raw.language === "zh" || raw.language === "en" ? { language: raw.language } : {}),
     ...(raw.lastMessage !== undefined ? { lastMessage: raw.lastMessage } : {}),
     ...(usage ? { usage } : {}),
@@ -1445,25 +1525,23 @@ function parseSidecarTransaction(value: unknown, expectedId: string): WikiSideca
   return { version: WIKI_FORMAT, runId: expectedId, ...(usage ? { usage } : {}), agent: { target, record } };
 }
 
-async function readUpdatesFile(directory: string, runId: string, after = 0): Promise<WikiDurableUpdate[]> {
+async function readEventRecords(directory: string, runId: string, after = 0): Promise<WikiRunEvent[]> {
   try {
     const afterName = eventRecordName(Number.isFinite(after) ? Math.max(0, Math.trunc(after)) : 0);
     const entries = (await readdir(directory, { withFileTypes: true }))
       .filter((entry) => entry.isFile() && /^\d{16}\.json$/.test(entry.name) && entry.name > afterName)
       .sort((left, right) => left.name.localeCompare(right.name));
-    const updates: WikiDurableUpdate[] = [];
+    const events: WikiRunEvent[] = [];
     for (const entry of entries) {
       const file = path.join(directory, entry.name);
-      const value = JSON.parse(await readFile(file, "utf8")) as Partial<WikiDurableUpdate> & Record<string, unknown>;
-      assertExactKeys(value, ["version", "event", "state"], "Wiki durable update");
+      const value = JSON.parse(await readFile(file, "utf8")) as Partial<WikiEventRecord> & Record<string, unknown>;
+      assertExactKeys(value, ["version", "event"], "Wiki event record");
       if (value.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(file, value.version);
       const event = parseEvent(value.event, runId);
-      const state = parseState(value.state, runId);
       if (entry.name !== eventRecordName(event.sequence)) throw new Error(`Wiki event record name does not match sequence: ${entry.name}`);
-      assertUpdateInvariant(event, state);
-      updates.push({ version: WIKI_FORMAT, event, state });
+      events.push(event);
     }
-    return updates;
+    return events;
   } catch (error) {
     if (isMissing(error)) return [];
     throw error;

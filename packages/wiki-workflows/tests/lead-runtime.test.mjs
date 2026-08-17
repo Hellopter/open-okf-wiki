@@ -73,6 +73,7 @@ function fakeSession(prompt, extra = {}) {
     subscribe() { return () => {}; },
     setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
     async prompt(value) { await prompt?.(value); },
+    async followUp() {},
     async waitForIdle() {},
     async abort() { extra.aborted?.(); },
     dispose() { extra.disposed?.(); },
@@ -228,8 +229,9 @@ test("resumed Pi sessions reject an exhausted turn budget before prompting", asy
   input.preparation = "resume";
   input.leadSessionFile = sessionFile;
   input.runSessionDirectory = path.dirname(sessionDir);
-  input.budgets = { maxDelegatedTasks: 10, maxDelegateBatches: 10, maxTurnsPerSession: 2, maxToolCallsPerSession: 10 };
+  input.budgets = { maxDelegatedTasks: 10, maxDelegateBatches: 10, maxTurnsPerSession: 20, maxToolCallsPerSession: 40 };
   const runtime = createPiLeadRuntime({
+    leadBudgets: { maxTurnsPerSession: 2, maxToolCallsPerSession: 10 },
     model: { provider: "test", id: "must-not-override-restored" },
     createSession: async (options) => {
       receivedOptions = options;

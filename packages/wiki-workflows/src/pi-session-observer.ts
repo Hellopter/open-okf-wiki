@@ -473,7 +473,7 @@ function isDelegateTool(name: string): boolean {
 function wikiControlSummary(name: string, args: Record<string, unknown>): string | undefined {
   if (name === "wiki_delegate_collect") {
     const until = args.until === "any" || args.until === "all" ? args.until : undefined;
-    const timeout = Number.isInteger(args.timeoutSeconds) && (args.timeoutSeconds as number) >= 0 && (args.timeoutSeconds as number) <= 60
+    const timeout = Number.isInteger(args.timeoutSeconds) && (args.timeoutSeconds as number) >= 0 && (args.timeoutSeconds as number) <= 1_200
       ? `${args.timeoutSeconds}s`
       : undefined;
     return joinSummary("collect", until, timeout);

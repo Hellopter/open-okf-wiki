@@ -14,7 +14,7 @@ await run.control("resume");
 const result = await run.result();
 ```
 
-`view()` is a point query. `updates()` is the replay/live interface: every update contains the event and `WikiRunView` committed by the same transaction. The root package export contains only this caller surface; CLI and Pi adapters use explicit subpaths.
+`view()` is a point query. `updates()` is the replay/live interface: each value contains an event and the current Run view. Catch-up pairs retained events with the snapshot at read time, not a historical view-at-sequence. The overlay ignores non-advancing sequences and keeps the latest view. The root package export contains only this caller surface; CLI and Pi adapters use explicit subpaths.
 
 ## Run isolation
 
@@ -49,11 +49,11 @@ wiki/
       models.md / flows.md / sequences.md / states.md / data.md / modules.md
 ```
 
-A Cluster is the dispatch unit: root overview (and optional architecture), one domain page, or the evidence-backed pages under one concept. The host projects remaining work to `.okf-wiki/runs/<id>/board.md`. The Lead reads that board after compaction and before dispatch or finish.
+A Cluster is the dispatch unit: root overview (and optional architecture), one domain page, or the evidence-backed pages under one concept. The host projects remaining work to `.okf-wiki/runs/<id>/board.md` and exposes it to the Lead as `.okf-wiki/current/board.md`. The Lead reads that board after compaction and before dispatch or finish.
 
 The Lead may write directly only for a one-domain Spec with at most three content pages and no compaction. Otherwise writers are delegated per cluster. Review is always independent. Research is delegated only when the scope needs parallel coverage or the Lead cannot cover it.
 
-`repository-wiki-producer` is the only model-facing host skill. Production `wiki-production/SKILL.md` is the Lead session brief. Worker roles are `briefs/*.md`, not skills. Templates are disclosed references.
+`repository-wiki-producer` is the only model-facing host skill. Production `wiki-production/SKILL.md` is the Lead Pi skill. Worker roles are Pi skills from `briefs/*.md` with the same skill `baseDir`. Templates stay on-demand references under that directory.
 
 ## Candidate and review
 
@@ -63,7 +63,7 @@ Indexes are deterministic projections. Final governance issues an opaque Publica
 
 ## Durable Run state
 
-Each lifecycle change is one snapshot transaction containing the event, Run view, affected Agent records, and task runtime state. Process tails project into `progress.recentActivity` for the live widget. There is no run-level activity log. A write-ahead transaction is persisted first and replayed idempotently after interruption. It owns lifecycle legality and active-Run release; callers never sequence state edits, event appends, and release themselves.
+Each lifecycle change is one snapshot transaction containing the event, Run view, affected Agent records, and task runtime state. The retained event log stores the event only; the current snapshot lives in `run-state.json`, and a pinned production plan lives in `production-plan.json`. Process tails project into `progress.recentActivity` for the live widget from in-memory Agent `process` records. There is no run-level activity log. A write-ahead transaction is persisted first and replayed idempotently after interruption. It owns lifecycle legality and active-Run release; callers never sequence state edits, event appends, and release themselves.
 
 The current format is 1; anything else fails closed. Opening another format reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable. The Published Wiki is independent.
 
@@ -71,7 +71,7 @@ The current format is 1; anything else fails closed. Opening another format repo
 
 Observability is a projection, never a control plane. One pure semantic module interprets the strict event variants plus status, stage, health, liveness, activity, tone, marker, context pressure, and batch progress. Events have typed variant fields rather than an extensible data bag. CLI, live footer/widget, and overlay are media adapters over those semantics; the overlay does not depend on CLI rendering. They never reduce events into independent state.
 
-The overlay and Pi stream consume `updates()`, so an event is never rendered with a separately queried stale view. The overlay ignores non-advancing sequences and accepts the terminal update before its stream ends. Agent inspection is a point query; there is no run-level activity log.
+The overlay and Pi stream consume `updates()`, so a live event is never rendered with a separately queried stale view. Catch-up may attach the current snapshot to older sequences; the overlay ignores non-advancing sequences and accepts the terminal update before its stream ends. Agent inspection is a point query; there is no run-level activity log.
 
 ## Failure ownership
 
