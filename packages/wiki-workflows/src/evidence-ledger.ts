@@ -138,7 +138,6 @@ function validateRoleIndexes(
   const assignments = new Set(contract.assignmentIds);
   if (indexes.assignmentIds.some((id) => !assignments.has(id))) throw new Error("Research handoff contains an undeclared assignment ID");
   if (completed?.some((id) => !assignments.has(id))) throw new Error("Research completion contains an undeclared assignment ID");
-  if (completed?.some((id) => !indexes.assignmentIds.includes(id))) throw new Error("Research completion assignment is missing from Markdown");
   for (const followup of followups ?? []) {
     if (followup.sourceScopeIds.some((scope) => !sourceScopes.has(scope))) throw new Error("Research followup source scope is outside the pinned source scope");
   }

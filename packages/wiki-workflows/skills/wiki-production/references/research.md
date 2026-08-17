@@ -11,12 +11,11 @@ Return concise Markdown with exactly these headings: `# Research Handoff`,
 and `## Gaps and failed reads`.
 Cite every factual finding with precise `repo:<scope>/<path>#Lx-Ly` evidence.
 Keep source-local facts, cross-source synthesis candidates, conflicts, and
-minority evidence separate. Include explicit assignment completion, unresolved
-gaps, and conflict IDs. The host persists it as an artifact; do not write an
-artifact file yourself.
+minority evidence separate. Include unresolved gaps and conflict IDs. The host
+persists it as an artifact; do not write an artifact file yourself.
 
-Finish with `wiki_research_finish`, including a concise summary, completed
-assignment IDs, and blocker follow-ups with kinds, questions, and source scopes.
+Finish with `wiki_research_finish`, including a concise summary and blocker
+follow-ups with kinds, questions, and source scopes.
 The host generates stable follow-up IDs; submit only the follow-up kind,
 question, and source scope IDs. The Markdown handoff remains the detailed
 evidence record.

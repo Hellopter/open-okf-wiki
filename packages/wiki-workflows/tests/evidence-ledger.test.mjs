@@ -23,6 +23,17 @@ test("EvidenceLedger indexes role-specific research Markdown without retaining p
   assert.equal(Object.hasOwn(entry, "markdown"), false);
 });
 
+test("EvidenceLedger accepts host completion coverage when Markdown omits assignment tokens", () => {
+  const contract = createWikiDelegateContract(1, {
+    id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
+    mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
+  });
+  const markdown = "# Research Handoff\n## Assignments\nCovered the assigned source scope.\n## Coverage\nVerified entry points.\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
+  const entry = ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] });
+  assert.deepEqual(entry.completedAssignmentIds, ["assignment-1"]);
+  assert.deepEqual(entry.indexes.assignmentIds, []);
+});
+
 test("EvidenceLedger rejects wrong handoff kind, undeclared assignments, and unqualified citations", () => {
   const contract = createWikiDelegateContract(1, {
     id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],

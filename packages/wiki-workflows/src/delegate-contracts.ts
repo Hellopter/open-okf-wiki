@@ -33,27 +33,54 @@ export interface WikiDelegateFollowup extends WikiResearchFollowupDraft {
   id: string;
 }
 
-export interface WikiResearchCompletion {
+export interface WikiResearchSignal {
   status: "complete" | "incomplete";
   summary: string;
-  completedAssignmentIds: string[];
   needsFollowup: boolean;
   followups: WikiResearchFollowupDraft[];
 }
 
-export function parseWikiResearchCompletion(value: unknown): WikiResearchCompletion {
-  const raw = record(value, "Wiki research completion");
-  exactKeys(raw, ["status", "summary", "completedAssignmentIds", "needsFollowup", "followups"], "Wiki research completion");
+export interface WikiResearchCompletion extends WikiResearchSignal {
+  completedAssignmentIds: string[];
+}
+
+export function parseWikiResearchSignal(value: unknown): WikiResearchSignal {
+  const raw = record(value, "Wiki research signal");
+  exactKeys(raw, ["status", "summary", "needsFollowup", "followups"], "Wiki research signal");
   if (raw.status !== "complete" && raw.status !== "incomplete") throw new Error("Invalid Wiki research completion status");
   const summary = nonEmpty(raw.summary, "Wiki research completion summary");
   if (Buffer.byteLength(summary, "utf8") > 1024) throw new Error("Wiki research completion summary exceeds 1024 bytes");
-  const completedAssignmentIds = strings(raw.completedAssignmentIds, "Wiki research completedAssignmentIds");
-  if (new Set(completedAssignmentIds).size !== completedAssignmentIds.length) throw new Error("Wiki research completedAssignmentIds must be unique");
   if (typeof raw.needsFollowup !== "boolean") throw new Error("Invalid Wiki research needsFollowup");
   const followups = parseResearchFollowups(raw.followups);
   if (raw.needsFollowup !== (followups.length > 0)) throw new Error("Wiki research needsFollowup must match followups");
   if (raw.status === "incomplete" && !raw.needsFollowup) throw new Error("Incomplete Wiki research requires followups");
-  return { status: raw.status, summary, completedAssignmentIds, needsFollowup: raw.needsFollowup, followups };
+  return { status: raw.status, summary, needsFollowup: raw.needsFollowup, followups };
+}
+
+/** Add host-owned assignment coverage after an agent has submitted its signal. */
+export function createWikiResearchCompletion(
+  signal: WikiResearchSignal,
+  assignmentIds: readonly string[],
+): WikiResearchCompletion {
+  return {
+    ...signal,
+    completedAssignmentIds: signal.status === "complete" ? [...assignmentIds] : [],
+  };
+}
+
+/** Parse the durable shape when reading persisted/internal completion data. */
+export function parseWikiResearchCompletion(value: unknown): WikiResearchCompletion {
+  const raw = record(value, "Wiki research completion");
+  exactKeys(raw, ["status", "summary", "completedAssignmentIds", "needsFollowup", "followups"], "Wiki research completion");
+  const signal = parseWikiResearchSignal({
+    status: raw.status,
+    summary: raw.summary,
+    needsFollowup: raw.needsFollowup,
+    followups: raw.followups,
+  });
+  const completedAssignmentIds = strings(raw.completedAssignmentIds, "Wiki research completedAssignmentIds");
+  if (new Set(completedAssignmentIds).size !== completedAssignmentIds.length) throw new Error("Wiki research completedAssignmentIds must be unique");
+  return { ...signal, completedAssignmentIds };
 }
 
 export function parseWikiReviewResult(value: unknown): WikiReviewResult {

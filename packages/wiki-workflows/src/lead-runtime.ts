@@ -20,9 +20,9 @@ import {
   WikiTaskExecutionError,
   WikiTaskPauseError,
   type WikiDelegateContract,
-  type WikiResearchCompletion,
+  type WikiResearchSignal,
   WIKI_FOLLOWUP_KINDS,
-  parseWikiResearchCompletion,
+  parseWikiResearchSignal,
 } from "./delegate-contracts.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
 import type { WikiLeadObservation, WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
@@ -420,7 +420,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const declaredSources = [...task.sourceScopeIds, ...artifactRelativePaths];
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
     let review: WikiReviewResult | undefined;
-      let research: WikiResearchCompletion | undefined;
+    let researchSignal: WikiResearchSignal | undefined;
     const spec = this.currentSpec?.();
     const reviewIndexes = task.role === "review" && spec
       ? derivedIndexPaths(wikiSpecPagePaths(spec)).map(addWikiPrefix)
@@ -437,19 +437,13 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         review = result;
       })] : []),
       ...(role === "researcher" ? [researchFinishTool((result) => {
-        if (research) throw new Error("wiki_research_finish may be accepted only once");
+        if (researchSignal) throw new Error("wiki_research_finish may be accepted only once");
         if (task.role !== "research") throw new Error("Research completion requires a research contract");
-        const assigned = new Set(task.assignmentIds);
-        if (result.completedAssignmentIds.some((id) => !assigned.has(id))) throw new Error("wiki_research_finish completedAssignmentIds must come from the host assignment set");
-        if (result.status === "complete"
-          && (result.completedAssignmentIds.length !== assigned.size || task.assignmentIds.some((id) => !result.completedAssignmentIds.includes(id)))) {
-          throw new Error("wiki_research_finish completedAssignmentIds must exactly match the host assignment set when status is complete");
-        }
         if (Buffer.byteLength(result.summary, "utf8") > 1024) throw new Error("wiki_research_finish summary must be at most 1024 bytes");
         if (result.followups.some((followup) => followup.sourceScopeIds.some((scope) => !task.sourceScopeIds.includes(scope)))) {
           throw new Error("wiki_research_finish followup sourceScopeIds must use pinned source scopes");
         }
-        research = result;
+        researchSignal = result;
       })] : []),
     ]);
     const brief = await readRoleBrief(this.options.skillRoot, role);
@@ -462,9 +456,6 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         task.instruction,
         leafLanguageInstruction(role, this.options.language),
         `\nReadable source trees (cwd-relative): ${task.sourceScopeIds.join(", ") || "(none)"}`,
-        task.role === "research"
-          ? `\nExact research assignment IDs: ${JSON.stringify(task.assignmentIds)}. Return only completed IDs; status complete requires every ID, while status incomplete may return none.`
-          : "",
         task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
         task.reviewPaths?.length ? `\nExact required review paths: ${JSON.stringify(task.reviewPaths)}` : "",
         reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
@@ -490,13 +481,13 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const markdown = sessionResult.text.trim();
     if (!markdown) throw new Error("Delegated agent produced empty output");
     if (role === "reviewer" && !review) throw new Error("Reviewer completed without wiki_review_finish");
-    if (role === "researcher" && !research) throw new Error("Researcher completed without wiki_research_finish");
+    if (role === "researcher" && !researchSignal) throw new Error("Researcher completed without wiki_research_finish");
     return {
-      summary: research?.summary ?? firstLine(markdown),
+      summary: researchSignal?.summary ?? firstLine(markdown),
       markdown,
       usage: sessionResult.usage,
       ...(review ? { review } : {}),
-      ...(research ? { status: research.status, research } : {}),
+      ...(researchSignal ? { status: researchSignal.status, research: researchSignal } : {}),
     };
   }
 }
@@ -528,7 +519,7 @@ function withExecutionModes(tools: ToolDefinition<any, any, any>[]): ToolDefinit
   } as ToolDefinition<any, any, any>));
 }
 
-function researchFinishTool(finish: (result: WikiResearchCompletion) => void): ToolDefinition<any, any, any> {
+function researchFinishTool(finish: (result: WikiResearchSignal) => void): ToolDefinition<any, any, any> {
   return {
     name: "wiki_research_finish",
     label: "Finish Wiki research",
@@ -537,7 +528,6 @@ function researchFinishTool(finish: (result: WikiResearchCompletion) => void): T
     parameters: Type.Object({
       status: StringEnum(["complete", "incomplete"]),
       summary: Type.String({ minLength: 1, maxLength: 1024 }),
-      completedAssignmentIds: Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
       needsFollowup: Type.Boolean(),
       followups: Type.Array(Type.Object({
         kind: StringEnum([...WIKI_FOLLOWUP_KINDS]),
@@ -547,7 +537,7 @@ function researchFinishTool(finish: (result: WikiResearchCompletion) => void): T
     }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
-      finish(parseWikiResearchCompletion(params));
+      finish(parseWikiResearchSignal(params));
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;

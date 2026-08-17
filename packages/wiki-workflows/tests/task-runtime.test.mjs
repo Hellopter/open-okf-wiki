@@ -41,7 +41,6 @@ function runtime(agent, values = {}) {
           research: {
             status: "complete",
             summary: result.summary,
-            completedAssignmentIds: [...contract.assignmentIds],
             needsFollowup: false,
             followups: [],
           },
@@ -136,7 +135,7 @@ test("durable queued contract commit completes before an Agent can launch", asyn
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", completedAssignmentIds: [...value.assignmentIds], needsFollowup: false, followups: [] } }; } },
+    agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [] } }; } },
     transitions: { ...transitions, async batchQueued(contracts) { await queued; await transitions.batchQueued(contracts); } },
   });
   const starting = subject.start([contract(1, task("ordered"))], new AbortController().signal);
@@ -152,7 +151,7 @@ test("durable transition failure is consumed and surfaced by collect", async () 
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", completedAssignmentIds: [...value.assignmentIds], needsFollowup: false, followups: [] } }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [] } }; } },
     transitions: { ...transitions, async taskSettled() { throw new Error("durable settle failed"); } },
   });
   const { batchId } = await subject.start([contract(1, task("persist-failure"))], new AbortController().signal);
@@ -210,19 +209,35 @@ test("research leaf without completion becomes schema-incomplete and retains its
   assert.match(artifacts.writes[0].content, /# Research Handoff/);
 });
 
-test("research completion must match its durable contract inside TaskRuntime", async () => {
-  for (const research of [
-    { status: "complete", summary: "missing assignment", completedAssignmentIds: [], needsFollowup: false, followups: [] },
-    { status: "incomplete", summary: "missing blocker", completedAssignmentIds: [], needsFollowup: false, followups: [] },
-  ]) {
-    const r = runtime({ run: async () => ({
-      summary: research.summary, markdown: "# Findings", status: research.status, research,
-    }) }, { autoResearchCompletion: false });
-    const result = await runBatch(r, [task(`invalid-${research.status}`)]);
-    assert.equal(result.receipts[0].status, "incomplete");
-    assert.equal(result.receipts[0].error?.code, "schema");
-    assert.equal(result.receipts[0].completedAssignmentIds.length, 0);
-  }
+test("TaskRuntime injects all host assignments for complete and none for incomplete", async () => {
+  const complete = runtime({ run: async () => ({
+    summary: "complete", markdown: "# Findings", research: {
+      status: "complete", summary: "complete", needsFollowup: false, followups: [],
+    },
+  }) }, { autoResearchCompletion: false });
+  const completeResult = await runBatch(complete, [task("complete-host-coverage")]);
+  assert.equal(completeResult.receipts[0].status, "complete");
+  assert.deepEqual(completeResult.receipts[0].completedAssignmentIds, ["complete-host-coverage-assignment"]);
+
+  const incomplete = runtime({ run: async () => ({
+    summary: "incomplete", markdown: "# Findings", research: {
+      status: "incomplete", summary: "incomplete", needsFollowup: true,
+      followups: [{ kind: "tool_failure", question: "Retry source", sourceScopeIds: ["api"] }],
+    },
+  }) }, { autoResearchCompletion: false });
+  const incompleteResult = await runBatch(incomplete, [task("incomplete-host-coverage")]);
+  assert.equal(incompleteResult.receipts[0].status, "incomplete");
+  assert.deepEqual(incompleteResult.receipts[0].completedAssignmentIds, []);
+
+  const invalid = runtime({ run: async () => ({
+    summary: "missing blocker", markdown: "# Findings", research: {
+      status: "incomplete", summary: "missing blocker", needsFollowup: false, followups: [],
+    },
+  }) }, { autoResearchCompletion: false });
+  const invalidResult = await runBatch(invalid, [task("invalid-incomplete")]);
+  assert.equal(invalidResult.receipts[0].status, "incomplete");
+  assert.equal(invalidResult.receipts[0].error?.code, "schema");
+  assert.equal(invalidResult.receipts[0].completedAssignmentIds.length, 0);
 });
 
 test("receipts omit empty coverage and gaps while retaining non-empty values", async () => {
@@ -563,7 +578,7 @@ test("failed start that never registered does not poison a later start of the sa
   let failQueue = true;
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", completedAssignmentIds: [...value.assignmentIds], needsFollowup: false, followups: [] } }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [] } }; } },
     transitions: {
       ...transitions,
       async batchQueued(contracts) {

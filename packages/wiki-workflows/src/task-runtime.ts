@@ -11,7 +11,9 @@ import {
   type WikiDelegateRole,
   type WikiDelegateContract,
   type WikiTaskFailureCode,
+  createWikiResearchCompletion,
   type WikiResearchCompletion,
+  type WikiResearchSignal,
   canonicalWikiFollowupId,
   type WikiDelegateFollowup,
 } from "./delegate-contracts.js";
@@ -62,7 +64,7 @@ export interface WikiLeafResult {
   status?: "complete" | "incomplete";
   usage?: WikiContextStats;
   review?: WikiReviewResult;
-  research?: WikiResearchCompletion;
+  research?: WikiResearchSignal;
 }
 
 export interface WikiLeafAgent {
@@ -497,8 +499,11 @@ export class WikiTaskRuntime {
         };
         await this.fireProgress({ batchId: batch, phase: "start", task, telemetry: startedTelemetry });
         const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry, record.state.sessionFile));
-        const completion = result.research;
-        if (task.role === "research" && !completion) {
+        const researchSignal = result.research;
+        const completion = task.role === "research" && researchSignal
+          ? createWikiResearchCompletion(researchSignal, task.assignmentIds)
+          : undefined;
+        if (task.role === "research" && !researchSignal) {
           throw new WikiTaskExecutionError(
             "Research leaf completed without wiki_research_finish",
             "schema",
