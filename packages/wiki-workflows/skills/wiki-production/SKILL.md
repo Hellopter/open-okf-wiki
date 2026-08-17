@@ -5,68 +5,51 @@ description: Isolated Wiki Lead session brief for one source-grounded production
 
 # Wiki production Lead
 
-The host already started this run. Inspect authorized source and the candidate,
-then finish through the supplied tools. Do not create workflow manifests,
-source copies, or alternate plans.
+The host already started this Run and mounted its logical file slots under
+`.okf-wiki/current/`. Use Pi `read`, `write`, and `edit` on those files, then
+submit only the small control calls described below. The host binds every slot
+to its durable Source, Task Receipt, and Candidate state.
 
-1. Inspect authorized source deterministically. Inventory every declared source
-   root, entry point, public boundary, important flow, persistence boundary,
-   and candidate semantic domain. Keep source names as provenance scopes; do
-   not promote a repository name to a domain without evidence.
-2. Start one discovery logical wave for all ready, independent coverage
-   assignments. Give each task explicit source, domain, and lens scopes, a
-   stop condition, and a role-specific Markdown handoff. The host assigns
-   opaque coverage IDs and carries them into the leaf contract. Queue the
-   complete ready wave in one `wiki_delegate_start`; runtime concurrency
-   controls actual sessions and retries remain attempts.
-3. Collect discovery and reconcile taxonomy once, then submit the compact
-   `wiki_taxonomy` checkpoint before `wiki_plan`. Record
-   merge/split/rename decisions, source-local detail, cross-source relations,
-   conflicts, and minority evidence. Root pages are cross-source synthesis;
-   source/domain/concept pages retain local provenance. Then read
-   [topology](references/topology.md) and submit the complete source-aware page
-   path list with `wiki_plan`.
-4. Before every `wiki_delegate_start` or `wiki_finish`, read
-   `.okf-wiki/runs/<id>/board.md`. Dispatch from Remaining using those cluster
-   ids. One cluster for write or review. If the board shows
-   `directWriteAllowed: yes`, write that cluster yourself. Continue useful Lead
-   work, then `wiki_delegate_collect` with the batch id shown on the board. Use
-   `wiki_delegate_cancel` when pending work is no longer useful.
-5. Read delegated Markdown artifacts by reference with bounded `read` calls.
-   When passing an artifact to another task, copy its exact
-   `receipt.outputs[].nodeId` into that task's `contextRefs`. Treat failed or
-   incomplete receipts as missing coverage, never as evidence of absence.
-6. A supplement is allowed only for a concrete unresolved gap, conflict, or
-   failed task shown on the board. Use `mode: supplement` and put the exact
-   blocker IDs in `resolvesIds`; never repeat a broad survey because writing
-   has started or because a result was inconvenient.
-7. Delegate independent review of every current cluster. Reviewers call
-   `wiki_review_finish`. A write or plan revision invalidates prior passes.
-8. Call `wiki_finish` only after the board shows every current page with
-   passing review coverage.
+1. Read `.okf-wiki/current/board.md`. It is the read-only authority for the
+   next ready wave and remaining work.
+2. For discovery, read every host-created
+   `.okf-wiki/current/research/source-NNN.md` slot. Add concise research
+   direction in place only when the generated direction needs refinement, then
+   call `wiki_delegate_start` with no arguments. The host binds slots to pinned
+   Sources and queues the complete ready wave.
+3. Call `wiki_delegate_collect` with only `until` and `timeoutSeconds`, then
+   re-read the board. When evidence prose is needed, use Pi `read` on the
+   read-only artifact or resource paths shown there. A failed or incomplete
+   Task Receipt is missing coverage, never evidence of absence. When the board
+   makes a supplement ready, call `wiki_delegate_start` again with no
+   arguments; the host derives its scope from current blockers.
+4. When research is ready, edit the host-provided
+   `.okf-wiki/current/taxonomy.yaml` in place. Preserve its shape, keep each
+   `sourceScopeId` as the matching Wiki source folder, and reconcile
+   source-local domains, cross-source relations, conflicts, and minority
+   evidence. Call `wiki_taxonomy` with no arguments; it consumes that file.
+5. Read [topology](references/topology.md), edit
+   `.okf-wiki/current/wiki-spec.yaml` in place under the host-written source
+   folders, then call `wiki_plan` with no arguments. It consumes that file.
+6. Re-read the board and call `wiki_delegate_start` with no arguments for each
+   ready write or review wave. The host derives tasks, Candidate paths,
+   upstream artifacts, and review assignments. Collect each wave before
+   advancing. A write or plan revision invalidates prior review passes.
+7. When the board shows the Candidate complete with current passing review
+   coverage, write a concise completion summary to
+   `.okf-wiki/current/completion.md`, then call `wiki_finish` with no arguments.
 
-`wiki_plan` envelope:
-
-```json
-{
-  "pages": [
-    "overview.md",
-    "api/source.md",
-    "api/billing/domain.md",
-    "api/billing/invoice/concept.md",
-    "api/billing/invoice/models.md"
-  ]
-}
-```
-
-JSON is only for small control envelopes (`wiki_plan`, task dispatch, and finish
-tools), not for research, writing, review, or other prose handoffs.
+`wiki_delegate_cancel` accepts only an optional short `reasonCode`. Use it when
+the current pending wave is no longer useful. Business prose belongs in the
+fixed files, while `wiki_*` JSON carries only status, wait controls, verdicts,
+or a short reason code. Use the host-provided slots in place; the host owns slot
+creation, naming, Source binding, and durable identities.
 
 ## References
 
-- [Topology](references/topology.md) — before `wiki_plan`
-- `.okf-wiki/runs/<id>/board.md` — before every dispatch or `wiki_finish`
+- [Topology](references/topology.md) - before editing `wiki-spec.yaml`
+- `.okf-wiki/current/board.md` - before every workflow transition
 - [Evidence](references/common.md)
-- [Researcher brief](briefs/researcher.md) · [research](references/research.md)
-- [Writer brief](briefs/writer.md) · [writing](references/write.md)
-- [Reviewer brief](briefs/reviewer.md) · [review](references/review.md)
+- [Researcher brief](briefs/researcher.md) and [research](references/research.md)
+- [Writer brief](briefs/writer.md) and [writing](references/write.md)
+- [Reviewer brief](briefs/reviewer.md) and [review](references/review.md)

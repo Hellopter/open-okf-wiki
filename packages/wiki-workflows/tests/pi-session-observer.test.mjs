@@ -164,6 +164,58 @@ test("tool end without a start row appends a completed process row", async () =>
   });
 });
 
+test("file-first Wiki tool summaries expose only fixed labels and closed control fields", async () => {
+  await observe(async ({ session, wait }) => {
+    const secret = `PRIVATE-${"x".repeat(4_000)}`;
+    const calls = [
+      ["wiki_delegate_start", { tasks: [{ id: "task-secret", role: "research", instruction: secret, sourceScopeIds: ["source-secret"], contextRefs: ["artifact-secret"], resolvesIds: ["blocker-secret"] }] }, "start ready wave"],
+      ["wiki_taxonomy", { decisions: [{ sourceScopeId: "source-secret", domainId: secret }] }, "accept taxonomy"],
+      ["wiki_plan", { pages: ["wiki/private/path.md"], body: secret }, "accept Wiki plan"],
+      ["wiki_finish", { summary: secret }, "finish Wiki"],
+      ["wiki_delegate_collect", { batchId: 42, taskIds: ["task-secret"], until: "all", timeoutSeconds: 60, unknown: secret }, "collect  all  60s"],
+      ["wiki_delegate_cancel", { batchId: 42, taskIds: ["task-secret"], reason: secret, reasonCode: "blocked" }, "cancel wave  blocked"],
+      ["wiki_research_finish", { status: "incomplete", summary: secret, followups: [{ question: secret, sourceScopeIds: ["source-secret"] }] }, "finish research  incomplete"],
+      ["wiki_review_finish", { verdict: "changes_requested", reviewedPaths: ["wiki/private/path.md"], findings: [{ id: "finding-secret", path: "wiki/private/path.md" }] }, "finish review  changes requested"],
+    ];
+    calls.forEach(([toolName, args], index) => session.emit({
+      type: "tool_execution_start",
+      toolCallId: `wiki-${index}`,
+      toolName,
+      args,
+    }));
+    const { telemetry, process } = await wait((entries) => entries.filter((entry) => entry.toolCallId?.startsWith("wiki-")).length === calls.length);
+    assert.deepEqual(process.map((entry) => entry.summary), calls.map((entry) => entry[2]));
+    const serialized = JSON.stringify({ telemetry, process });
+    for (const leaked of ["PRIVATE-", "task-secret", "source-secret", "artifact-secret", "blocker-secret", "private/path", "finding-secret", "42"]) {
+      assert.equal(serialized.includes(leaked), false, `leaked ${leaked}`);
+    }
+  });
+});
+
+test("Wiki summaries ignore invalid control values and suppress Wiki error result bodies", async () => {
+  await observe(async ({ session, wait }) => {
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "wiki-invalid",
+      toolName: "wiki_delegate_cancel",
+      args: { reasonCode: "PRIVATE-UNKNOWN", summary: "PRIVATE-BODY" },
+    });
+    await wait((entries) => entries.some((entry) => entry.toolCallId === "wiki-invalid" && !entry.completed));
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "wiki-invalid",
+      toolName: "wiki_delegate_cancel",
+      isError: true,
+      result: { content: [{ type: "text", text: "PRIVATE-FILE-BODY\nmore" }] },
+    });
+    const { process } = await wait((entries) => entries.some((entry) => entry.toolCallId === "wiki-invalid" && entry.completed));
+    const entry = process.find((item) => item.toolCallId === "wiki-invalid");
+    assert.equal(entry.summary, "cancel wave");
+    assert.equal(entry.message, "failed");
+    assert.equal(JSON.stringify(entry).includes("PRIVATE"), false);
+  });
+});
+
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });

@@ -15,6 +15,7 @@ import {
   type WikiResearchCompletion,
   type WikiResearchSignal,
   canonicalWikiFollowupId,
+  truncateUtf8,
   type WikiDelegateFollowup,
 } from "./delegate-contracts.js";
 import { ingestEvidenceHandoff } from "./evidence-ledger.js";
@@ -825,7 +826,7 @@ function receipt(
   research?: WikiResearchCompletion,
 ): WikiDelegateReceipt {
   const researchFollowupDrafts = task.role === "research"
-    ? (research?.followups ?? (status === "incomplete" ? [{ kind: "tool_failure" as const, question: summary, sourceScopeIds: task.sourceScopeIds }] : []))
+    ? (research?.followups ?? (status === "incomplete" ? [{ kind: "tool_failure" as const, question: truncateUtf8(summary, 512), sourceScopeIds: task.sourceScopeIds }] : []))
     : [];
   const followups: WikiDelegateFollowup[] | undefined = task.role === "research"
     ? researchFollowupDrafts.map((followup) => ({ ...followup, id: canonicalWikiFollowupId(task.contractId, followup) }))

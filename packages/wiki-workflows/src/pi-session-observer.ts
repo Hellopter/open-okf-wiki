@@ -169,7 +169,7 @@ export class PiSessionObserver {
         const completed = {
           kind: "tool" as const,
           severity: event.isError ? "error" as const : "info" as const,
-          message: event.isError ? toolErrorReason(event.result) ?? "failed" : "",
+          message: event.isError ? isWikiTool(event.toolName) ? "failed" : toolErrorReason(event.result) ?? "failed" : "",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           summary: tool?.summary ?? existing?.summary,
@@ -454,40 +454,48 @@ function toolErrorReason(result: unknown): string | undefined {
 }
 
 function safeToolSummary(name: string, rawArgs: unknown, workspaceRoot: string): string | undefined {
+  if (name === "wiki_delegate_start") return "start ready wave";
+  if (name === "wiki_taxonomy") return "accept taxonomy";
+  if (name === "wiki_plan") return "accept Wiki plan";
+  if (name === "wiki_finish") return "finish Wiki";
   const args = record(rawArgs);
-  if (!args) return undefined;
+  if (!args) return wikiControlSummary(name, {});
   const relativePath = safePath(args.path, workspaceRoot);
   if (name === "read" || name === "ls" || name === "write" || name === "edit") return relativePath;
   if (name === "grep" || name === "find") return joinSummary(shortString(args.pattern, 80), relativePath);
-  if (name === "wiki_delegate_start") return delegateSummary(args.tasks);
-  if (name === "wiki_delegate_collect") return joinSummary(batchSummary(args.batchId), shortString(args.until, 16));
-  if (name === "wiki_delegate_cancel") return joinSummary(batchSummary(args.batchId), taskIdsSummary(args.taskIds));
-  return undefined;
+  return wikiControlSummary(name, args);
 }
 
 function isDelegateTool(name: string): boolean {
   return name === "wiki_delegate_start" || name === "wiki_delegate_collect" || name === "wiki_delegate_cancel";
 }
 
-function batchSummary(value: unknown): string | undefined {
-  return Number.isInteger(value) && (value as number) > 0 ? `batch ${value}` : undefined;
+function wikiControlSummary(name: string, args: Record<string, unknown>): string | undefined {
+  if (name === "wiki_delegate_collect") {
+    const until = args.until === "any" || args.until === "all" ? args.until : undefined;
+    const timeout = Number.isInteger(args.timeoutSeconds) && (args.timeoutSeconds as number) >= 0 && (args.timeoutSeconds as number) <= 60
+      ? `${args.timeoutSeconds}s`
+      : undefined;
+    return joinSummary("collect", until, timeout);
+  }
+  if (name === "wiki_delegate_cancel") {
+    const reason = args.reasonCode === "blocked" || args.reasonCode === "superseded" || args.reasonCode === "user_requested"
+      ? args.reasonCode.replace("_", " ")
+      : undefined;
+    return joinSummary("cancel wave", reason);
+  }
+  if (name === "wiki_research_finish") {
+    const status = args.status === "complete" || args.status === "incomplete" ? args.status : undefined;
+    return joinSummary("finish research", status);
+  }
+  if (name === "wiki_review_finish") {
+    const verdict = args.verdict === "pass" ? "pass" : args.verdict === "changes_requested" ? "changes requested" : undefined;
+    return joinSummary("finish review", verdict);
+  }
+  return undefined;
 }
 
-function taskIdsSummary(value: unknown): string | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return joinSummary(...value.slice(0, 8).map((entry) => shortString(entry, 32)));
-}
-
-function delegateSummary(rawTasks: unknown): string | undefined {
-  if (!Array.isArray(rawTasks) || rawTasks.length === 0) return undefined;
-  const labels = rawTasks.flatMap((value) => {
-    const task = record(value);
-    if (!task) return [];
-    const label = [shortString(task.role, 16), shortString(task.id, 128)].filter(Boolean).join(" ");
-    return label ? [label] : [];
-  });
-  return joinSummary(...labels);
-}
+function isWikiTool(name: string): boolean { return name.startsWith("wiki_"); }
 
 function joinSummary(...parts: Array<string | undefined>): string | undefined {
   const present = parts.filter((part): part is string => Boolean(part));

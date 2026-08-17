@@ -84,9 +84,46 @@ async function repositoryIdentity(repositoryRoot: string): Promise<string> {
     .digest("hex");
 }
 
-async function pinnedSource(source: ResolvedWikiSource, head: string, dirtyFingerprint: string): Promise<WikiPinnedSource> {
+const SOURCE_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** Host-owned Wiki source id for a pinned workspace path. */
+export function wikiSourceSlug(sourcePath: string, allSourcePaths: readonly string[]): string {
+  const paths = [...new Set(allSourcePaths.map((value) => value.replaceAll("\\", "/")))];
+  const preferred = new Map(paths.map((path) => [path, preferredSourceSlug(path)]));
+  const counts = new Map<string, number>();
+  for (const slug of preferred.values()) counts.set(slug, (counts.get(slug) ?? 0) + 1);
+  const used = new Set<string>();
+  const assigned = new Map<string, string>();
+  for (const path of [...paths].sort((left, right) => left.localeCompare(right))) {
+    let slug = (counts.get(preferred.get(path)!) ?? 0) > 1 ? preferredSourceSlug(path.replaceAll("/", "-")) : preferred.get(path)!;
+    if (used.has(slug)) {
+      const base = slug;
+      for (let index = 2; used.has(slug); index += 1) slug = `${base.slice(0, 60)}-${index}`;
+    }
+    used.add(slug);
+    assigned.set(path, slug);
+  }
+  const slug = assigned.get(sourcePath.replaceAll("\\", "/"));
+  if (!slug) throw new Error(`Undeclared source path: ${sourcePath}`);
+  return slug;
+}
+
+function preferredSourceSlug(sourcePath: string): string {
+  if (sourcePath === "." || sourcePath === "") return "source";
+  const basename = sourcePath.split("/").filter((segment) => segment && segment !== ".").at(-1) ?? sourcePath;
+  const slug = basename.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!slug) return "source";
+  return SOURCE_SLUG.test(slug) ? slug : slug.slice(0, 63).replace(/-+$/g, "") || "source";
+}
+
+async function pinnedSource(
+  source: ResolvedWikiSource,
+  head: string,
+  dirtyFingerprint: string,
+  allSourcePaths: readonly string[],
+): Promise<WikiPinnedSource> {
   return {
-    scopeId: source.path,
+    scopeId: wikiSourceSlug(source.path, allSourcePaths),
     logicalPath: source.path,
     absolutePath: path.resolve(source.absolutePath),
     realPath: await realpath(source.realPath),
@@ -103,7 +140,8 @@ export async function inspectWiki(cwd: string): Promise<WikiPinnedSourcePlan> {
   const workspace = await loadWikiWorkspace(cwd);
   if (workspace.sources.length === 0) throw new Error("workspace.yaml has no sources. Run /wiki source add first.");
   const states = await Promise.all(workspace.sources.map((source) => sourceState(source, workspace.defaultSourceIgnores, workspace.wiki.exclude)));
-  const sources = await Promise.all(states.map(({ source, head, fingerprint }) => pinnedSource(source, head, fingerprint)));
+  const sourcePaths = states.map(({ source }) => source.path);
+  const sources = await Promise.all(states.map(({ source, head, fingerprint }) => pinnedSource(source, head, fingerprint, sourcePaths)));
   const sourceFingerprint = createHash("sha256").update(sources
     .map((source) => `${source.scopeId}\0${JSON.stringify(source.origin)}\0${source.realPath}\0${source.repositoryIdentity}\0${source.dirtyFingerprint}`)
     .sort().join("\0")).digest("hex");
@@ -137,7 +175,7 @@ export async function verifyPinnedSourcePlan(plan: WikiPinnedSourcePlan): Promis
       repositoryRoot: expected.repositoryRoot,
     };
     const state = await sourceState(source, plan.defaultSourceIgnores, plan.excludes);
-    current.push(await pinnedSource(source, state.head, state.fingerprint));
+    current.push(await pinnedSource(source, state.head, state.fingerprint, plan.sources.map((entry) => entry.logicalPath)));
   }
   for (const expected of plan.sources) {
     const actual = current.find((source) => source.scopeId === expected.scopeId)!;

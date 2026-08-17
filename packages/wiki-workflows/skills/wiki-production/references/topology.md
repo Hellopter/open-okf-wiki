@@ -33,16 +33,8 @@ pages shown above. Source, domain, and concept directory names are lowercase
 ASCII slugs. A domain slug may occur under more than one source: those are
 distinct clusters and must retain their source-qualified paths.
 
-The implicit single-source workspace uses the same source tier. Give that
-source a stable lowercase slug such as `source`; do not collapse it into a
-domain or put pages directly under the Wiki root.
-
-Cluster ids are deterministic:
-
-- Root: `_root` for `overview.md` and `architecture.md`.
-- Source: `<source>/_source` for `<source>/source.md`.
-- Domain: `<source>/<domain>` for `<source>/<domain>/domain.md`.
-- Concept: `<source>/<domain>/<concept>` for all pages below a concept.
+The implicit single-source workspace uses the same source tier. Its folder is
+`source`. Keep every taxonomy `sourceScopeId` equal to that folder name.
 
 Only add a source, domain, or concept when source evidence supports it. Split
 models into `models/<slug>.md` only when one `models.md` cannot hold the

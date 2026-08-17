@@ -16,8 +16,11 @@ export interface WikiBoardCluster {
   id: string;
   paths: string[];
   status: WikiBoardClusterStatus;
+  nextStep: "write" | "review" | "done" | "blocked";
   terminalWriteOrReviewCount: number;
 }
+
+export type WikiBoardNextAction = "collect" | "discovery" | "supplement" | "taxonomy" | "plan" | "write" | "review" | "finish" | "blocked";
 
 export interface WikiBoardTask {
   id: string;
@@ -25,6 +28,7 @@ export interface WikiBoardTask {
   paths: string[];
   phase: "queued" | "running" | "paused" | "terminal";
   batch?: number;
+  collected?: boolean;
   receiptStatus?: "complete" | "incomplete" | "failed";
   errorCode?: string;
   wave?: WikiBoardWaveName;
@@ -69,6 +73,10 @@ export interface WikiBoardModel {
   candidateRevision: number;
   compactionObserved: boolean;
   directWriteAllowed: boolean;
+  declaredSources: string[];
+  activeWave?: { name: WikiBoardWaveName; status: WikiBoardWaveStatus };
+  researchCoverage: { completed: number; total: number };
+  nextAction: WikiBoardNextAction;
   clusters: WikiBoardCluster[];
   tasks: WikiBoardTask[];
   remaining: string[];
@@ -104,6 +112,7 @@ export interface WikiBoardProjectionTask {
   id: string;
   role: "research" | "write" | "review";
   phase: "queued" | "running" | "paused" | "terminal";
+  collected?: boolean;
   writePaths?: readonly string[];
   reviewPaths?: readonly string[];
   mode?: "discovery" | "supplement";
@@ -122,6 +131,7 @@ export interface WikiBoardProjectionTask {
     followups?: readonly { id: string; kind: WikiFollowupKind; question: string; sourceScopeIds: readonly string[] }[];
     coverage?: readonly string[];
     gaps?: readonly { question: string; sourceScopeIds?: readonly string[] }[];
+    review?: { verdict: "pass" | "changes_requested" };
   };
 }
 
@@ -129,6 +139,7 @@ export interface WikiBoardProjectionInput {
   runId: string;
   specRevision: number;
   candidateRevision: number;
+  sourceScopeIds?: readonly string[];
   taxonomy?: WikiBoardTaxonomyCheckpoint;
   compactionObserved: boolean;
   spec?: WikiSpec;
@@ -187,7 +198,7 @@ export function projectWikiBoard(input: WikiBoardProjectionInput): WikiBoardMode
   const spec = input.spec;
   const clusters = spec ? wikiSpecClusters(spec).map((id) => projectCluster(id, spec, tasks, reviews)) : [];
   const remaining: string[] = [];
-  for (const cluster of clusters) remaining.push(...remainingFor(cluster, tasks, reviews));
+  for (const cluster of clusters) remaining.push(...remainingFor(cluster, reviews));
   const projectedTasks = batches.flatMap((batch) => batch.tasks.map((task) => toBoardTask(task, batch.batchId)));
   const resolvedBlockers = new Set(projectedTasks
     .filter((task) => task.role === "research" && task.wave === "supplement" && task.phase === "terminal" && task.receiptStatus === "complete")
@@ -213,12 +224,23 @@ export function projectWikiBoard(input: WikiBoardProjectionInput): WikiBoardMode
   }
   const blockers = unique(boardTasks.flatMap((task) => task.blockingReasons ?? []));
   const conflicts = unique(boardTasks.flatMap((task) => task.conflicts ?? []));
-  return {
+  const activeTasks = boardTasks.filter((task) => task.collected === false);
+  const activeWaveName = activeTasks[0]?.wave;
+  const activeWave = activeWaveName ? waves[activeWaveName] : undefined;
+  const researchCoverage = {
+    completed: researchAssignments.filter((assignment) => assignment.completed).length,
+    total: researchAssignments.length,
+  };
+  const model: WikiBoardModel = {
     runId: input.runId,
     specRevision: input.specRevision,
     candidateRevision: input.candidateRevision,
     compactionObserved: input.compactionObserved,
     directWriteAllowed: wikiLeadMayWrite(input.spec, input.compactionObserved),
+    declaredSources: [...(input.sourceScopeIds ?? [])],
+    ...(activeWave ? { activeWave: { name: activeWave.name, status: activeWave.status } } : {}),
+    researchCoverage,
+    nextAction: "discovery",
     clusters,
     ...(input.taxonomy ? { taxonomy: structuredClone(input.taxonomy) } : {}),
     tasks: boardTasks,
@@ -230,6 +252,8 @@ export function projectWikiBoard(input: WikiBoardProjectionInput): WikiBoardMode
     blockers,
     conflicts,
   };
+  model.nextAction = wikiNextAction(model);
+  return model;
 }
 
 function projectCluster(
@@ -242,7 +266,22 @@ function projectCluster(
   const touching = tasks.filter((task) => task.role !== "research" && taskTouchesCluster(task, id));
   const terminalWriteOrReviewCount = touching.filter((task) => task.phase === "terminal").length;
   const accepted = clusterAccepted(paths, reviews);
-  return { id, paths: [...paths], status: clusterStatus(touching, terminalWriteOrReviewCount, accepted), terminalWriteOrReviewCount };
+  const nextStep = clusterNextStep(touching, terminalWriteOrReviewCount, accepted);
+  return { id, paths: [...paths], status: clusterStatus(touching, terminalWriteOrReviewCount, accepted), nextStep, terminalWriteOrReviewCount };
+}
+
+function clusterNextStep(
+  touching: readonly WikiBoardProjectionTask[],
+  terminalWriteOrReviewCount: number,
+  accepted: boolean,
+): WikiBoardCluster["nextStep"] {
+  if (accepted) return "done";
+  const latest = touching.at(-1);
+  if (!latest) return "write";
+  if (latest.role === "write") return latest.phase === "terminal" && latest.receipt?.status === "complete" ? "review" : "write";
+  if (latest.role === "review" && latest.phase === "terminal" && latest.receipt?.review?.verdict === "changes_requested") return "write";
+  if (terminalWriteOrReviewCount >= 3) return "blocked";
+  return "review";
 }
 
 function clusterStatus(
@@ -259,17 +298,16 @@ function clusterStatus(
 
 function remainingFor(
   cluster: WikiBoardCluster,
-  tasks: readonly WikiBoardProjectionTask[],
   reviews: readonly WikiBoardProjectionReview[],
 ): string[] {
   if (cluster.status === "accepted") return [];
   const lines: string[] = [];
-  if (!completeWriteCovers(cluster, tasks)) lines.push(`write ${cluster.id}`);
-  lines.push(`review ${cluster.id}`);
+  if (cluster.nextStep === "write") lines.push(`write ${cluster.id}`);
+  if (cluster.nextStep === "review") lines.push(`review ${cluster.id}`);
   if (reviews.some((review) => review.verdict === "changes_requested" && reviewTouchesCluster(review, cluster.id))) {
     lines.push(`changes_requested ${cluster.id}`);
   }
-  if (cluster.status === "blocked") lines.push(`blocked ${cluster.id}`);
+  if (cluster.nextStep === "blocked") lines.push(`blocked ${cluster.id}`);
   return lines;
 }
 
@@ -278,17 +316,6 @@ function clusterAccepted(paths: readonly string[], reviews: readonly WikiBoardPr
     reviews.filter((review) => review.verdict === "pass").flatMap((review) => review.reviewedPaths.map(wikiSpecRelativePath)),
   );
   return paths.length > 0 && paths.every((page) => covered.has(page));
-}
-
-function completeWriteCovers(cluster: WikiBoardCluster, tasks: readonly WikiBoardProjectionTask[]): boolean {
-  const written = new Set<string>();
-  for (const task of tasks) {
-    if (task.role !== "write" || task.phase !== "terminal" || task.receipt?.status !== "complete") continue;
-    for (const page of task.writePaths ?? []) {
-      if (wikiSpecClusterId(page) === cluster.id) written.add(wikiSpecRelativePath(page));
-    }
-  }
-  return cluster.paths.length > 0 && cluster.paths.every((page) => written.has(page));
 }
 
 function taskPaths(task: WikiBoardProjectionTask): readonly string[] {
@@ -329,6 +356,7 @@ function toBoardTask(task: WikiBoardProjectionTask, batchId?: number): WikiBoard
     ...(task.lensScopeIds ? { lensScopeIds: [...task.lensScopeIds] } : {}),
     ...(task.resolvesIds ? { resolvesIds: [...task.resolvesIds] } : {}),
     ...(batchId !== undefined ? { batch: batchId } : {}),
+    ...(task.collected !== undefined ? { collected: task.collected } : {}),
     ...(receipt ? { receiptStatus: receipt.status } : {}),
     ...(receipt?.error?.code ? { errorCode: receipt.error.code } : {}),
     ...(receipt?.completedAssignmentIds ? { completedAssignmentIds: [...receipt.completedAssignmentIds] } : {}),
@@ -399,6 +427,10 @@ export function renderWikiBoard(model: WikiBoardModel): string {
     `- directWriteAllowed: ${yesNo(model.directWriteAllowed)}`,
     `- delegatedTasks: ${model.delegatedTaskCount}`,
     `- delegateBatches: ${model.delegateBatchCount}`,
+    ...(model.declaredSources ? [`- declaredSources: ${model.declaredSources.join(", ") || "(none)"}`] : []),
+    ...(model.activeWave ? [`- activeWave: ${model.activeWave.name} ${model.activeWave.status}`] : []),
+    ...(model.researchCoverage ? [`- researchCoverage: ${model.researchCoverage.completed}/${model.researchCoverage.total}`] : []),
+    ...(model.nextAction ? [`- nextAction: ${model.nextAction}`] : []),
     "",
     "## Clusters",
     "",
@@ -480,4 +512,17 @@ function yesNo(value: boolean): string {
 
 function compareText(left: string, right: string): number {
   return left.localeCompare(right);
+}
+
+/** One shared lifecycle decision used by the Board and coordinator. */
+export function wikiNextAction(model: Pick<WikiBoardModel, "activeWave" | "blockers" | "taxonomy" | "clusters" | "researchAssignments" | "specRevision">): WikiBoardNextAction {
+  if (model.activeWave) return "collect";
+  if (!model.researchAssignments?.length) return "discovery";
+  if (model.blockers?.length) return "supplement";
+  if (!model.taxonomy) return "taxonomy";
+  if (model.specRevision === 0) return "plan";
+  if (model.clusters.some((cluster) => cluster.nextStep === "blocked")) return "blocked";
+  if (model.clusters.some((cluster) => cluster.nextStep === "write")) return "write";
+  if (model.clusters.some((cluster) => cluster.nextStep === "review")) return "review";
+  return "finish";
 }

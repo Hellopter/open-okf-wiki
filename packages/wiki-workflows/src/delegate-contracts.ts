@@ -253,12 +253,26 @@ export class WikiTaskPauseError extends Error {
   }
 }
 
+export function truncateUtf8(text: string, maxBytes: number): string {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new Error("UTF-8 byte limit must be a non-negative safe integer");
+  }
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  let bytes = 0;
+  let result = "";
+  for (const codePoint of text) {
+    const size = Buffer.byteLength(codePoint, "utf8");
+    if (bytes + size > maxBytes) break;
+    result += codePoint;
+    bytes += size;
+  }
+  return result;
+}
+
 export function boundedDelegateSummary(value: string): string {
   const text = value.trim();
   if (Buffer.byteLength(text, "utf8") <= 1024) return text;
-  let result = text;
-  while (result && Buffer.byteLength(`${result}...`, "utf8") > 1024) result = result.slice(0, -1);
-  return `${result}...`;
+  return `${truncateUtf8(text, 1021)}...`;
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

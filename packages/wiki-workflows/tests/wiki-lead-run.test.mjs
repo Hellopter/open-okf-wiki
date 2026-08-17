@@ -23,7 +23,7 @@ function sourcePlan(root) {
   };
 }
 
-async function fixture(t, fault, finalizeFault) {
+async function fixture(t, fault, finalizeFault, planned = true) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-lead-run-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, "source"));
@@ -36,9 +36,24 @@ async function fixture(t, fault, finalizeFault) {
   const candidate = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
   const fence = createFence("execution-1");
   const run = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, fault, finalizeFault, allowedSourceScopeIds: ["source"], ...fence });
+  if (!planned) return { root, candidate, run, fence };
+  const discovery = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Survey the pinned Source" }]);
+  await settleResearchWave(run, discovery);
   await run.saveTaxonomy({ revision: 1, decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }], conflictIds: [] });
   await run.saveSpec(spec);
   return { root, candidate, run, fence };
+}
+
+async function settleResearchWave(run, wave) {
+  for (const contract of wave.contracts) {
+    await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
+      completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [], coverage: contract.assignmentIds, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    } });
+  }
+  await run.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
 }
 
 function createFence(token) {
@@ -56,8 +71,8 @@ function sealInput(extra = {}) {
   return { requiredProfileCoverage: [], sourceFingerprint: "a".repeat(64), summary: "complete", ...extra };
 }
 
-async function settleReviews(run, tasks) {
-  const { contracts } = await run.dispatch(tasks);
+async function settleReviews(run) {
+  const contracts = await queueReviewWave(run);
   for (const contract of contracts) {
     const receipt = {
       id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -70,31 +85,27 @@ async function settleReviews(run, tasks) {
   return contracts;
 }
 
+async function queueReviewWave(run) {
+  const writes = await run.startNextReadyWave();
+  assert.equal(writes.wave, "write");
+  for (const contract of writes.contracts) {
+    await run.taskTransitions.taskStarted(writes.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(writes.batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "write", status: "complete", summary: "wrote", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    } });
+  }
+  await run.taskTransitions.tasksCollected(writes.batchId, writes.contracts.map((contract) => contract.id));
+  const reviews = await run.startNextReadyWave();
+  assert.equal(reviews.wave, "review");
+  return reviews.contracts;
+}
+
 async function completeAndApprove(run) {
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
-  return await settleReviews(run, [
-    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/source.md"] },
-    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
-  ]);
-}
-
-async function settleWrite(run, id, writePaths) {
-  const { contracts: [contract] } = await run.dispatch([{
-    id, role: "write", instruction: `Write ${id}`, sourceScopeIds: [], contextRefs: [], writePaths,
-  }]);
-  await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-  await run.taskTransitions.taskSettled(contract.batchId, contract.id, {
-    attempt: 1,
-    receipt: {
-      id: contract.id, role: "write", status: "complete", summary: "wrote",
-      outputs: [], coverage: writePaths, gaps: [], attempts: 1,
-      contractId: contract.contractId, contractDigest: contract.contractDigest,
-    },
-  });
-  return contract;
+  return await settleReviews(run);
 }
 
 for (const point of ["afterJournal", "afterState", "afterRename", "afterVerify"]) {
@@ -129,11 +140,7 @@ test("candidate rejects a symlink page and globally invalidates accepted review 
   await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
   const reviewPaths = ["wiki/overview.md", "wiki/source/source.md", "wiki/source/core/domain.md"];
-  await settleReviews(run, [
-    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/source.md"] },
-    { id: "review-domain", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
-  ]);
+  await settleReviews(run);
   await run.finish(reviewPaths, []);
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview", " changed"), actor: "lead" });
   await assert.rejects(run.finish(reviewPaths, []), /lacks passing independent review/);
@@ -157,29 +164,27 @@ test("each review contract persists an exact independent path basis", async (t) 
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
-  const { contracts } = await run.dispatch([
-    { id: "overview-review", role: "review", instruction: "Review overview", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "domain-review", role: "review", instruction: "Review domain", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
+  const contracts = await queueReviewWave(run);
+  assert.deepEqual(contracts.map((contract) => contract.reviewBasis.paths), [
+    ["wiki/overview.md"], ["wiki/source/source.md"], ["wiki/source/core/domain.md"],
   ]);
-  assert.deepEqual(contracts[0].reviewBasis.paths, ["wiki/overview.md"]);
-  assert.deepEqual(contracts[1].reviewBasis.paths, ["wiki/source/core/domain.md"]);
-  assert.equal(contracts[0].reviewBasis.treeDigest, contracts[1].reviewBasis.treeDigest);
+  assert.ok(contracts.every((contract) => contract.reviewBasis.treeDigest === contracts[0].reviewBasis.treeDigest));
 });
 
 test("rollbackDelegateBatch removes an unlaunched queued batch so the next queue can reuse its identity", async (t) => {
-  const { run } = await fixture(t);
-  const first = await run.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { run } = await fixture(t, undefined, undefined, false);
+  const first = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
   assert.equal(first.batchId, 1);
   await run.rollbackDelegateBatch(1);
-  const second = await run.dispatch([{ id: "research-retry", role: "research", instruction: "Research again", sourceScopeIds: [], contextRefs: [] }]);
+  const second = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research again" }]);
   assert.equal(second.batchId, 1);
-  assert.equal(second.contracts[0].contractId, "b1-research-retry");
+  assert.equal(second.contracts[0].contractId, first.contracts[0].contractId);
   assert.equal(run.taskRuntimeState.batches.length, 1);
 });
 
 test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => {
-  const { run } = await fixture(t);
-  const { batchId, contracts: [contract] } = await run.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { run } = await fixture(t, undefined, undefined, false);
+  const { batchId, contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
   await run.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
   await assert.rejects(run.rollbackDelegateBatch(batchId), /Cannot roll back delegate batch 1 after launch/);
   assert.equal(run.taskRuntimeState.batches.length, 1);
@@ -192,13 +197,11 @@ test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => 
     },
   });
   await assert.rejects(run.rollbackDelegateBatch(batchId), /Cannot roll back delegate batch 1 after launch/);
-  const next = await run.dispatch([{ id: "later", role: "research", instruction: "Later", sourceScopeIds: [], contextRefs: [] }]);
-  assert.equal(next.batchId, 2);
 });
 
 test("semantic task transitions reject rollback, collection before terminal, and forged receipts", async (t) => {
-  const { run } = await fixture(t);
-  const { contracts: [contract] } = await run.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { run } = await fixture(t, undefined, undefined, false);
+  const { contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
   await assert.rejects(run.taskTransitions.tasksCollected(1, [contract.id]), /Only terminal/);
   await assert.rejects(run.taskTransitions.taskSettled(1, contract.id, { attempt: 1, receipt: { id: contract.id } }), /Only the current running attempt/);
   await run.taskTransitions.taskStarted(1, contract.id, { attempt: 1 });
@@ -208,8 +211,8 @@ test("semantic task transitions reject rollback, collection before terminal, and
 });
 
 test("durable research receipts must cover only, and then all, contract assignments", async (t) => {
-  const { run } = await fixture(t);
-  const { contracts: [empty] } = await run.dispatch([{ id: "empty-assignment", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [], assignmentIds: ["assignment"] }]);
+  const { run } = await fixture(t, undefined, undefined, false);
+  const { contracts: [empty] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
   await run.taskTransitions.taskStarted(empty.batchId, empty.id, { attempt: 1 });
   await assert.rejects(run.taskTransitions.taskSettled(empty.batchId, empty.id, {
     attempt: 1,
@@ -219,9 +222,10 @@ test("durable research receipts must cover only, and then all, contract assignme
     },
   }), /must exactly match durable contract/);
 
-  const { contracts: [unknown] } = await run.dispatch([{ id: "unknown-assignment", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [], assignmentIds: ["assignment-2"] }]);
-  await run.taskTransitions.taskStarted(unknown.batchId, unknown.id, { attempt: 1 });
-  await assert.rejects(run.taskTransitions.taskSettled(unknown.batchId, unknown.id, {
+  const { run: other } = await fixture(t, undefined, undefined, false);
+  const { contracts: [unknown] } = await other.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
+  await other.taskTransitions.taskStarted(unknown.batchId, unknown.id, { attempt: 1 });
+  await assert.rejects(other.taskTransitions.taskSettled(unknown.batchId, unknown.id, {
     attempt: 1,
     receipt: {
       id: unknown.id, role: "research", status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -231,8 +235,8 @@ test("durable research receipts must cover only, and then all, contract assignme
 });
 
 test("durable research followups must stay within contract source scopes", async (t) => {
-  const { run } = await fixture(t);
-  const { contracts: [contract] } = await run.dispatch([{ id: "scoped-research", role: "research", instruction: "Research", sourceScopeIds: ["source"], contextRefs: [], assignmentIds: ["assignment"] }]);
+  const { run } = await fixture(t, undefined, undefined, false);
+  const { contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
   await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
   await assert.rejects(run.taskTransitions.taskSettled(contract.batchId, contract.id, {
     attempt: 1,
@@ -246,8 +250,8 @@ test("durable research followups must stay within contract source scopes", async
 });
 
 test("persisted delegate history cannot delete queued tasks or forge a phase rollback", async (t) => {
-  const { root, candidate, run, fence } = await fixture(t);
-  const { contracts: [contract] } = await run.dispatch([{ id: "durable", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { root, candidate, run, fence } = await fixture(t, undefined, undefined, false);
+  const { contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
   await run.taskTransitions.taskStarted(1, contract.id, { attempt: 1 });
   const stateFile = path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json");
   const state = JSON.parse(await readFile(stateFile, "utf8"));
@@ -282,9 +286,9 @@ test("durable execution token fence blocks stale write, settle, and seal after s
     ...staleFence,
   });
   await stale.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  const { contracts: [contract] } = await stale.dispatch([{ id: "research", role: "research", instruction: "Research", sourceScopeIds: [], contextRefs: [] }]);
+  const { contracts: [contract] } = await stale.startNextReadyWave();
   await stale.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-  const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1, completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [], contractId: contract.contractId, contractDigest: contract.contractDigest };
+  const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: contract.contractDigest };
   staleFence.retire("execution-new");
   await assert.rejects(
     stale.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
@@ -349,12 +353,11 @@ test("observeCompaction projects compaction onto the board and disables direct w
   assert.match(board, /directWriteAllowed: no/);
 });
 
-test("three terminal write or review tasks on one cluster block wiki_finish", async (t) => {
+test("typed coordination derives at most one write task per Wiki cluster", async (t) => {
   const { run } = await fixture(t);
-  await settleWrite(run, "write-1", ["wiki/source/core/domain.md"]);
-  await settleWrite(run, "write-2", ["wiki/source/core/domain.md"]);
-  await settleWrite(run, "write-3", ["wiki/source/core/domain.md"]);
-  await assert.rejects(run.finish(["wiki/overview.md", "wiki/source/core/domain.md"], []), /blocked.*core/);
+  const writes = await run.startNextReadyWave();
+  assert.equal(writes.wave, "write");
+  assert.equal(writes.contracts.filter((contract) => contract.writePaths.includes("wiki/source/core/domain.md")).length, 1);
 });
 
 test("changes_requested and a later spec revision block finish", async (t) => {
@@ -362,11 +365,7 @@ test("changes_requested and a later spec revision block finish", async (t) => {
   await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
-  const { contracts } = await run.dispatch([
-    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/source.md"] },
-    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"] },
-  ]);
+  const contracts = await queueReviewWave(run);
   for (const contract of contracts) {
     const requestChanges = contract.reviewPaths.includes("wiki/overview.md");
     await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });

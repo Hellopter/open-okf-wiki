@@ -1,4 +1,4 @@
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createEditToolDefinition,
@@ -31,6 +31,26 @@ export interface WikiPageWriter {
   replacePage(input: { path: string; content: string; actor: "lead" | "writer" }): Promise<void>;
 }
 
+export interface WikiWorkflowFileSlot {
+  logicalPath: `.okf-wiki/${"current" | "task"}/${string}`;
+  physicalPath: string;
+  writable: boolean;
+}
+
+export async function writeWikiWorkflowFile(workspaceRoot: string, slot: WikiWorkflowFileSlot, content: string): Promise<void> {
+  const normalized = [...normalizeFileSlots(workspaceRoot, [slot]).values()][0];
+  await assertSafeSlot(normalized, true);
+  await mkdir(path.dirname(normalized.physicalAbsolute), { recursive: true });
+  await assertSafeSlot(normalized, true);
+  await writeFile(normalized.physicalAbsolute, content);
+}
+
+export async function readWikiWorkflowFile(workspaceRoot: string, slot: WikiWorkflowFileSlot): Promise<Buffer> {
+  const normalized = [...normalizeFileSlots(workspaceRoot, [slot]).values()][0];
+  await assertSafeSlot(normalized, false);
+  return await readFile(normalized.physicalAbsolute);
+}
+
 export function workflowTools(
   policy: WorkspaceToolPolicy,
   role: WikiToolRole,
@@ -39,7 +59,9 @@ export function workflowTools(
   reviewPaths: readonly string[] | undefined,
   pageWriter: WikiPageWriter | undefined,
   reviewIndexPaths?: readonly string[],
+  fileSlots: readonly WikiWorkflowFileSlot[] = [],
 ): ToolDefinition<any, any, any>[] {
+  const slots = normalizeFileSlots(policy.workspaceRoot, fileSlots);
   const activeWikiRoot = policy.candidateWikiRoot ?? policy.wikiRoot;
   if ((role === "lead" || role === "writer") && !pageWriter) {
     throw new Error(`Workflow configuration error: ${role} requires a transactional WikiPageWriter`);
@@ -47,9 +69,11 @@ export function workflowTools(
   const allowedPaths = role === "writer" ? exactWikiPaths(activeWikiRoot, writePaths, "writers") : undefined;
   const reviewerPaths = role === "reviewer" ? exactWikiPaths(activeWikiRoot, reviewPaths, "reviewers") : undefined;
   const reviewerIndexes = role === "reviewer" ? exactIndexPaths(activeWikiRoot, reviewIndexPaths) : undefined;
-  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, mergePaths(allowedPaths ?? reviewerPaths, reviewerIndexes), role === "lead");
+  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, mergePaths(allowedPaths ?? reviewerPaths, reviewerIndexes), role === "lead")
+    .filter((root) => !(policy.boardPath && slots.has(insideWorkspace(policy.workspaceRoot, ".okf-wiki/current/board.md"))
+      && path.resolve(root.logicalRoot) === path.resolve(policy.boardPath)));
   const readOnly = [
-    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createReadToolDefinition(policy.workspaceRoot), policy, readableRoots, "read"), policy, activeWikiRoot), "read"),
+    boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createReadToolDefinition(policy.workspaceRoot, slotReadOptions(slots)), policy, readableRoots, "read", slots), policy, activeWikiRoot), "read"),
     boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createGrepToolDefinition(policy.workspaceRoot), policy, readableRoots, "grep"), policy, activeWikiRoot), "grep"),
     boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createFindToolDefinition(policy.workspaceRoot), policy, readableRoots, "find"), policy, activeWikiRoot), "find"),
     boundSurveyTool(remapCandidateWikiPath(guardSurveyTool(createLsToolDefinition(policy.workspaceRoot), policy, readableRoots, "ls"), policy, activeWikiRoot), "ls"),
@@ -59,47 +83,47 @@ export function workflowTools(
     const candidateRoot = path.resolve(policy.candidateWikiRoot);
     const write = createWriteToolDefinition(policy.workspaceRoot, {
       operations: {
-        mkdir: async (directory) => await guardedLeadMkdir(candidateRoot, directory),
-        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content, pageWriter!),
+        mkdir: async (directory) => await mkdirSlotParentOr(slots, directory, async () => await guardedLeadMkdir(candidateRoot, directory)),
+        writeFile: async (file, content) => await writeSlotOr(slots, file, content, async () => await guardedLeadWrite(candidateRoot, file, content, pageWriter!)),
       },
     });
     const edit = createEditToolDefinition(policy.workspaceRoot, {
       operations: {
-        access: async (file) => await guardedLeadAccess(candidateRoot, file),
-        readFile: async (file) => await guardedLeadRead(candidateRoot, file),
-        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content, pageWriter!),
+        access: async (file) => await accessSlotOr(slots, file, async () => await guardedLeadAccess(candidateRoot, file)),
+        readFile: async (file) => await readSlotOr(slots, file, async () => await guardedLeadRead(candidateRoot, file)),
+        writeFile: async (file, content) => await writeSlotOr(slots, file, content, async () => await guardedLeadWrite(candidateRoot, file, content, pageWriter!)),
       },
     });
     return [
       ...readOnly,
-      remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path"), policy, candidateRoot),
-      remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", true), policy, candidateRoot),
+      remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", false, slots), policy, candidateRoot),
+      remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", true, slots), policy, candidateRoot),
     ];
   }
-  if (role !== "writer") return readOnly;
+  if (role !== "writer") return [...readOnly, ...slotMutationTools(policy.workspaceRoot, slots)];
 
   if (!allowedPaths) throw new Error("Workflow configuration error: writers require assigned Wiki pages");
   const allowedDirectories = writerDirectories(activeWikiRoot, allowedPaths);
 
   const write = createWriteToolDefinition(policy.workspaceRoot, {
     operations: {
-      mkdir: async (directory) => await guardedMkdir(activeWikiRoot, directory, allowedDirectories),
-      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths, pageWriter!),
+      mkdir: async (directory) => await mkdirSlotParentOr(slots, directory, async () => await guardedMkdir(activeWikiRoot, directory, allowedDirectories)),
+      writeFile: async (file, content) => await writeSlotOr(slots, file, content, async () => await guardedWrite(activeWikiRoot, file, content, allowedPaths, pageWriter!)),
     },
   });
   const edit = createEditToolDefinition(policy.workspaceRoot, {
     operations: {
-      access: async (file) => await guardedAccess(activeWikiRoot, file, allowedPaths),
-      readFile: async (file) => await guardedRead(activeWikiRoot, file, allowedPaths),
-      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths, pageWriter!),
+      access: async (file) => await accessSlotOr(slots, file, async () => await guardedAccess(activeWikiRoot, file, allowedPaths)),
+      readFile: async (file) => await readSlotOr(slots, file, async () => await guardedRead(activeWikiRoot, file, allowedPaths)),
+      writeFile: async (file, content) => await writeSlotOr(slots, file, content, async () => await guardedWrite(activeWikiRoot, file, content, allowedPaths, pageWriter!)),
     },
   });
   return [
     ...readOnly,
     // Logical wiki/* inputs are transparently redirected to the run candidate.
     // Guarded operations still receive absolute paths and enforce the exact page.
-    remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path"), policy, activeWikiRoot),
-    remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true), policy, activeWikiRoot),
+    remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", false, slots), policy, activeWikiRoot),
+    remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true, slots), policy, activeWikiRoot),
   ];
 }
 
@@ -174,13 +198,16 @@ function guardWorkspaceTool(
   permittedRoots: PermittedToolRoot[],
   pathField: string,
   allowMissing = false,
+  slots: ReadonlyMap<string, NormalizedFileSlot> = new Map(),
 ): ToolDefinition<any, any, any> {
   const execute = definition.execute;
   return {
     ...definition,
     async execute(toolCallId, params, signal, onUpdate, context) {
       const rawPath = valueAt(params, pathField);
-      if (typeof rawPath === "string") await assertAllowedWorkspacePath(workspaceRoot, permittedRoots, rawPath, allowMissing);
+      if (typeof rawPath === "string" && !slots.has(insideWorkspace(workspaceRoot, rawPath))) {
+        await assertAllowedWorkspacePath(workspaceRoot, permittedRoots, rawPath, allowMissing);
+      }
       return await execute(toolCallId, params, signal, onUpdate, context);
     },
   } as ToolDefinition<any, any, any>;
@@ -192,6 +219,7 @@ function guardSurveyTool(
   policy: WorkspaceToolPolicy,
   permittedRoots: PermittedToolRoot[],
   toolName: "read" | "grep" | "find" | "ls",
+  slots: ReadonlyMap<string, NormalizedFileSlot> = new Map(),
 ): ToolDefinition<any, any, any> {
   const execute = definition.execute;
   return {
@@ -201,6 +229,7 @@ function guardSurveyTool(
       const surveyPath = typeof rawPath === "string" && rawPath.length > 0 ? rawPath : ".";
       const gatedParams = { ...(params as Record<string, unknown>), path: surveyPath };
       const absolute = insideWorkspace(policy.workspaceRoot, surveyPath);
+      if (toolName === "read" && slots.has(absolute)) return await execute(toolCallId, gatedParams, signal, onUpdate, context);
       const workspaceAbs = path.resolve(policy.workspaceRoot);
       if (toolName === "ls" && absolute === workspaceAbs && !permittedRoots.some((root) => path.resolve(root.logicalRoot) === workspaceAbs)) {
         return listDeclaredSourceDirectories(policy, permittedRoots);
@@ -211,13 +240,114 @@ function guardSurveyTool(
   } as ToolDefinition<any, any, any>;
 }
 
+interface NormalizedFileSlot extends WikiWorkflowFileSlot {
+  workspaceRoot: string;
+  logicalAbsolute: string;
+  physicalAbsolute: string;
+}
+
+function normalizeFileSlots(workspaceRoot: string, values: readonly WikiWorkflowFileSlot[]): Map<string, NormalizedFileSlot> {
+  const slots = new Map<string, NormalizedFileSlot>();
+  for (const value of values) {
+    if (!/^\.okf-wiki\/(?:current|task)\/(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value.logicalPath)) {
+      throw new Error(`Workflow configuration error: invalid fixed file slot: ${value.logicalPath}`);
+    }
+    const logicalAbsolute = insideWorkspace(workspaceRoot, value.logicalPath);
+    const physicalAbsolute = insideWorkspace(workspaceRoot, value.physicalPath);
+    if (slots.has(logicalAbsolute)) throw new Error(`Workflow configuration error: duplicate fixed file slot: ${value.logicalPath}`);
+    slots.set(logicalAbsolute, { ...value, workspaceRoot: path.resolve(workspaceRoot), logicalAbsolute, physicalAbsolute });
+  }
+  return slots;
+}
+
+function slotReadOptions(slots: ReadonlyMap<string, NormalizedFileSlot>) {
+  return { operations: {
+    access: async (file: string) => await accessSlotOr(slots, file, async () => await access(file)),
+    readFile: async (file: string) => await readSlotOr(slots, file, async () => await readFile(file)),
+  } };
+}
+
+function slotMutationTools(workspaceRoot: string, slots: ReadonlyMap<string, NormalizedFileSlot>): ToolDefinition<any, any, any>[] {
+  if (![...slots.values()].some((slot) => slot.writable)) return [];
+  const write = createWriteToolDefinition(workspaceRoot, { operations: {
+    mkdir: async (directory) => await mkdirSlotParent(slots, directory),
+    writeFile: async (file, content) => await writeSlotOr(slots, file, content, async () => deniedSlot(file)),
+  } });
+  const edit = createEditToolDefinition(workspaceRoot, { operations: {
+    access: async (file) => await accessSlotOr(slots, file, async () => deniedSlot(file)),
+    readFile: async (file) => await readSlotOr(slots, file, async () => deniedSlot(file)),
+    writeFile: async (file, content) => await writeSlotOr(slots, file, content, async () => deniedSlot(file)),
+  } });
+  return [
+    guardWorkspaceTool(edit, workspaceRoot, [], "path", false, slots),
+    guardWorkspaceTool(write, workspaceRoot, [], "path", true, slots),
+  ];
+}
+
+async function accessSlotOr(slots: ReadonlyMap<string, NormalizedFileSlot>, file: string, fallback: () => Promise<void>): Promise<void> {
+  const slot = slots.get(path.resolve(file));
+  if (!slot) return await fallback();
+  await assertSafeSlot(slot, false);
+  await access(slot.physicalAbsolute);
+}
+
+async function readSlotOr(slots: ReadonlyMap<string, NormalizedFileSlot>, file: string, fallback: () => Promise<Buffer>): Promise<Buffer> {
+  const slot = slots.get(path.resolve(file));
+  if (!slot) return await fallback();
+  await assertSafeSlot(slot, false);
+  return await readFile(slot.physicalAbsolute);
+}
+
+async function writeSlotOr(slots: ReadonlyMap<string, NormalizedFileSlot>, file: string, content: string, fallback: () => Promise<void>): Promise<void> {
+  const slot = slots.get(path.resolve(file));
+  if (!slot) return await fallback();
+  if (!slot.writable) throw new Error(`Fixed workflow file is read-only: ${slot.logicalPath}`);
+  await assertSafeSlot(slot, true);
+  await mkdir(path.dirname(slot.physicalAbsolute), { recursive: true });
+  await assertSafeSlot(slot, true);
+  await writeFile(slot.physicalAbsolute, content);
+}
+
+async function mkdirSlotParent(slots: ReadonlyMap<string, NormalizedFileSlot>, directory: string): Promise<void> {
+  await mkdirSlotParentOr(slots, directory, async () => deniedSlot(directory));
+}
+
+async function mkdirSlotParentOr(slots: ReadonlyMap<string, NormalizedFileSlot>, directory: string, fallback: () => Promise<void>): Promise<void> {
+  const writable = [...slots.values()].filter((slot) => slot.writable && path.dirname(slot.logicalAbsolute) === path.resolve(directory));
+  if (!writable.length) return await fallback();
+  for (const slot of writable) {
+    await assertSafeSlot(slot, true);
+    await mkdir(path.dirname(slot.physicalAbsolute), { recursive: true });
+    await assertSafeSlot(slot, true);
+  }
+}
+
+async function assertSafeSlot(slot: NormalizedFileSlot, allowMissing: boolean): Promise<void> {
+  const workspace = slot.workspaceRoot;
+  await assertContainedAbsolutePath(workspace, slot.physicalAbsolute, allowMissing, "workflow file slot root");
+  let current = workspace;
+  for (const segment of path.relative(workspace, slot.physicalAbsolute).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      if ((await lstat(current)).isSymbolicLink()) throw new Error(`Fixed workflow file path contains a symbolic link: ${slot.logicalPath}`);
+    } catch (error) {
+      if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT" && allowMissing) return;
+      throw error;
+    }
+  }
+}
+
+function deniedSlot(file: string): never {
+  throw new Error(`Path is not an assigned fixed workflow file: ${file}`);
+}
+
 function listDeclaredSourceDirectories(
   policy: WorkspaceToolPolicy,
   permittedRoots: PermittedToolRoot[],
 ): { content: Array<{ type: "text"; text: string }> } {
   const permitted = new Set(permittedRoots.map((root) => path.resolve(root.logicalRoot)));
   const names = [...policy.sourceRoots.entries()]
-    .filter(([scopeId, root]) => !scopeId.includes("/") && permitted.has(path.resolve(root.logicalRoot)))
+    .filter(([, root]) => permitted.has(path.resolve(root.logicalRoot)))
     .map(([scopeId]) => scopeId)
     .sort((left, right) => left.localeCompare(right));
   const text = names.length === 0 ? "(empty directory)" : names.map((name) => `${name}/`).join("\n");

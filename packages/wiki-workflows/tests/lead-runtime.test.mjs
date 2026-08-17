@@ -146,7 +146,10 @@ test("Pi leaf reopens its exact persisted session without overriding the saved m
     thinkingLevel: "low",
     createSession: async (options) => {
       receivedOptions = options;
-      return sessionFactory((_options, value) => { prompt = value; }, { text: "# complete" })(options);
+      return sessionFactory(async (_options, value) => {
+        prompt = value;
+        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "# Write Handoff\n\nUpdated the assigned page.\n" });
+      }, { text: "ignored assistant prose" })(options);
     },
   }, { async replacePage() {} });
   await agent.run(
@@ -157,7 +160,8 @@ test("Pi leaf reopens its exact persisted session without overriding the saved m
   assert.equal(Object.hasOwn(receivedOptions, "model"), false);
   assert.equal(Object.hasOwn(receivedOptions, "thinkingLevel"), false);
   assert.ok(!prompt.startsWith("/skill:"));
-  assert.match(prompt, /# Writer|Write one cluster|write source-cluster/);
+  assert.match(prompt, /Read `\.okf-wiki\/task\/brief\.md`/);
+  assert.doesNotMatch(prompt, /write source-cluster/);
   assert.match(prompt, /source: source-a/);
   assert.match(prompt, /Frontmatter type must match the WikiSpec pageType \(Overview\/Source\/Domain\/Architecture\/Module\/Flow\/Concept\/State\/Data\)\./);
 });
@@ -393,23 +397,28 @@ test("Pi leaf looks up declared source scopeIds, not absolute source paths", asy
   const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   const sourceAbs = path.join(root, "source");
   let prompt;
+  let brief;
   const agent = new PiWikiLeafAgent({
     sourcePlan: pinnedPlan(root),
     skillRoot,
     createSession: async (options) => sessionFactory(async (_options, value) => {
       prompt = value;
+      brief = await execute(options.customTools, "read", { path: ".okf-wiki/task/brief.md" });
       const read = await execute(options.customTools, "read", { path: "source/a.ts" });
       assert.match(JSON.stringify(read), /export const a/);
       await assert.rejects(execute(options.customTools, "read", { path: "." }), /outside the permitted workspace scope[\s\S]*source/);
       await assert.rejects(execute(options.customTools, "grep", { path: root, pattern: "export" }), /outside the permitted workspace scope[\s\S]*source/);
-      await execute(options.customTools, "wiki_research_finish", { status: "complete", summary: "surveyed", needsFollowup: false, followups: [] });
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\nSurveyed the source.\n" });
+      await execute(options.customTools, "wiki_research_finish", { status: "complete" });
     }, { text: "# surveyed" })(options),
   });
   await agent.run(
     { id: "survey", role: "research", instruction: "Survey source", sourceScopeIds: ["source"], contextRefs: [], mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [] },
     leafContext(root, candidateWikiRoot),
   );
-  assert.match(prompt, /Readable source trees \(cwd-relative\): source/);
+  assert.match(prompt, /Read `\.okf-wiki\/task\/brief\.md`/);
+  assert.doesNotMatch(prompt, /Readable source trees/);
+  assert.match(JSON.stringify(brief), /readable Sources: source/);
   assert.doesNotMatch(prompt, /assignment-1/);
   assert.doesNotMatch(prompt, new RegExp(sourceAbs.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
@@ -420,15 +429,15 @@ test("Pi research finish schema is ID-free and host injects complete assignment 
     sourcePlan: pinnedPlan(root),
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\nSurveyed the source.\n" });
       await assert.rejects(
         execute(options.customTools, "wiki_research_finish", {
           status: "complete", summary: "incorrectly complete", completedAssignmentIds: [], needsFollowup: false, followups: [],
         }),
         /unknown fields/,
       );
-      await execute(options.customTools, "wiki_research_finish", {
-        status: "complete", summary: "surveyed", needsFollowup: false, followups: [],
-      });
+      await execute(options.customTools, "wiki_research_finish", { status: "complete" });
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\nMutated after finish.\n" });
     }, { text: "# Research Handoff\n\nSurveyed the source." })(options),
   });
   const result = await agent.run(
@@ -436,7 +445,41 @@ test("Pi research finish schema is ID-free and host injects complete assignment 
     leafContext(root, candidateWikiRoot),
   );
   assert.equal(result.status, "complete");
+  assert.equal(result.summary, "Surveyed the source.");
+  assert.match(result.markdown, /Surveyed the source/);
+  assert.doesNotMatch(result.markdown, /Mutated after finish/);
   assert.equal(Object.hasOwn(result.research, "completedAssignmentIds"), false);
+});
+
+test("Pi review finish accepts only a verdict and snapshots review.md with host-owned fields", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    skillRoot,
+    createSession: async (options) => sessionFactory(async () => {
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/review.md", content: [
+        "---",
+        "findings:",
+        "  - path: wiki/source/core/domain.md",
+        "    severity: major",
+        "profileCoverage: [accuracy]",
+        "---",
+        "The page needs one evidence correction.",
+        "",
+      ].join("\n") });
+      await assert.rejects(execute(options.customTools, "wiki_review_finish", {
+        verdict: "changes_requested", reviewedPaths: ["wiki/source/core/domain.md"], findings: [], profileCoverage: [],
+      }), /unexpected|unknown|additional/i);
+      await execute(options.customTools, "wiki_review_finish", { verdict: "changes_requested" });
+    }, { text: "ignored assistant prose" })(options),
+  });
+  const result = await agent.run(
+    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: ["source"], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"], contractVersion: 2, contractId: "b1-review-source", contractDigest: "a".repeat(64), batchId: 1, reviewBasis: { version: 1, candidateRevision: 1, treeDigest: "b".repeat(64), policyDigest: "c".repeat(64), paths: ["wiki/source/core/domain.md"] } },
+    leafContext(root, candidateWikiRoot),
+  );
+  assert.equal(result.review.verdict, "changes_requested");
+  assert.deepEqual(result.review.reviewedPaths, ["wiki/source/core/domain.md"]);
+  assert.deepEqual(result.review.findings, [{ id: "finding-1", path: "wiki/source/core/domain.md", severity: "major" }]);
 });
 
 test("Lead can read the host-owned board through its explicit read seam", async (t) => {
@@ -444,7 +487,8 @@ test("Lead can read the host-owned board through its explicit read seam", async 
   let board;
   const runtime = createPiLeadRuntime({
     createSession: async (options) => sessionFactory(async () => {
-      board = await execute(options.customTools, "read", { path: ".okf-wiki/runs/run-1/board.md" });
+      board = await execute(options.customTools, "read", { path: ".okf-wiki/current/board.md" });
+      await assert.rejects(execute(options.customTools, "read", { path: ".okf-wiki/runs/run-1/board.md" }), /outside the permitted workspace scope/);
     }, { text: "done" })(options),
   });
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /without wiki_finish/);
@@ -456,11 +500,27 @@ test("Lead taxonomy tool durably accepts a compact source-qualified checkpoint",
   let taxonomy;
   const runtime = createPiLeadRuntime({
     createSession: async (options) => sessionFactory(async () => {
-      taxonomy = await execute(options.customTools, "wiki_taxonomy", {
-        revision: 1,
-        decisions: [{ sourceScopeId: "source", domainId: "runtime", conceptIds: ["session"] }],
-        conflictIds: ["conflict-runtime"],
-      });
+      const names = new Set(options.customTools.map((tool) => tool.name));
+      if (names.has("wiki_research_finish")) {
+        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\n# Research Handoff\n## Assignments\nCovered the assigned Source.\n## Coverage\nComplete.\n## Conflicts and alternatives\nNone.\n## Gaps and failed reads\nNone.\n## Evidence\nrepo:source/a.ts#L1-L1\n" });
+        await execute(options.customTools, "wiki_research_finish", { status: "complete" });
+        return;
+      }
+      await execute(options.customTools, "wiki_delegate_start", {});
+      const collected = await execute(options.customTools, "wiki_delegate_collect", { until: "all", timeoutSeconds: 10 });
+      assert.equal(collected.details.receipts[0].error, undefined);
+      assert.equal(collected.details.status, "complete");
+      assert.deepEqual(collected.details.receipts[0].completedAssignmentIds, ["a-b1-t1"]);
+      await execute(options.customTools, "write", { path: ".okf-wiki/current/taxonomy.yaml", content: [
+        "revision: 1",
+        "decisions:",
+        "  - sourceScopeId: source",
+        "    domainId: runtime",
+        "    conceptIds: [session]",
+        "conflictIds: [conflict-runtime]",
+        "",
+      ].join("\n") });
+      taxonomy = await execute(options.customTools, "wiki_taxonomy", {});
     }, { text: "done" })(options),
   });
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /without wiki_finish/);

@@ -34,6 +34,17 @@ test("EvidenceLedger accepts host completion coverage when Markdown omits assign
   assert.deepEqual(entry.indexes.assignmentIds, []);
 });
 
+test("EvidenceLedger indexes a handoff after valid leading YAML frontmatter", () => {
+  const contract = createWikiDelegateContract(1, {
+    id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
+    mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
+  });
+  const markdown = "---\nfollowups: []\n---\n# Research Handoff\n## Assignments\nassignment:assignment-1\n## Coverage\nComplete\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
+  const entry = ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] });
+  assert.deepEqual(entry.indexes.assignmentIds, ["assignment-1"]);
+  assert.deepEqual(entry.indexes.citations, [{ scope: "source", path: "file.ts", startLine: 1, endLine: 2 }]);
+});
+
 test("EvidenceLedger rejects wrong handoff kind, undeclared assignments, and unqualified citations", () => {
   const contract = createWikiDelegateContract(1, {
     id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],

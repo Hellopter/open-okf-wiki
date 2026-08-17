@@ -18,7 +18,7 @@ async function workspace(t) {
 }
 
 function spec() {
-  return { pages: ["overview.md", "api/source.md", "api/runtime/domain.md"] };
+  return { pages: ["overview.md", "source/source.md", "source/runtime/domain.md"] };
 }
 
 function content(type, title) {
@@ -34,46 +34,68 @@ function leadFence(request) {
 }
 
 async function acceptTaxonomy(lead) {
+  await completeDiscovery(lead, "source");
   await lead.saveTaxonomy({
     revision: 1,
-    decisions: [{ sourceScopeId: ".", domainId: "runtime", conceptIds: [] }],
+    decisions: [{ sourceScopeId: "source", domainId: "runtime", conceptIds: [] }],
     conflictIds: [],
   });
+}
+
+async function completeDiscovery(lead, sourceScopeId) {
+  const { batchId, contracts } = await lead.startNextReadyWave([{ sourceScopeId, instruction: "Survey the pinned Source" }]);
+  for (const contract of contracts) {
+    await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
+    await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
+      completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [],
+      coverage: contract.assignmentIds, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    } });
+  }
+  await lead.taskTransitions.tasksCollected(batchId, contracts.map((contract) => contract.id));
 }
 
 async function completeCandidate(request) {
   const lead = await WikiLeadRun.open({
     workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
     policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-    allowedSourceScopeIds: ["."],
+    allowedSourceScopeIds: ["source"],
     ...leadFence(request),
   });
   await acceptTaxonomy(lead);
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  await lead.replacePage({ path: "wiki/api/source.md", content: content("Source", "API"), actor: "lead" });
-  await lead.replacePage({ path: "wiki/api/runtime/domain.md", content: content("Domain", "Runtime domain"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/source/source.md", content: content("Source", "API"), actor: "lead" });
+  await lead.replacePage({ path: "wiki/source/runtime/domain.md", content: content("Domain", "Runtime domain"), actor: "lead" });
   await acceptReviews(lead, [
     ["wiki/overview.md"],
-    ["wiki/api/source.md"],
-    ["wiki/api/runtime/domain.md"],
+    ["wiki/source/source.md"],
+    ["wiki/source/runtime/domain.md"],
   ]);
 }
 
 async function acceptReviews(lead, groups) {
-  for (let offset = 0; offset < groups.length; offset += 2) {
-    const chunk = groups.slice(offset, offset + 2);
-    const { batchId, contracts } = await lead.dispatch(chunk.map((reviewPaths, index) => ({
-      id: `review-${offset + index + 1}`, role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths,
-    })));
-    for (const contract of contracts) {
-      await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
-      await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
-        id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
-        contractId: contract.contractId, contractDigest: contract.contractDigest,
-        review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
-      } });
-    }
+  assert.ok(groups.length > 0);
+  const writes = await lead.startNextReadyWave();
+  assert.equal(writes.wave, "write");
+  for (const contract of writes.contracts) {
+    await lead.taskTransitions.taskStarted(writes.batchId, contract.id, { attempt: 1 });
+    await lead.taskTransitions.taskSettled(writes.batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    } });
+  }
+  await lead.taskTransitions.tasksCollected(writes.batchId, writes.contracts.map((contract) => contract.id));
+  const { batchId, contracts } = await lead.startNextReadyWave();
+  assert.equal(contracts[0]?.role, "review");
+  for (const contract of contracts) {
+    await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
+    await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+      review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
+    } });
   }
 }
 
@@ -387,7 +409,7 @@ test("cancel fences direct Candidate mutations from an abort-ignoring Lead", asy
     const lead = await WikiLeadRun.open({
       workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
       policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-      allowedSourceScopeIds: ["."],
+      allowedSourceScopeIds: ["source"],
       ...leadFence(request),
     });
     await acceptTaxonomy(lead);

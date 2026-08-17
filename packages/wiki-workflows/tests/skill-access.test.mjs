@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -91,7 +91,7 @@ test("production source scopeIds construct tools and gate the Workspace root", a
 test("implicit Workspace source allows ls and reads at the repo root", async (t) => {
   const { root, candidateWikiRoot, skillRoot } = await implicitWorkspace(t);
   const policy = pinnedWorkspaceToolPolicy(implicitPinnedPlan(root), candidateWikiRoot, skillRoot);
-  const researcher = workflowTools(policy, "researcher", undefined, ["."]);
+  const researcher = workflowTools(policy, "researcher", undefined, ["source"]);
   const listing = JSON.stringify(await call(researcher, "ls", { path: "." }));
   assert.match(listing, /a\.ts/);
   const read = await call(researcher, "read", { path: "a.ts" });
@@ -102,6 +102,57 @@ test("research with no source scopes and no artifacts fails closed", async (t) =
   const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   const policy = pinnedWorkspaceToolPolicy(pinnedPlan(root, path.join(root, "source")), candidateWikiRoot, skillRoot);
   assert.throws(() => workflowTools(policy, "researcher", undefined, []), /declared source roots or exact artifact paths/);
+});
+
+test("Pi file tools map only exact fixed workflow slots and reject siblings, read-only files, and symlinks", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const policy = pinnedWorkspaceToolPolicy(pinnedPlan(root, path.join(root, "source")), candidateWikiRoot, skillRoot);
+  const taskRoot = path.join(root, ".okf-wiki", "runs", "run-1", "task-files", "1", "research", "1");
+  await mkdir(taskRoot, { recursive: true });
+  await writeFile(path.join(taskRoot, "brief.md"), "assigned brief\n");
+  const slots = [
+    { logicalPath: ".okf-wiki/task/brief.md", physicalPath: path.join(taskRoot, "brief.md"), writable: false },
+    { logicalPath: ".okf-wiki/task/handoff.md", physicalPath: path.join(taskRoot, "handoff.md"), writable: true },
+  ];
+  const tools = workflowTools(policy, "researcher", undefined, ["source"], undefined, undefined, undefined, slots);
+
+  assert.match(JSON.stringify(await call(tools, "read", { path: ".okf-wiki/task/brief.md" })), /assigned brief/);
+  await call(tools, "write", { path: ".okf-wiki/task/handoff.md", content: "first draft\n" });
+  await call(tools, "edit", { path: ".okf-wiki/task/handoff.md", edits: [{ oldText: "first", newText: "final" }] });
+  assert.equal(await readFile(path.join(taskRoot, "handoff.md"), "utf8"), "final draft\n");
+
+  await assert.rejects(call(tools, "write", { path: ".okf-wiki/task/brief.md", content: "replace\n" }), /read-only/);
+  await assert.rejects(call(tools, "write", { path: ".okf-wiki/task/other.md", content: "escape\n" }), /not an assigned fixed workflow file|outside/);
+  await assert.rejects(call(tools, "read", { path: ".okf-wiki/task" }), /outside the permitted workspace scope/);
+
+  const target = path.join(taskRoot, "outside.md");
+  await writeFile(target, "outside\n");
+  await rm(path.join(taskRoot, "handoff.md"), { force: true });
+  await symlink(target, path.join(taskRoot, "handoff.md"));
+  await assert.rejects(call(tools, "read", { path: ".okf-wiki/task/handoff.md" }), /symbolic link/);
+  await assert.rejects(call(tools, "write", { path: ".okf-wiki/task/handoff.md", content: "replace\n" }), /symbolic link/);
+});
+
+test("Lead fixed current slots expose the board and mutable YAML drafts without granting the run directory", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const policy = pinnedWorkspaceToolPolicy(pinnedPlan(root, path.join(root, "source")), candidateWikiRoot, skillRoot);
+  const runRoot = path.join(root, ".okf-wiki", "runs", "run-1");
+  const draftRoot = path.join(runRoot, "work-files", "current");
+  await mkdir(runRoot, { recursive: true });
+  await writeFile(path.join(runRoot, "board.md"), "# Board\n");
+  const slots = [
+    { logicalPath: ".okf-wiki/current/board.md", physicalPath: path.join(runRoot, "board.md"), writable: false },
+    { logicalPath: ".okf-wiki/current/taxonomy.yaml", physicalPath: path.join(draftRoot, "taxonomy.yaml"), writable: true },
+  ];
+  const tools = workflowTools(policy, "lead", undefined, ["source"], undefined, { async replacePage() {} }, undefined, slots);
+
+  assert.match(JSON.stringify(await call(tools, "read", { path: ".okf-wiki/current/board.md" })), /# Board/);
+  await call(tools, "write", { path: ".okf-wiki/current/taxonomy.yaml", content: "revision: 1\n" });
+  await call(tools, "edit", { path: ".okf-wiki/current/taxonomy.yaml", edits: [{ oldText: "1", newText: "2" }] });
+  assert.equal(await readFile(path.join(draftRoot, "taxonomy.yaml"), "utf8"), "revision: 2\n");
+  await assert.rejects(call(tools, "write", { path: ".okf-wiki/current/board.md", content: "replace\n" }), /read-only/);
+  await assert.rejects(call(tools, "read", { path: ".okf-wiki/current" }), /outside the permitted workspace scope/);
+  await assert.rejects(call(tools, "read", { path: ".okf-wiki/runs/run-1/board.md" }), /outside the permitted workspace scope/);
 });
 
 function pinnedPlan(root, sourceAbs) {
@@ -134,7 +185,7 @@ function implicitPinnedPlan(root) {
     excludes: [],
     fingerprint: "a".repeat(64),
     sources: [{
-      scopeId: ".",
+      scopeId: "source",
       logicalPath: ".",
       absolutePath: root,
       realPath: root,

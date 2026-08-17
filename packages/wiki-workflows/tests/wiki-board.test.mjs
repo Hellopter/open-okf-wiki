@@ -98,6 +98,26 @@ test("empty remaining renders - none", () => {
   assert.equal(rendered.includes("- write source/core/runtime/module.md"), false);
 });
 
+test("host board declares Sources, active wave, coverage, blockers and next action without ID instructions", () => {
+  const model = projectWikiBoard({
+    runId: "run-1",
+    specRevision: 0,
+    candidateRevision: 0,
+    sourceScopeIds: ["source-a", "source-b"],
+    compactionObserved: false,
+    delegates: { batches: [{ batchId: 1, tasks: [{
+      id: "research-b1-t1", role: "research", mode: "discovery", phase: "running", collected: false,
+      sourceScopeIds: ["source-a"], assignmentIds: ["a-b1-t1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
+    }] }] },
+  });
+  const rendered = renderWikiBoard(model);
+  assert.match(rendered, /declaredSources: source-a, source-b/);
+  assert.match(rendered, /activeWave: discovery running/);
+  assert.match(rendered, /researchCoverage: 0\/1/);
+  assert.match(rendered, /nextAction: collect/);
+  assert.doesNotMatch(rendered, /pass .*batch|copy .*task|round.trip/i);
+});
+
 test("blocked cluster shows blocked when terminalWriteOrReviewCount is at least 3", () => {
   const model = projectWikiBoard({
     runId: "run-1",
@@ -181,10 +201,7 @@ test("projector maps a DTO to accepted, blocked, and remaining cluster work", ()
   assert.equal(byId["source/core/runtime"].terminalWriteOrReviewCount, 3);
   assert.deepEqual(model.remaining, [
     "write _root",
-    "review _root",
     "write source/_source",
-    "review source/_source",
-    "review source/core/runtime",
     "changes_requested source/core/runtime",
     "blocked source/core/runtime",
   ]);
@@ -351,3 +368,55 @@ test("supplement completion covers the original discovery assignment", () => {
   assert.equal(model.researchAssignments.every((assignment) => assignment.completed), true);
   assert.deepEqual(model.remaining.filter((line) => line === "research assignment"), []);
 });
+
+for (const correctiveStatus of ["failed", "incomplete"]) {
+  test(`a ${correctiveStatus} write after changes_requested keeps write next until a successful write`, () => {
+    const research = {
+      id: "discover", role: "research", phase: "terminal", collected: true, mode: "discovery",
+      sourceScopeIds: ["source"], assignmentIds: ["assignment"],
+      receipt: { status: "complete", completedAssignmentIds: ["assignment"], needsFollowup: false, followups: [] },
+    };
+    const firstWrite = {
+      id: "write-1", role: "write", phase: "terminal", collected: true,
+      writePaths: ["wiki/overview.md"], receipt: { status: "complete" },
+    };
+    const requestedChanges = {
+      id: "review-1", role: "review", phase: "terminal", collected: true,
+      reviewPaths: ["wiki/overview.md"],
+      receipt: { status: "complete", review: { verdict: "changes_requested" } },
+    };
+    const correctiveWrite = {
+      id: "write-2", role: "write", phase: "terminal", collected: true,
+      writePaths: ["wiki/overview.md"], receipt: { status: correctiveStatus },
+    };
+    const input = {
+      runId: "run-ordered-events",
+      specRevision: 1,
+      candidateRevision: 1,
+      sourceScopeIds: ["source"],
+      compactionObserved: false,
+      taxonomy: {
+        accepted: true, revision: 1,
+        decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }],
+        conflictIds: [], digest: "a".repeat(64),
+      },
+      spec: projectionSpec(["overview.md", "source/source.md", "source/core/domain.md"]),
+      reviews: [{ verdict: "pass", reviewedPaths: ["wiki/source/source.md", "wiki/source/core/domain.md"] }],
+    };
+
+    const pending = projectWikiBoard({
+      ...input,
+      delegates: { batches: [{ batchId: 1, tasks: [research] }, { batchId: 2, tasks: [firstWrite] }, { batchId: 3, tasks: [requestedChanges] }, { batchId: 4, tasks: [correctiveWrite] }] },
+    });
+    assert.equal(pending.clusters[0].nextStep, "write");
+    assert.equal(pending.nextAction, "write");
+
+    const successfulWrite = { ...correctiveWrite, id: "write-3", receipt: { status: "complete" } };
+    const readyForReview = projectWikiBoard({
+      ...input,
+      delegates: { batches: [{ batchId: 1, tasks: [research] }, { batchId: 2, tasks: [firstWrite] }, { batchId: 3, tasks: [requestedChanges] }, { batchId: 4, tasks: [correctiveWrite] }, { batchId: 5, tasks: [successfulWrite] }] },
+    });
+    assert.equal(readyForReview.clusters[0].nextStep, "review");
+    assert.equal(readyForReview.nextAction, "review");
+  });
+}

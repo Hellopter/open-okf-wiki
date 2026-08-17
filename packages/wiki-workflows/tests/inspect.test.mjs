@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { inspectWiki, verifyPinnedSourcePlan } from "../dist/inspect.js";
+import { inspectWiki, verifyPinnedSourcePlan, wikiSourceSlug } from "../dist/inspect.js";
 
 const temporaryDirectories = [];
 
@@ -125,7 +125,16 @@ test("inspects an implicit self repository with stable unprefixed paths and igno
   const inspection = await inspectWiki(path.join(root, "src"));
 
   assert.equal(inspection.workspaceRoot, root);
-  assert.deepEqual(inspection.sources.map((source) => source.scopeId), ["."]);
+  assert.deepEqual(inspection.sources.map((source) => source.scopeId), ["source"]);
+  assert.equal(inspection.sources[0].logicalPath, ".");
+});
+
+test("wikiSourceSlug is the host-owned Wiki folder for a pinned path", () => {
+  assert.equal(wikiSourceSlug(".", ["."]), "source");
+  assert.equal(wikiSourceSlug("api", ["api"]), "api");
+  assert.equal(wikiSourceSlug("packages/accounting-core", ["packages/accounting-core"]), "accounting-core");
+  assert.equal(wikiSourceSlug("a/foo", ["a/foo", "b/foo"]), "a-foo");
+  assert.equal(wikiSourceSlug("b/foo", ["a/foo", "b/foo"]), "b-foo");
 });
 
 test("pinned source verification ignores later presentation settings but rejects repository replacement", async () => {

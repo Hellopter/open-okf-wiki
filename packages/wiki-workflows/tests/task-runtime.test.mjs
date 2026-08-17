@@ -195,6 +195,22 @@ test("preserves successful branches when a fanout is partial", async () => {
   assert.equal(result.receipts.find((value) => value.id === "bad").status, "failed");
 });
 
+test("incomplete research with a long failure message still settles a byte-bounded tool_failure followup", async () => {
+  const message = "😀".repeat(200);
+  const r = runtime({
+    run: async () => {
+      throw new WikiTaskExecutionError(message, "schema", { partialMarkdown: "# Findings" });
+    },
+  }, { autoResearchCompletion: false });
+  const result = await runBatch(r, [task("long-failure")]);
+  assert.equal(result.receipts[0].status, "incomplete");
+  assert.equal(result.receipts[0].error?.code, "schema");
+  assert.equal(result.receipts[0].followups.length, 1);
+  assert.equal(result.receipts[0].followups[0].kind, "tool_failure");
+  assert.equal(Buffer.byteLength(result.receipts[0].followups[0].question, "utf8"), 512);
+  assert.equal(result.receipts[0].followups[0].question, "😀".repeat(128));
+});
+
 test("research leaf without completion becomes schema-incomplete and retains its Markdown artifact", async () => {
   const artifacts = store();
   const r = runtime({ run: async () => ({ summary: "partial findings", markdown: "# Findings" }) }, {

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   parseWikiCliCommand,
   renderWikiAgent,
@@ -335,7 +336,13 @@ function createWikiLiveWidget() {
 function wikiWidgetFactory(surface: WikiWidgetSurface) {
   return (tui: WikiWidgetTui, theme: unknown) => {
     const widget = {
-      render: () => surface.lines.map((line) => themeWikiLiveText(theme, line)),
+      render: (width: number) => {
+        const available = Math.max(0, Math.floor(width));
+        return surface.lines.map((line) => {
+          const themed = themeWikiLiveText(theme, line);
+          return visibleWidth(themed) > available ? truncateToWidth(themed, available) : themed;
+        });
+      },
       invalidate: () => {
         tui.requestRender();
       },

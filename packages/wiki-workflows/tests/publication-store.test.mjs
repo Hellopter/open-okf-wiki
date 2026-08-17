@@ -11,7 +11,7 @@ import { createWikiPublicationStore } from "../dist/publication-store.js";
 import { verifyWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const finalSpec = {
-  pages: ["overview.md", "api/source.md", "api/core/domain.md"],
+  pages: ["overview.md", "source/source.md", "source/core/domain.md"],
 };
 
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
@@ -21,6 +21,16 @@ function page(type, title, body = "new") {
 }
 
 async function acceptTaxonomy(run) {
+  const discovery = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Survey the pinned Source" }]);
+  for (const contract of discovery.contracts) {
+    await run.taskTransitions.taskStarted(discovery.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(discovery.batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
+      completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [], coverage: contract.assignmentIds, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    } });
+  }
+  await run.taskTransitions.tasksCollected(discovery.batchId, discovery.contracts.map((contract) => contract.id));
   await run.saveTaxonomy({
     revision: 1,
     decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }],
@@ -55,13 +65,18 @@ async function sealCandidate(workspace, runId, candidate, extra = {}) {
   await acceptTaxonomy(run);
   await run.saveSpec(finalSpec);
   await run.replacePage({ path: "wiki/overview.md", content: page("Overview", "Overview", extra.body ?? "new"), actor: "lead" });
-  await run.replacePage({ path: "wiki/api/source.md", content: page("Source", "API", extra.body ?? "new"), actor: "lead" });
-  await run.replacePage({ path: "wiki/api/core/domain.md", content: page("Domain", "Core", extra.body ?? "new"), actor: "lead" });
-  const { contracts } = await run.dispatch([
-    { id: "review-root", role: "review", instruction: "Review root", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
-    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/source.md"] },
-    { id: "review-core", role: "review", instruction: "Review core", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/api/core/domain.md"] },
-  ]);
+  await run.replacePage({ path: "wiki/source/source.md", content: page("Source", "API", extra.body ?? "new"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/core/domain.md", content: page("Domain", "Core", extra.body ?? "new"), actor: "lead" });
+  const writes = await run.startNextReadyWave();
+  for (const contract of writes.contracts) {
+    await run.taskTransitions.taskStarted(writes.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(writes.batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    } });
+  }
+  await run.taskTransitions.tasksCollected(writes.batchId, writes.contracts.map((contract) => contract.id));
+  const { contracts } = await run.startNextReadyWave();
   for (const contract of contracts) {
     await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
     await run.taskTransitions.taskSettled(contract.batchId, contract.id, {
@@ -113,7 +128,7 @@ test("candidate is isolated and completely empty", async (t) => {
   assert.equal(metadata.version, 1);
   assert.equal(metadata.sourceFingerprint, "source-sha256");
   assert.equal(metadata.summary, "complete");
-  assert.deepEqual([...metadata.pages].sort(), ["api/core/domain.md", "api/source.md", "overview.md"]);
+  assert.deepEqual([...metadata.pages].sort(), ["overview.md", "source/core/domain.md", "source/source.md"]);
   assert.match(metadata.finalTreeDigest, /^[a-f0-9]{64}$/);
 });
 
@@ -381,7 +396,7 @@ test("reconcile projects a published terminal fact after install crashes before 
   assert.deepEqual(await recoveryStore.reconcile("terminal-gap"), {
     state: "published",
     runId: "terminal-gap",
-    pages: ["api/core/domain.md", "api/source.md", "overview.md"],
+    pages: ["overview.md", "source/core/domain.md", "source/source.md"],
     sourceFingerprint: "source-sha256",
     finalTreeDigest,
   });

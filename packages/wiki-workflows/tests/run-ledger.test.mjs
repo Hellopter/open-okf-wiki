@@ -18,7 +18,7 @@ function plan(workspace) {
     sourcePlan: {
       workspaceRoot: workspace, workspaceRealPath: workspace, configPath: path.join(workspace, "workspace.yaml"),
       defaultSourceIgnores: true, excludes: [], fingerprint: digest,
-      sources: [{ scopeId: ".", logicalPath: ".", absolutePath: workspace, realPath: workspace, repositoryRoot: workspace,
+      sources: [{ scopeId: "source", logicalPath: ".", absolutePath: workspace, realPath: workspace, repositoryRoot: workspace,
         repositoryIdentity: "b".repeat(64), origin: { type: "link", localPath: workspace }, head: "", dirtyFingerprint: "c".repeat(64) }],
     },
     candidateWikiRoot: path.join(workspace, ".okf-wiki", "runs", "run-1", "candidate", "wiki"),
@@ -189,7 +189,7 @@ test("production plan and receipt codecs reject extra or incomplete durable fiel
   await begin(ledger);
   await assert.rejects(ledger.transition("run-1", { kind: "plan_pinned", at: "2026-01-01T00:00:02.000Z", plan: { ...plan(workspace), extra: true } }, authority), /unknown fields/);
 
-  const task = createWikiDelegateContract(1, { id: "write-invalid", role: "write", instruction: "write", sourceScopeIds: ["."], contextRefs: [], writePaths: ["wiki/overview.md"] });
+  const task = createWikiDelegateContract(1, { id: "write-invalid", role: "write", instruction: "write", sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/overview.md"] });
   await assert.rejects(ledger.recordObservation("run-1", { kind: "task_settled", batch: 1, taskId: task.id,
     state: { task, phase: "terminal", attempt: 1, collected: false, receipt: {
       id: task.id, role: "write", status: "complete", summary: "invalid", outputs: [], coverage: [], gaps: [], attempts: 1, extra: true,
@@ -221,7 +221,7 @@ test("task_settled projects the already-durable receipt, session and execution i
   const workspace = await root(t);
   const ledger = createWikiRunLedger(workspace);
   await started(ledger, workspace);
-  const task = createWikiDelegateContract(1, { id: "write-1", role: "write", instruction: "write", sourceScopeIds: ["."], contextRefs: [], writePaths: ["wiki/overview.md"] });
+  const task = createWikiDelegateContract(1, { id: "write-1", role: "write", instruction: "write", sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/overview.md"] });
   await begin(ledger);
   const receipt = { id: "write-1", role: "write", status: "complete", summary: "written", outputs: [], coverage: ["wiki/overview.md"], gaps: [], attempts: 1,
     contractId: task.contractId, contractDigest: task.contractDigest };

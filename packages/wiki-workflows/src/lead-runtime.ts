@@ -12,18 +12,23 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { workflowTools, type WikiPageWriter } from "./agent-tools.js";
+import YAML from "yaml";
+import {
+  readWikiWorkflowFile,
+  workflowTools,
+  writeWikiWorkflowFile,
+  type WikiPageWriter,
+  type WikiWorkflowFileSlot,
+} from "./agent-tools.js";
 import { createWikiArtifactStore } from "./artifact-store.js";
 import {
   boundedDelegateSummary,
-  projectWikiLeadSnapshot,
   WikiTaskExecutionError,
   WikiTaskPauseError,
   type WikiDelegateContract,
   type WikiResearchSignal,
-  WIKI_FOLLOWUP_KINDS,
-  parseWikiResearchSignal,
 } from "./delegate-contracts.js";
+import { decodeUtf8Fatal, parseResearchHandoff, parseReviewHandoff, summarizeWikiMarkdown } from "./wiki-work-files.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
 import type { WikiLeadObservation, WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
 import type { WikiExecutionBudgets } from "./producer-types.js";
@@ -36,12 +41,12 @@ import {
   createWikiFinishTool,
   createWikiPlanTool,
   createWikiTaxonomyTool,
-  createWikiReviewFinishTool,
   derivedIndexPaths,
   parseWikiSpec,
   wikiLeadMayWrite,
   wikiSpecPagePaths,
   WikiLeadRun,
+  WikiWorkCoordinator,
   type WikiSpec,
 } from "./lead.js";
 import { wikiToolRejected } from "./wiki-tool-error.js";
@@ -244,61 +249,67 @@ async function runLeadSession(
         reportObservability: async (input) => await observe({ kind: "health", ...input }),
       });
       const policy = pinnedWorkspaceToolPolicy(request.sourcePlan, request.candidateWikiRoot, request.skillRoot, runBoardPath(request.runId));
+      const leadFileSlots = createLeadFileSlots(
+        policy.workspaceRoot,
+        request.runId,
+        request.sourcePlan.sources.length,
+      );
+      await ensureLeadFileDrafts(policy.workspaceRoot, leadFileSlots, request.sourcePlan.sources.map((source) => source.scopeId));
       await tasks.resume(controller.signal);
       let finishSummary: string | undefined;
       let pause: WikiTaskPauseError | undefined;
+      const work = new WikiWorkCoordinator({
+        run: leadRun,
+        tasks,
+        writeLease,
+        signal: controller.signal,
+        snapshotDiscoverySlots: async () => await readDiscoveryPlan(
+          policy.workspaceRoot,
+          leadFileSlots,
+          request.sourcePlan.sources.map((source) => source.scopeId),
+        ),
+        onPause(error) {
+          pause = error;
+          controller.abort(error);
+        },
+      });
       const leadTools = withExecutionModes([
-        ...workflowTools(policy, "lead", undefined, request.sourcePlan.sources.map((source) => source.scopeId), undefined, pageWriter),
-        createWikiTaxonomyTool(async (input) => withBoard(
-          request.runId,
+        ...workflowTools(policy, "lead", undefined, request.sourcePlan.sources.map((source) => source.scopeId), undefined, pageWriter, undefined, leadFileSlots),
+        createWikiTaxonomyTool(async () => withBoard(
           leadRun.compactionObserved,
-          await leadRun.saveTaxonomy(input),
+          await leadRun.saveTaxonomy(await readYamlWorkflowFile(policy.workspaceRoot, leadSlot(leadFileSlots, ".okf-wiki/current/taxonomy.yaml"))),
         )),
-        createWikiPlanTool(async (input) => {
+        createWikiPlanTool(async () => {
+          const input = await readYamlWorkflowFile(policy.workspaceRoot, leadSlot(leadFileSlots, ".okf-wiki/current/wiki-spec.yaml"));
           const spec = parseWikiSpec(input);
           specRecord = await leadRun.saveSpec(spec, specRecord?.revision ?? 0);
-          return withBoard(request.runId, leadRun.compactionObserved, {
+          return withBoard(leadRun.compactionObserved, {
             revision: specRecord.revision,
             pages: wikiSpecPagePaths(spec),
             directWriteAllowed: wikiLeadMayWrite(spec, leadRun.compactionObserved),
           });
         }),
-        createWikiDelegateStartTool(async (delegated) => {
+        createWikiDelegateStartTool(async () => {
           try {
-            if (delegated.some((task) => task.role === "review")) writeLease.assertReviewAllowed();
-            const queued = await leadRun.dispatch(delegated);
-            try {
-              return withBoard(request.runId, leadRun.compactionObserved, await tasks.start(queued.contracts, controller.signal));
-            } catch (error) {
-              await leadRun.rollbackDelegateBatch(queued.batchId);
-              throw error;
-            }
+            return withBoard(leadRun.compactionObserved, await work.startCurrent());
           } catch (error) {
             rejectWikiTool("wiki_delegate_start", error);
           }
         }),
-        createWikiDelegateCollectTool(async (batchId, collectOptions) => {
-          try {
-            return withBoard(
-              request.runId,
-              leadRun.compactionObserved,
-              projectWikiLeadSnapshot(await leadRun.presentSnapshot(await tasks.collect(batchId, collectOptions, controller.signal))),
-            );
-          } catch (error) {
-            if (error instanceof WikiTaskPauseError) {
-              pause = error;
-              controller.abort(error);
-            }
-            throw error;
-          }
-        }),
-        createWikiDelegateCancelTool(async (batchId, taskIds, reason) => withBoard(
-          request.runId,
+        createWikiDelegateCollectTool(async (collectOptions) => withBoard(
           leadRun.compactionObserved,
-          projectWikiLeadSnapshot(await leadRun.presentSnapshot(await tasks.cancel(batchId, taskIds, reason))),
+          await work.collectCurrent(collectOptions),
         )),
-        createWikiFinishTool(async (summary) => {
+        createWikiDelegateCancelTool(async (reasonCode) => withBoard(
+          leadRun.compactionObserved,
+          await work.cancelCurrent(reasonCode),
+        )),
+        createWikiFinishTool(async () => {
           if (finishSummary) throw new Error("wiki_finish may be accepted only once");
+          const summary = workflowCompletionSummary(decodeUtf8Fatal(await readWikiWorkflowFile(
+            policy.workspaceRoot,
+            leadSlot(leadFileSlots, ".okf-wiki/current/completion.md"),
+          )));
           if (!summary.trim()) throw new Error("wiki_finish requires a summary");
           if (!specRecord) throw new Error("wiki_finish requires an accepted WikiSpec");
           try {
@@ -312,7 +323,7 @@ async function runLeadSession(
           }
           await leadRun.finish(undefined, requiredReviewCoverage);
           finishSummary = boundedDelegateSummary(summary);
-          return withBoard(request.runId, leadRun.compactionObserved, { accepted: true });
+          return withBoard(leadRun.compactionObserved, { accepted: true });
         }),
       ]);
       await observe({ kind: "progress", message: "Wiki Lead is deciding adaptive research and writing tasks" });
@@ -327,7 +338,7 @@ async function runLeadSession(
             const resumeFile = retryIndex === 0
               ? request.leadSessionFile ?? options.leadSessionFile ?? options.sessionFile
               : undefined;
-            await runPiSession(policy.workspaceRoot, leadTools, leadSessionPrompt(request.prompt, request.runId), controller.signal, {
+            await runPiSession(policy.workspaceRoot, leadTools, leadSessionPrompt(request.prompt, request.sourcePlan.sources.length), controller.signal, {
               ...sessionOptions,
               sessionDir: leadSessionDir,
               sessionFile: resumeFile,
@@ -421,51 +432,44 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
     let review: WikiReviewResult | undefined;
     let researchSignal: WikiResearchSignal | undefined;
+    let markdownSnapshot: string | undefined;
+    const roleBrief = await readRoleBrief(this.options.skillRoot, role);
+    const taskFileSlots = createTaskFileSlots(policy.workspaceRoot, context, task, role);
     const spec = this.currentSpec?.();
     const reviewIndexes = task.role === "review" && spec
       ? derivedIndexPaths(wikiSpecPagePaths(spec)).map(addWikiPrefix)
       : [];
+    await writeWikiWorkflowFile(
+      policy.workspaceRoot,
+      taskFileSlots.brief,
+      taskFileBrief(roleBrief, task, artifactHandoffs, reviewIndexes, this.options.language),
+    );
     const tools = withExecutionModes([
-      ...workflowTools(policy, role, task.writePaths, declaredSources, task.reviewPaths, this.pageWriter, reviewIndexes),
-      ...(role === "reviewer" ? [createWikiReviewFinishTool((result) => {
+      ...workflowTools(policy, role, task.writePaths, declaredSources, task.reviewPaths, this.pageWriter, reviewIndexes, taskFileSlots.slots),
+      ...(role === "reviewer" ? [reviewFinishTool(async (verdict) => {
         if (review) throw new Error("wiki_review_finish may be accepted only once");
-        const assigned = new Set(task.reviewPaths ?? []);
-        if (result.reviewedPaths.length !== assigned.size || result.reviewedPaths.some((page) => !assigned.has(page))) {
-          throw new Error("wiki_review_finish reviewedPaths must exactly match the assigned reviewPaths");
-        }
-        if (result.findings.some((finding) => !assigned.has(finding.path))) throw new Error("Review finding path is outside the assigned reviewPaths");
+        const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+        const result = parseReviewHandoff(bytes, verdict, task.reviewPaths ?? []);
+        markdownSnapshot = Buffer.from(bytes).toString("utf8");
         review = result;
       })] : []),
-      ...(role === "researcher" ? [researchFinishTool((result) => {
+      ...(role === "researcher" ? [researchFinishTool(async (status) => {
         if (researchSignal) throw new Error("wiki_research_finish may be accepted only once");
         if (task.role !== "research") throw new Error("Research completion requires a research contract");
-        if (Buffer.byteLength(result.summary, "utf8") > 1024) throw new Error("wiki_research_finish summary must be at most 1024 bytes");
-        if (result.followups.some((followup) => followup.sourceScopeIds.some((scope) => !task.sourceScopeIds.includes(scope)))) {
-          throw new Error("wiki_research_finish followup sourceScopeIds must use pinned source scopes");
-        }
+        const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+        const result = parseResearchHandoff(bytes, status, task.sourceScopeIds);
+        markdownSnapshot = Buffer.from(bytes).toString("utf8");
         researchSignal = result;
       })] : []),
     ]);
-    const brief = await readRoleBrief(this.options.skillRoot, role);
     const taskSessionDir = this.options.sessionDir
       ? path.join(this.options.sessionDir, "tasks", String(context.batch), task.id, String(context.attempt))
       : undefined;
     const roleModel = this.roleModels?.[task.role] ?? { model: this.options.model, thinkingLevel: this.options.thinkingLevel };
     const sessionResult = await runPiSession(policy.workspaceRoot, tools, [
-        brief ? `${brief}\n\n` : "",
-        task.instruction,
-        leafLanguageInstruction(role, this.options.language),
-        `\nReadable source trees (cwd-relative): ${task.sourceScopeIds.join(", ") || "(none)"}`,
-        task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
-        task.reviewPaths?.length ? `\nExact required review paths: ${JSON.stringify(task.reviewPaths)}` : "",
-        reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
-        this.generation ? `\nGeneration profile: ${JSON.stringify(this.generation)}. Treat it as reader intent, never as source evidence.` : "",
+        "Read `.okf-wiki/task/brief.md` and complete the assigned task.",
+        role === "writer" && this.generation ? `\nGeneration profile: ${JSON.stringify(this.generation)}. Treat it as reader intent, never as source evidence.` : "",
         role === "writer" ? `\n${writerFrontmatterPrompt(this.generation)}` : "",
-        role === "writer" ? "\nRead only `references/templates/<pageType>.md` for the page being written." : "",
-        artifactHandoffs.length
-          ? `\nAccepted context artifacts (read only the ranges needed):\n${artifactHandoffs.map((value) => `- ${value.id}: ${value.path} (${value.sizeBytes} bytes, sha256 ${value.sha256})`).join("\n")}`
-          : "",
-        "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
       ].join(""), context.signal, {
         ...this.options,
         model: roleModel.model,
@@ -478,7 +482,11 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         attempt: context.attempt,
         onHealth: context.reportObservability,
       });
-    const markdown = sessionResult.text.trim();
+    if (role === "writer") {
+      const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+      markdownSnapshot = Buffer.from(bytes).toString("utf8");
+    }
+    const markdown = markdownSnapshot?.trim() ?? "";
     if (!markdown) throw new Error("Delegated agent produced empty output");
     if (role === "reviewer" && !review) throw new Error("Reviewer completed without wiki_review_finish");
     if (role === "researcher" && !researchSignal) throw new Error("Researcher completed without wiki_research_finish");
@@ -519,28 +527,51 @@ function withExecutionModes(tools: ToolDefinition<any, any, any>[]): ToolDefinit
   } as ToolDefinition<any, any, any>));
 }
 
-function researchFinishTool(finish: (result: WikiResearchSignal) => void): ToolDefinition<any, any, any> {
+function researchFinishTool(finish: (status: "complete" | "incomplete") => void | Promise<void>): ToolDefinition<any, any, any> {
   return {
     name: "wiki_research_finish",
     label: "Finish Wiki research",
-    description: "Submit the small host-checked research completion receipt; put evidence, coverage detail, gaps, and conflicts in Markdown.",
-    promptSnippet: "Submit the structured research completion receipt",
+    description: "Finish after writing the complete research handoff to .okf-wiki/task/handoff.md.",
+    promptSnippet: "Finish the file-based research task",
     parameters: Type.Object({
       status: StringEnum(["complete", "incomplete"]),
-      summary: Type.String({ minLength: 1, maxLength: 1024 }),
-      needsFollowup: Type.Boolean(),
-      followups: Type.Array(Type.Object({
-        kind: StringEnum([...WIKI_FOLLOWUP_KINDS]),
-        question: Type.String({ minLength: 1, maxLength: 512 }),
-        sourceScopeIds: Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
-      }, { additionalProperties: false })),
     }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
-      finish(parseWikiResearchSignal(params));
+      const input = exactLeafFinishInput(params, "status", ["complete", "incomplete"], "wiki_research_finish");
+      await finish(input as "complete" | "incomplete");
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;
+}
+
+function reviewFinishTool(finish: (verdict: "pass" | "changes_requested") => void | Promise<void>): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_review_finish",
+    label: "Finish Wiki review",
+    description: "Finish after writing the complete review to .okf-wiki/task/review.md.",
+    promptSnippet: "Finish the file-based Wiki review",
+    parameters: Type.Object({
+      verdict: StringEnum(["pass", "changes_requested"]),
+    }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
+    async execute(_id, params) {
+      const input = exactLeafFinishInput(params, "verdict", ["pass", "changes_requested"], "wiki_review_finish");
+      await finish(input as "pass" | "changes_requested");
+      return toolResult({ accepted: true });
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+function exactLeafFinishInput(value: unknown, field: string, allowed: readonly string[], tool: string): string {
+  // Pi's preferred strict sampling is advisory; direct/provider calls can still
+  // reach execute with extra prose fields, so runtime exactness remains required.
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${tool} requires an object`);
+  const raw = value as Record<string, unknown>;
+  const unknown = Object.keys(raw).filter((key) => key !== field);
+  if (unknown.length) throw new Error(`${tool} has unknown fields: ${unknown.join(", ")}`);
+  if (typeof raw[field] !== "string" || !allowed.includes(raw[field] as string)) throw new Error(`${tool} has invalid ${field}`);
+  return raw[field] as string;
 }
 
 function leafLanguageInstruction(role: "researcher" | "writer" | "reviewer", language?: "zh" | "en"): string {
@@ -578,19 +609,154 @@ function runBoardPath(runId: string): string {
   return `.okf-wiki/runs/${runId}/board.md`;
 }
 
-function leadSessionPrompt(prompt: string, runId: string): string {
+function createLeadFileSlots(workspaceRoot: string, runId: string, sourceCount: number): WikiWorkflowFileSlot[] {
+  const currentRoot = path.join(workspaceRoot, ".okf-wiki", "runs", runId, "work-files", "current");
+  const slots: WikiWorkflowFileSlot[] = [
+    { logicalPath: ".okf-wiki/current/board.md", physicalPath: path.join(workspaceRoot, runBoardPath(runId)), writable: false },
+    { logicalPath: ".okf-wiki/current/taxonomy.yaml", physicalPath: path.join(currentRoot, "taxonomy.yaml"), writable: true },
+    { logicalPath: ".okf-wiki/current/wiki-spec.yaml", physicalPath: path.join(currentRoot, "wiki-spec.yaml"), writable: true },
+    { logicalPath: ".okf-wiki/current/completion.md", physicalPath: path.join(currentRoot, "completion.md"), writable: true },
+  ];
+  for (let index = 1; index <= sourceCount; index += 1) {
+    const name = `source-${String(index).padStart(3, "0")}.md`;
+    slots.push({ logicalPath: `.okf-wiki/current/research/${name}`, physicalPath: path.join(currentRoot, "research", name), writable: true });
+  }
+  return slots;
+}
+
+function createTaskFileSlots(
+  workspaceRoot: string,
+  context: WikiLeafTaskContext,
+  task: WikiDelegateContract,
+  role: "researcher" | "writer" | "reviewer",
+): { brief: WikiWorkflowFileSlot; output: WikiWorkflowFileSlot; slots: WikiWorkflowFileSlot[] } {
+  const taskRoot = path.join(
+    workspaceRoot,
+    ".okf-wiki",
+    "runs",
+    context.runId,
+    "task-files",
+    String(context.batch),
+    task.id,
+    String(context.attempt),
+  );
+  const brief: WikiWorkflowFileSlot = {
+    logicalPath: ".okf-wiki/task/brief.md",
+    physicalPath: path.join(taskRoot, "brief.md"),
+    writable: false,
+  };
+  const outputName = role === "reviewer" ? "review.md" : "handoff.md";
+  const output: WikiWorkflowFileSlot = {
+    logicalPath: `.okf-wiki/task/${outputName}`,
+    physicalPath: path.join(taskRoot, outputName),
+    writable: true,
+  };
+  return { brief, output, slots: [brief, output] };
+}
+
+function taskFileBrief(
+  roleBrief: string,
+  task: WikiDelegateContract,
+  artifacts: readonly { id: string; path: string; sha256: string; sizeBytes: number }[],
+  reviewIndexes: readonly string[],
+  language?: "zh" | "en",
+): string {
+  return [
+    `# ${task.role} task`,
+    "",
+    roleBrief,
+    "",
+    "## Assignment",
+    "",
+    task.instruction,
+    "",
+    `- readable Sources: ${task.sourceScopeIds.join(", ") || "(none)"}`,
+    task.writePaths?.length ? `- write paths: ${task.writePaths.join(", ")}` : "",
+    task.reviewPaths?.length ? `- review paths: ${task.reviewPaths.join(", ")}` : "",
+    reviewIndexes.length ? `- deterministic index paths (read only): ${reviewIndexes.join(", ")}` : "",
+    `- ${leafLanguageInstruction(task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher", language).trim()}`,
+    ...artifacts.map((artifact) => `- context: ${artifact.path} (${artifact.sizeBytes} bytes, sha256 ${artifact.sha256})`),
+    task.role === "review"
+      ? "- completion: write `.okf-wiki/task/review.md`, then call wiki_review_finish with only the verdict"
+      : task.role === "research"
+        ? "- completion: write `.okf-wiki/task/handoff.md`, then call wiki_research_finish with only the status"
+        : "- completion: write `.okf-wiki/task/handoff.md` after updating every assigned page",
+    "",
+  ].filter((line) => line !== "").join("\n");
+}
+
+function defaultWikiSpecDraft(sourceScopeIds: readonly string[]): string {
+  const pages = ["overview.md", ...sourceScopeIds.map((scopeId) => `${scopeId}/source.md`)];
+  return ["topologyVersion: 2", "pages:", ...pages.map((page) => `  - ${page}`), ""].join("\n");
+}
+
+async function ensureLeadFileDrafts(workspaceRoot: string, slots: readonly WikiWorkflowFileSlot[], sourceScopeIds: readonly string[]): Promise<void> {
+  const defaults = new Map<string, string>([
+    [".okf-wiki/current/taxonomy.yaml", "revision: 1\ndecisions: []\nconflictIds: []\n"],
+    [".okf-wiki/current/wiki-spec.yaml", defaultWikiSpecDraft(sourceScopeIds)],
+    [".okf-wiki/current/completion.md", ""],
+  ]);
+  const research = slots.filter((slot) => slot.logicalPath.startsWith(".okf-wiki/current/research/"));
+  for (let index = 0; index < sourceScopeIds.length; index += 1) {
+    defaults.set(research[index].logicalPath, "Survey this pinned Source completely, preserving its local terminology, evidence, conflicts, and cross-source relationships.\n");
+  }
+  for (const [logicalPath, content] of defaults) {
+    const slot = leadSlot(slots, logicalPath);
+    try { await readWikiWorkflowFile(workspaceRoot, slot); }
+    catch (error) {
+      if (!error || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await writeWikiWorkflowFile(workspaceRoot, slot, content);
+    }
+  }
+}
+
+function leadSlot(slots: readonly WikiWorkflowFileSlot[], logicalPath: string): WikiWorkflowFileSlot {
+  const slot = slots.find((entry) => entry.logicalPath === logicalPath);
+  if (!slot) throw new Error(`Missing fixed Wiki workflow file: ${logicalPath}`);
+  return slot;
+}
+
+async function readDiscoveryPlan(
+  workspaceRoot: string,
+  slots: readonly WikiWorkflowFileSlot[],
+  sourceScopeIds: readonly string[],
+): Promise<Array<{ sourceScopeId: string; instruction: string }>> {
+  const research = slots.filter((slot) => slot.logicalPath.startsWith(".okf-wiki/current/research/"));
+  return await Promise.all(sourceScopeIds.map(async (sourceScopeId, index) => {
+    const instruction = decodeUtf8Fatal(await readWikiWorkflowFile(workspaceRoot, research[index])).trim();
+    if (!instruction) throw new Error(`Discovery direction file is empty: ${research[index].logicalPath}`);
+    return { sourceScopeId, instruction };
+  }));
+}
+
+async function readYamlWorkflowFile(workspaceRoot: string, slot: WikiWorkflowFileSlot): Promise<unknown> {
+  const source = decodeUtf8Fatal(await readWikiWorkflowFile(workspaceRoot, slot));
+  try {
+    return YAML.parse(source);
+  } catch (error) {
+    throw new Error(`Invalid YAML in ${slot.logicalPath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+}
+
+function workflowCompletionSummary(markdown: string): string {
+  return summarizeWikiMarkdown(markdown, "completion.md");
+}
+
+function leadSessionPrompt(prompt: string, sourceCount: number): string {
+  const researchFiles = Array.from({ length: sourceCount }, (_, index) => `.okf-wiki/current/research/source-${String(index + 1).padStart(3, "0")}.md`);
   const additions = [
-    prompt.includes("board.md") ? "" : `Board: ${runBoardPath(runId)}. Read board.md before dispatch or wiki_finish.`,
+    prompt.includes(".okf-wiki/current/board.md") ? "" : "Board: .okf-wiki/current/board.md. Read it before dispatch or wiki_finish.",
+    researchFiles.length ? `Fixed discovery files: ${researchFiles.join(", ")}.` : "",
     prompt.includes("wiki_taxonomy") ? "" : "Submit wiki_taxonomy after discovery and before wiki_plan.",
     prompt.includes("topology.md") ? "" : "Read topology.md before wiki_plan.",
   ].filter(Boolean);
   return additions.length ? `${prompt}\n${additions.join(" ")}` : prompt;
 }
 
-function withBoard<T extends object>(runId: string, compactionObserved: boolean, value: T): T & { board: string; note?: string } {
+function withBoard<T extends object>(compactionObserved: boolean, value: T): T & { board: string; note?: string } {
   return {
     ...value,
-    board: runBoardPath(runId),
+    board: ".okf-wiki/current/board.md",
     ...(compactionObserved ? { note: "Read board.md before dispatching or finishing" } : {}),
   };
 }

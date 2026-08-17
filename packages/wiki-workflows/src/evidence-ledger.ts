@@ -4,6 +4,7 @@ import type {
   WikiDelegateRole,
   WikiResearchFollowupDraft,
 } from "./delegate-contracts.js";
+import { parsePage } from "./frontmatter.js";
 
 export interface EvidenceLedgerCitation {
   scope: string;
@@ -48,7 +49,8 @@ export function ingestEvidenceHandoff(input: EvidenceLedgerInput): EvidenceLedge
   if (!input.artifact.runId || !input.artifact.nodeId || input.artifact.attempt < 1) throw new Error("Evidence handoff requires host-owned identity metadata");
   if (Buffer.byteLength(input.markdown, "utf8") > MAX_WIKI_RESEARCH_ARTIFACT_BYTES) throw new Error(`Evidence handoff exceeds the ${MAX_WIKI_RESEARCH_ARTIFACT_BYTES}-byte limit`);
   if (!input.markdown.trim()) throw new Error("Evidence handoff Markdown must not be empty");
-  const lines = input.markdown.split(/\r?\n/);
+  const body = input.markdown.startsWith("---\n") ? parsePage(input.markdown).body : input.markdown;
+  const lines = body.split(/\r?\n/);
   const sections = parseSections(lines);
   for (const heading of requiredHeadings(role)) {
     if (!sections.includes(heading.toLowerCase())) throw new Error(`${role} handoff requires a ${heading} heading`);

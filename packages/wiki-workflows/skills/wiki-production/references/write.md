@@ -1,13 +1,9 @@
 # Writing
 
-The write handoff must use these headings: `# Write Handoff`, `## Pages`, and
-`## Evidence`. Include page IDs, completed pages, remaining blockers, and
-source-qualified citations.
-
-Edit only the candidate paths assigned in `writePaths`. Write the assigned
-source-aware cluster; do not create speculative pages or thin stubs merely to
-fill a topology. Root pages are cross-source synthesis. Source/domain/concept
-pages retain source-local detail and minority evidence.
+Edit only the Candidate paths in `.okf-wiki/task/brief.md`. Complete the
+assigned source-aware cluster; do not create speculative pages or thin stubs
+merely to fill a topology. Root pages are cross-source synthesis.
+Source/domain/concept pages retain source-local detail and minority evidence.
 
 Each page needs valid frontmatter and source footnotes as described in
 `common.md`. Re-open load-bearing source ranges before citing them. Research

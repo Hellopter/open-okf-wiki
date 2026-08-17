@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { createWikiExtension, wikiArgumentCompletions } from "../dist/extension.js";
 
 async function fixture(t, options = {}) {
@@ -110,7 +111,7 @@ async function fixture(t, options = {}) {
       setStatus(key, text) { statuses.push([key, text]); },
       setWidget(key, content) { widgets.push([key, content]); },
       custom(factory) { customs.push(factory); return Promise.resolve(); },
-      theme: { fg: (_color, text) => text },
+      theme: options.theme ?? { fg: (_color, text) => text },
     },
   };
   createWikiExtension({ createProducer: () => producer })(pi);
@@ -278,7 +279,7 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
 
   const renders = [];
   const component = factories[0][1]({ requestRender: () => renders.push(true) }, subject.context.ui.theme);
-  assert.ok(component.render().some((line) => /◆ lead/.test(line)));
+  assert.ok(component.render(179).some((line) => /◆ lead/.test(line)));
 
   const widgetCalls = subject.widgets.length;
   await subject.run("status run-1");
@@ -298,7 +299,7 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
   assert.equal(subject.widgets.filter(([key, content]) => key === "wiki" && typeof content === "function").length, 1);
   assert.ok(!subject.widgets.some(([, content]) => Array.isArray(content)));
   assert.ok(renders.length >= 1);
-  assert.ok(component.render().some((line) => /pages\/auth\.md/.test(line)));
+  assert.ok(component.render(179).some((line) => /pages\/auth\.md/.test(line)));
   const runningStatus = [...subject.statuses].reverse().find(([key]) => key === "wiki");
   assert.equal(runningStatus?.[1], undefined);
 
@@ -312,4 +313,43 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
   await subject.handlers.get("session_shutdown")();
   assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && text === undefined));
   assert.ok(subject.widgets.some(([key, content]) => key === "wiki" && content === undefined));
+});
+
+test("live widget truncates ANSI lines to the current terminal width after resize", async (t) => {
+  const ansiTheme = { fg: (_color, text) => `\u001b[31m${text}\u001b[0m` };
+  const subject = await fixture(t, { hasUI: true, holdEvents: true, theme: ansiTheme });
+  await subject.run("auth flows");
+  await flush();
+
+  const factory = subject.widgets.find(([key, content]) => key === "wiki" && typeof content === "function")?.[1];
+  assert.equal(typeof factory, "function");
+  const component = factory({ requestRender() {} }, subject.context.ui.theme);
+  const identity = "x".repeat(187);
+  const current = subject.views.get("run-1");
+  subject.views.set("run-1", {
+    ...current,
+    progress: {
+      stage: "lead",
+      lead: { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "delegating", activeTools: [] },
+      currentBatch: { batch: 1, status: "running", completed: 0, total: 1, tasks: [{ id: identity, role: "write", status: "running" }] },
+    },
+  });
+  await subject.run("status run-1");
+
+  const wide = component.render(220);
+  const taskLine = wide.find((line) => line.includes(identity));
+  assert.ok(taskLine);
+  assert.equal(visibleWidth(taskLine), 198);
+  assert.match(taskLine, /^\u001b\[31m/);
+  assert.match(taskLine, /\u001b\[0m$/);
+
+  const exactFailureWidth = component.render(179);
+  assert.ok(exactFailureWidth.every((line) => visibleWidth(line) <= 179));
+  assert.ok(exactFailureWidth.some((line) => visibleWidth(line) === 179 && line.includes("...")));
+
+  for (const width of [12, 1, 80, 220]) {
+    const resized = component.render(width);
+    assert.ok(resized.every((line) => visibleWidth(line) <= width), `line exceeded resized width ${width}`);
+  }
+  assert.ok(component.render(220).some((line) => line.includes(identity)));
 });
