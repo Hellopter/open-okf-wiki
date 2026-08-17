@@ -371,7 +371,7 @@ test("control keys only act on the run page and for legal run states", async () 
   }
 });
 
-test("process tab shows model messages and output wraps markdown instead of truncating", async () => {
+test("process tab shows running tools without assistant text and output wraps markdown instead of truncating", async () => {
   const long = `alpha-${"word".repeat(80)}`;
   const markdown = `# Coverage\n\n- auth flow\n- token refresh\n\n\`${long}\``;
   const { component } = await componentFor(handle({
@@ -379,7 +379,8 @@ test("process tab shows model messages and output wraps markdown instead of trun
       return {
         ...inspection(target),
         process: [
-          { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: true },
+          { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: false },
+          { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "grep", summary: "TODO  src", completed: true },
         ],
         messages: [
           { at: "2026-08-12T00:00:01.000Z", text: "I will inspect the source first." },
@@ -391,9 +392,10 @@ test("process tab shows model messages and output wraps markdown instead of trun
   await new Promise((resolve) => setImmediate(resolve));
   component.handleInput("\u001b[C");
   const processPage = plain(component.render(80).join("\n"));
-  assert.match(processPage, /◆ model/);
-  assert.match(processPage, /I will inspect the source first/);
-  assert.match(processPage, /✓ read/);
+  assert.match(processPage, /◆ read/);
+  assert.match(processPage, /✓ grep/);
+  assert.doesNotMatch(processPage, /◆ model/);
+  assert.doesNotMatch(processPage, /I will inspect the source first/);
   component.handleInput("\u001b[C");
   const outputPage = component.render(48);
   const outputText = plain(outputPage.join("\n"));
@@ -796,7 +798,8 @@ test("process and output tabs inspect lazily and only re-inspect selected teleme
 
   component.handleInput("\u001b[C");
   await flush();
-  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: true, handoff: false } });
+  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: false, handoff: false } });
+  assert.notEqual(inspected.at(-1).options.transcript, true);
   const afterProcessTab = inspected.length;
 
   stream.push({ ...view, lastEventSequence: 3, updatedAt: "2026-08-12T00:00:04Z" });
@@ -811,14 +814,17 @@ test("process and output tabs inspect lazily and only re-inspect selected teleme
       ...view.progress,
       lead: { ...lead, lastActivityAt: "2026-08-12T00:00:09Z", health: "degraded" },
       currentBatch: { ...view.progress.currentBatch, tasks: [{ id: "write-auth", role: "write", status: "running", updatedAt: "2026-08-12T00:00:09Z" }] },
+      recentActivity: [
+        { sequence: 12, at: "2026-08-12T00:00:09Z", kind: "tool", severity: "info", target: { kind: "lead" }, message: "", toolName: "read", completed: false },
+      ],
     },
   });
   await flush();
   assert.equal(inspected.length, afterProcessTab + 1);
-  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: true, handoff: false } });
+  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: false, handoff: false } });
 
   component.handleInput("\u001b[C");
   await flush();
-  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: false, handoff: true } });
+  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: true, handoff: true } });
   component.dispose();
 });

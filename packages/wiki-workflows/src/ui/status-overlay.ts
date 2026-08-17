@@ -18,6 +18,7 @@ import type {
   WikiAgentInspection,
   WikiAgentTarget,
   WikiRunHandle,
+  WikiRunUpdate,
   WikiRunView,
 } from "../producer-types.js";
 import { errorMessage } from "../util.js";
@@ -122,6 +123,7 @@ function createStatusOverlay(args: {
   onControl?: (action: "pause" | "resume" | "cancel") => Promise<void>;
 }) {
   let view = args.view;
+  let revision = view.lastEventSequence;
   let state = initialWikiOverlayState({ runId: view.id, initialTarget: args.initialTarget, process: args.process });
   let inspection: WikiAgentInspection | undefined;
   let warning: string | undefined;
@@ -146,7 +148,7 @@ function createStatusOverlay(args: {
     }
     const key = selectedKey(item);
     const cachedInspection = inspectionCache.get(key);
-    const wantTranscript = state.tab === "process";
+    const wantTranscript = state.tab === "output";
     const wantHandoff = state.tab === "output";
     const telemetry = telemetryFingerprint(view, item.target, cachedInspection?.inspection);
     const reusable = Boolean(
@@ -190,8 +192,7 @@ function createStatusOverlay(args: {
     const telemetry = telemetryFingerprint(view, item.target, cachedInspection?.inspection);
     if (!cachedInspection) return true;
     if (cachedInspection.telemetry !== telemetry) return true;
-    if (state.tab === "process" && !cachedInspection.transcript) return true;
-    if (state.tab === "output" && !cachedInspection.handoff) return true;
+    if (state.tab === "output" && (!cachedInspection.handoff || !cachedInspection.transcript)) return true;
     return false;
   };
 
@@ -209,9 +210,11 @@ function createStatusOverlay(args: {
     finally { refreshing = false; invalidate(); args.tui.requestRender(); }
   };
 
-  subscribeUpdates(args.handle, view.lastEventSequence, controller.signal, (next) => {
-    if (next.lastEventSequence <= view.lastEventSequence) return;
-    view = next;
+  subscribeUpdates(args.handle, view.lastEventSequence, controller.signal, (update) => {
+    const nextRevision = Number.isFinite(update.revision) ? update.revision : update.view.lastEventSequence;
+    if (nextRevision <= revision) return;
+    revision = nextRevision;
+    view = update.view;
     state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
     now = Date.now();
     if (shouldInspectOnUpdate()) void loadAgent("update");
@@ -664,4 +667,4 @@ function strong(theme: unknown, text: string, color: ThemeColor): string {
   if (typeof value?.bold !== "function") return painted;
   try { return String(value.bold.call(value, painted)); } catch { return painted; }
 }
-function subscribeUpdates(handle: Pick<WikiRunHandle, "updates">, after: number, signal: AbortSignal, onUpdate: (view: WikiRunView) => void): void { void (async () => { try { for await (const update of handle.updates(after, signal)) { if (signal.aborted) return; onUpdate(update.view); } } catch { /* durable stream may end */ } })(); }
+function subscribeUpdates(handle: Pick<WikiRunHandle, "updates">, after: number, signal: AbortSignal, onUpdate: (update: WikiRunUpdate) => void): void { void (async () => { try { for await (const update of handle.updates(after, signal)) { if (signal.aborted) return; onUpdate(update); } } catch { /* durable stream may end */ } })(); }

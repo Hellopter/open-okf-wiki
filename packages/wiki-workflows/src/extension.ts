@@ -12,7 +12,12 @@ import { projectWikiRunEvent } from "./ui/observability.js";
 import { createConfiguredWikiProducer } from "./production-run.js";
 import type { WikiAgentTarget, WikiProducer, WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
 import { formatLocalDateTime } from "./ui/time-format.js";
-import { themeWikiLiveText, wikiFooterStatus, wikiWidgetLines } from "./ui/live-surface.js";
+import {
+  themeWikiLiveText,
+  wikiFooterStatus,
+  wikiWidgetLines,
+  wikiWidgetLinesFingerprint,
+} from "./ui/live-surface.js";
 import { openWikiStatusOverlay } from "./ui/status-overlay.js";
 import { errorMessage } from "./util.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./workspace.js";
@@ -26,6 +31,8 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     let context: ExtensionContext | undefined;
     let producer: WikiProducer | undefined;
     const streams = new Map<string, AbortController>();
+    const widget = createWikiLiveWidget();
+    const refresh = (active: ExtensionCommandContext, view: WikiRunView) => widget.refresh(active, view);
 
     const currentProducer = (active: ExtensionContext): WikiProducer => {
       context = active;
@@ -45,6 +52,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     pi.on("session_shutdown", async () => {
       for (const controller of streams.values()) controller.abort();
       streams.clear();
+      widget.reset();
       if (context?.hasUI) {
         context.ui.setStatus("wiki", undefined);
         context.ui.setWidget("wiki", undefined);
@@ -80,11 +88,11 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           }
           const cwd = await workspaceRoot(active.cwd);
           const engine = currentProducer(active);
-          await dispatch(pi, active, engine, cwd, command, (handle, after) => {
+          await dispatch(pi, active, engine, cwd, command, refresh, (handle, after) => {
             if (streams.has(handle.id)) return;
             const controller = new AbortController();
             streams.set(handle.id, controller);
-            void streamRun(pi, active, handle, after, controller.signal).finally(() => {
+            void streamRun(pi, active, handle, after, controller.signal, refresh).finally(() => {
               if (streams.get(handle.id) === controller) streams.delete(handle.id);
             });
           });
@@ -104,6 +112,7 @@ async function dispatch(
   producer: WikiProducer,
   cwd: string,
   command: Exclude<WikiCliCommand, { action: "init" | "source-add" }>,
+  refresh: LiveSurfaceRefresh,
   ensureStream: (handle: WikiRunHandle, after?: number) => void,
 ): Promise<void> {
   if (command.action === "run") {
@@ -113,7 +122,7 @@ async function dispatch(
     });
     const view = await handle.view();
     output(pi, context, renderWikiRun(view));
-    refreshLiveSurface(context, view);
+    refresh(context, view);
     ensureStream(handle);
     return;
   }
@@ -123,13 +132,13 @@ async function dispatch(
   }
   const handle = await selectedRun(producer, cwd, "runId" in command ? command.runId : undefined);
   if (command.action === "status") {
-    await dispatchStatus(pi, context, handle, command, ensureStream);
+    await dispatchStatus(pi, context, handle, command, refresh, ensureStream);
     return;
   }
   if (!handle) throw new Error("No Wiki run is available");
   const view = await handle.control(command.action);
   output(pi, context, renderWikiRun(view));
-  refreshLiveSurface(context, view);
+  refresh(context, view);
   if (command.action === "resume") {
     ensureStream(handle, view.lastEventSequence);
   }
@@ -140,6 +149,7 @@ async function dispatchStatus(
   context: ExtensionCommandContext,
   handle: WikiRunHandle | undefined,
   command: Extract<WikiCliCommand, { action: "status" }>,
+  refresh: LiveSurfaceRefresh,
   ensureStream: (handle: WikiRunHandle, after?: number) => void,
 ): Promise<void> {
   if (!handle) {
@@ -149,9 +159,9 @@ async function dispatchStatus(
   const view = await handle.view();
   if (!command.target) {
     output(pi, context, renderWikiSnapshot(view));
-    refreshLiveSurface(context, view);
+    refresh(context, view);
     if (view.status === "running") ensureStream(handle, view.lastEventSequence);
-    await openStatusOverlay(context, handle, command);
+    await openStatusOverlay(context, handle, command, refresh);
     return;
   }
   const inspection = await handle.inspectAgent(command.target);
@@ -161,7 +171,7 @@ async function dispatchStatus(
   }
   const detail = renderWikiAgent(inspection, command.process ? "process" : "overview");
   output(pi, context, `${detail}\n\nsnapshot as of ${formatLocalDateTime(view.updatedAt)}`);
-  await openStatusOverlay(context, handle, command);
+  await openStatusOverlay(context, handle, command, refresh);
 }
 
 function formatTarget(target: WikiAgentTarget): string {
@@ -172,6 +182,7 @@ async function openStatusOverlay(
   context: ExtensionCommandContext,
   handle: WikiRunHandle,
   command: Extract<WikiCliCommand, { action: "status" }>,
+  refresh: LiveSurfaceRefresh,
 ): Promise<void> {
   if (context.mode !== "tui" || command.process) return;
   await openWikiStatusOverlay({
@@ -184,7 +195,7 @@ async function openStatusOverlay(
       : undefined,
     onControl: async (action: WikiRunControl) => {
       const next = await handle.control(action);
-      refreshLiveSurface(context, next);
+      refresh(context, next);
     },
   });
 }
@@ -240,28 +251,105 @@ async function streamRun(
   context: ExtensionCommandContext,
   handle: WikiRunHandle,
   after = 0,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  refresh: LiveSurfaceRefresh,
 ): Promise<void> {
+  let notifiedSequence = Math.max(0, Math.trunc(after));
   try {
     for await (const update of handle.updates(after, signal)) {
       if (signal?.aborted) break;
       const event = projectWikiRunEvent(update.event);
-      if (event.visible) output(pi, context, event.text, event.tone === "error" ? "error" : event.tone === "warning" ? "warning" : "info");
-      refreshLiveSurface(context, update.view);
+      if (event.visible && update.kind !== "sidecar" && update.event.sequence > notifiedSequence) {
+        notifiedSequence = update.event.sequence;
+        output(pi, context, event.text, event.tone === "error" ? "error" : event.tone === "warning" ? "warning" : "info");
+      }
+      refresh(context, update.view);
     }
   } catch (error) {
     if (signal?.aborted) return;
     context.ui.notify(`Wiki progress stream stopped: ${errorMessage(error)}`, "warning");
     try {
-      refreshLiveSurface(context, await handle.view());
+      refresh(context, await handle.view());
     } catch {
       // Keep the last successful surface if the handle can no longer be read.
     }
   }
 }
 
-function refreshLiveSurface(context: ExtensionCommandContext, view: WikiRunView): void {
-  if (!context.hasUI) return;
+type LiveSurfaceRefresh = (context: ExtensionCommandContext, view: WikiRunView) => void;
+
+type WikiWidgetTui = { requestRender(force?: boolean): void };
+
+type WikiWidgetSurface = {
+  lines: string[];
+  fingerprint: string;
+  invalidate?: () => void;
+  installed: boolean;
+};
+
+function createWikiLiveWidget() {
+  const surface: WikiWidgetSurface = { lines: [], fingerprint: "", installed: false };
+
+  const reset = () => {
+    surface.lines = [];
+    surface.fingerprint = "";
+    surface.invalidate = undefined;
+    surface.installed = false;
+  };
+
+  return {
+    reset,
+    refresh(context: ExtensionCommandContext, view: WikiRunView) {
+      if (!context.hasUI) return;
+      if (context.mode !== "tui") {
+        refreshStringSurface(context, view);
+        return;
+      }
+      if (view.status !== "running") {
+        reset();
+        const text = wikiFooterStatus(view);
+        context.ui.setStatus("wiki", text ? themeWikiLiveText(context.ui.theme, text) : undefined);
+        context.ui.setWidget("wiki", undefined);
+        return;
+      }
+      const lines = wikiWidgetLines(view) ?? [];
+      const fingerprint = wikiWidgetLinesFingerprint(lines);
+      if (!surface.installed) {
+        context.ui.setStatus("wiki", undefined);
+        surface.lines = lines;
+        surface.fingerprint = fingerprint;
+        context.ui.setWidget("wiki", wikiWidgetFactory(surface));
+        surface.installed = true;
+        return;
+      }
+      if (fingerprint === surface.fingerprint) {
+        return;
+      }
+      surface.lines = lines;
+      surface.fingerprint = fingerprint;
+      surface.invalidate?.();
+    },
+  };
+}
+
+function wikiWidgetFactory(surface: WikiWidgetSurface) {
+  return (tui: WikiWidgetTui, theme: unknown) => {
+    const widget = {
+      render: () => surface.lines.map((line) => themeWikiLiveText(theme, line)),
+      invalidate: () => {
+        tui.requestRender();
+      },
+      dispose: () => {
+        if (surface.invalidate === bound) surface.invalidate = undefined;
+      },
+    };
+    const bound = () => widget.invalidate();
+    surface.invalidate = bound;
+    return widget;
+  };
+}
+
+function refreshStringSurface(context: ExtensionCommandContext, view: WikiRunView): void {
   if (view.status === "running") {
     context.ui.setStatus("wiki", undefined);
     const lines = wikiWidgetLines(view);

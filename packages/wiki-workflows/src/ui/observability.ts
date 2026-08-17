@@ -225,14 +225,10 @@ export function projectWikiAgentLines(
   const header = `Wiki ${inspection.runId}  ·  ${id}`;
   if (tab === "process") {
     const lines: WikiTextLine[] = [[span(header, "primary", true), span("  ·  process", "muted")]];
-    const items = interleaveProcessTab(inspection);
-    if (items.length === 0 && inspection.process.length === 0) {
+    if (inspection.process.length === 0) {
       lines.push([span("process  ", "label"), span("unavailable for this agent", "muted")]);
     } else {
-      for (const item of items) {
-        if (item.kind === "message") lines.push([span("◆ ", "accent"), span("model", "primary")], ...textLines(item.text, "primary"));
-        else lines.push(processLine(item.entry));
-      }
+      for (const entry of inspection.process) lines.push(processLine(entry));
     }
     return lines;
   }
@@ -474,12 +470,6 @@ function formatAge(value: string | undefined, now: number): string | undefined {
 function span(text: string, role: WikiTextRole, emphasis?: boolean): WikiTextSpan { return emphasis ? { text, role, emphasis } : { text, role }; }
 function textLines(text: string, role: WikiTextRole): WikiTextLine[] { return text.split("\n").map((line) => [span(line, role)]); }
 function fieldLine(label: string, value: string, role: WikiTextRole): WikiTextLine { return [span(`${label}  `, "label"), span(value, role)]; }
-function interleaveProcessTab(inspection: WikiAgentInspection): Array<{ kind: "process"; entry: WikiActivityEntry } | { kind: "message"; text: string }> {
-  return [
-    ...inspection.process.map((entry) => ({ kind: "process" as const, at: entry.at, entry })),
-    ...(inspection.messages ?? []).map((message) => ({ kind: "message" as const, at: message.at, text: message.text })),
-  ].sort((left, right) => left.at.localeCompare(right.at));
-}
 function processLine(entry: WikiActivityEntry): WikiTextLine {
   const semantics = activitySemantics(entry);
   const duration = entry.durationMs === undefined ? "" : ` · ${durationText(entry.durationMs)}`;

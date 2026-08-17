@@ -50,6 +50,7 @@ export class PiSessionObserver {
   private readonly queue: QueuedTelemetry[] = [];
   private pumping = false;
   private deliveryIdle = Promise.resolve();
+  private failedDelivery?: QueuedTelemetry;
   private lastQueuedProcessSignature?: string;
   private lastQueuedFingerprint?: string;
   private healthDelivery = Promise.resolve();
@@ -267,18 +268,28 @@ export class PiSessionObserver {
   }
 
   private enqueue(telemetry: WikiAgentTelemetry, deliveryClass: DeliveryClass): boolean {
+    if (this.failedDelivery && (deliveryClass === "lifecycle" || this.failedDelivery.class === "coalesce")) {
+      // Lifecycle checkpoints outrank replaceable UI frames. A heartbeat may
+      // update a failed coalesce, but cannot erase a failed terminal snapshot.
+      this.failedDelivery = { class: deliveryClass, telemetry };
+    }
     if (deliveryClass === "coalesce") {
       const existing = this.queue.findIndex((item) => item.class === "coalesce");
       if (existing >= 0) this.queue.splice(existing, 1);
     }
     if (this.queue.length >= MAX_DELIVERY_QUEUE) {
-      for (let index = this.queue.length - 1; index >= 0 && this.queue.length >= MAX_DELIVERY_QUEUE; index -= 1) {
-        if (this.queue[index].class === "coalesce") this.queue.splice(index, 1);
+      const replaceable = this.queue.findIndex((item) => item.class === "coalesce");
+      if (replaceable >= 0) this.queue.splice(replaceable, 1);
+      else if (deliveryClass === "lifecycle") {
+        // Lifecycle snapshots are state checkpoints, not an append-only log.
+        // Replacing the oldest one preserves the newest terminal state while
+        // keeping the in-memory queue bounded under a blocked reporter.
+        this.queue.shift();
+      } else {
+        this.saturateQueue();
+        return false;
       }
-    }
-    if (this.queue.length >= MAX_DELIVERY_QUEUE) {
       this.saturateQueue();
-      return false;
     }
     this.queue.push({ class: deliveryClass, telemetry });
     void this.pump();
@@ -304,7 +315,20 @@ export class PiSessionObserver {
     try {
       while (this.queue.length > 0) {
         const item = this.queue.shift();
-        if (item) await this.deliver(item.telemetry);
+        if (!item) continue;
+        const delivered = await this.deliver(item.telemetry);
+        if (delivered) {
+          // A coalesce cannot make a failed lifecycle checkpoint obsolete.
+          if (!this.failedDelivery || item.class === "lifecycle" || this.failedDelivery.class === "coalesce") {
+            this.failedDelivery = undefined;
+          }
+        } else {
+          this.failedDelivery = item;
+        }
+      }
+      if (this.queue.length === 0 && !this.failedDelivery && this.degraded) {
+        this.degraded = false;
+        this.reportHealth({ target: this.options.target, status: "healthy", at: this.iso() });
       }
     } finally {
       this.pumping = false;
@@ -316,28 +340,40 @@ export class PiSessionObserver {
   private async flush(): Promise<void> {
     for (;;) {
       await this.deliveryIdle;
-      if (this.queue.length === 0 && !this.pumping) break;
+      if (this.queue.length === 0 && !this.pumping) {
+        if (this.failedDelivery) {
+          const retry = this.failedDelivery;
+          this.failedDelivery = undefined;
+          if (!(await this.deliver(retry.telemetry))) this.failedDelivery = retry;
+          if (this.failedDelivery) break;
+          if (this.degraded && this.queue.length === 0) {
+            this.degraded = false;
+            this.reportHealth({ target: this.options.target, status: "healthy", at: this.iso() });
+          }
+          continue;
+        }
+        break;
+      }
       if (!this.pumping) void this.pump();
     }
     await this.healthDelivery;
   }
 
-  private async deliver(telemetry: WikiAgentTelemetry): Promise<void> {
+  private async deliver(telemetry: WikiAgentTelemetry): Promise<boolean> {
     try {
       await this.options.report(telemetry);
-      if (this.degraded) {
-        this.degraded = false;
-        this.reportHealth({ target: this.options.target, status: "healthy", at: this.iso() });
-      }
+      return true;
     } catch (error) {
-      if (this.degraded) return;
-      this.degraded = true;
-      this.reportHealth({
-        target: this.options.target,
-        status: "degraded",
-        at: this.iso(),
-        message: healthError(error),
-      });
+      if (!this.degraded) {
+        this.degraded = true;
+        this.reportHealth({
+          target: this.options.target,
+          status: "degraded",
+          at: this.iso(),
+          message: healthError(error),
+        });
+      }
+      return false;
     }
   }
 

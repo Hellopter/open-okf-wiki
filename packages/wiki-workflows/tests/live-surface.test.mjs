@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { themeWikiLiveText, wikiFooterStatus, wikiWidgetLines } from "../dist/ui/live-surface.js";
+import {
+  themeWikiLiveText,
+  wikiFooterStatus,
+  wikiWidgetLines,
+  wikiWidgetLinesFingerprint,
+} from "../dist/ui/live-surface.js";
 import { formatLocalDateTime } from "../dist/ui/time-format.js";
 
 const now = Date.parse("2026-08-12T00:01:00.000Z");
@@ -126,6 +131,13 @@ test("live text paints success, failure, warning, and running marks", () => {
 test("long wait distinguishes Pi silence from session liveness", () => {
   const footer = wikiFooterStatus(view({ progress: { stage: "lead", lead: lead({ warning: "long_wait", lastActivityAt: "2026-08-11T23:58:00Z" }) } }), now);
   assert.equal(footer, "wiki ! lead · no Pi activity 3m · session alive 1s");
+});
+
+test("widget fingerprint is stable for the same lines and changes when they differ", () => {
+  assert.equal(wikiWidgetLinesFingerprint(["◆ lead", "batch 1  0/2"]), "◆ lead\nbatch 1  0/2");
+  assert.equal(wikiWidgetLinesFingerprint(wikiWidgetLines(view())), wikiWidgetLinesFingerprint(["◆ lead"]));
+  assert.notEqual(wikiWidgetLinesFingerprint(["◆ lead"]), wikiWidgetLinesFingerprint(["! lead  synthesizing"]));
+  assert.equal(wikiWidgetLinesFingerprint(undefined), "");
 });
 
 test("observability health comes from the agent snapshot, independent of the activity tail", () => {

@@ -271,8 +271,19 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
   const subject = await fixture(t, { hasUI: true, holdEvents: true });
   await subject.run("auth flows");
   await flush();
-  assert.ok(subject.widgets.some(([key, lines]) => key === "wiki" && Array.isArray(lines)));
+  const factories = subject.widgets.filter(([key, content]) => key === "wiki" && typeof content === "function");
+  assert.equal(factories.length, 1);
+  assert.ok(!subject.widgets.some(([, content]) => Array.isArray(content)));
   assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && text === undefined));
+
+  const renders = [];
+  const component = factories[0][1]({ requestRender: () => renders.push(true) }, subject.context.ui.theme);
+  assert.ok(component.render().some((line) => /◆ lead/.test(line)));
+
+  const widgetCalls = subject.widgets.length;
+  await subject.run("status run-1");
+  assert.equal(subject.widgets.length, widgetCalls);
+  assert.equal(renders.length, 0);
 
   const current = subject.views.get("run-1");
   subject.views.set("run-1", {
@@ -284,9 +295,11 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
     },
   });
   await subject.run("status run-1");
-  const runningWidget = [...subject.widgets].reverse().find(([key]) => key === "wiki");
+  assert.equal(subject.widgets.filter(([key, content]) => key === "wiki" && typeof content === "function").length, 1);
+  assert.ok(!subject.widgets.some(([, content]) => Array.isArray(content)));
+  assert.ok(renders.length >= 1);
+  assert.ok(component.render().some((line) => /pages\/auth\.md/.test(line)));
   const runningStatus = [...subject.statuses].reverse().find(([key]) => key === "wiki");
-  assert.ok(Array.isArray(runningWidget?.[1]) && runningWidget[1].some((line) => /pages\/auth\.md/.test(line)));
   assert.equal(runningStatus?.[1], undefined);
 
   subject.views.set("run-1", { ...subject.views.get("run-1"), status: "succeeded" });

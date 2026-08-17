@@ -240,7 +240,9 @@ export interface WikiRunPause {
 }
 
 export interface WikiInspectOptions {
+  /** Session transcript messages. Loaded only when `transcript === true`. */
   transcript?: boolean;
+  /** Artifact handoff text. Loaded only when `handoff === true`. */
   handoff?: boolean;
 }
 
@@ -261,6 +263,10 @@ export interface WikiProducer {
 }
 
 export interface WikiRunUpdate {
+  /** Whether this update is a durable ledger replay or a replaceable live checkpoint. */
+  kind: "durable" | "sidecar";
+  /** Monotonic projection revision. Sidecars may share an event sequence but always have a newer revision. */
+  revision: number;
   event: WikiRunEvent;
   /** Durable projection produced by the same run transaction as `event`. */
   view: WikiRunView;

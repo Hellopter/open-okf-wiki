@@ -292,3 +292,77 @@ test("a full lifecycle queue drops only coalesceable items and then degrades", a
   assert.ok(reports.length <= 50, `delivery must stay bounded, got ${reports.length}`);
   assert.ok(reports.some((telemetry) => telemetry.activeTools?.some((tool) => tool.id === "call-0")));
 });
+
+test("an overloaded delivery queue retains the final 80-tool lifecycle and retries a failed final report", async () => {
+  const session = deliverySession();
+  const gate = deferred();
+  const reports = [];
+  const health = [];
+  let initialStarted = false;
+  let finalReportFailures = 0;
+  const subject = new PiSessionObserver(session, {
+    target: { kind: "lead" }, attempt: 1, timeoutMs: 60_000, workspaceRoot: "/tmp/wiki",
+    heartbeatMs: 1_000,
+    report: async (telemetry) => {
+      if (reports.length === 0) {
+        initialStarted = true;
+        await gate.promise;
+      }
+      const final = telemetry.activity === "settled" && telemetry.process?.some((entry) => entry.toolCallId === "call-79" && entry.completed);
+      if (final && finalReportFailures === 0) {
+        finalReportFailures += 1;
+        throw new Error("temporary reporter failure");
+      }
+      reports.push(telemetry);
+    },
+    onHealth(input) { health.push(input); },
+  });
+  subject.start();
+  await waitFor(() => initialStarted);
+  for (let index = 0; index < 80; index += 1) {
+    session.emit({ type: "tool_execution_start", toolCallId: `call-${index}`, toolName: "read", args: { path: "wiki/overview.md" } });
+    session.emit({ type: "tool_execution_end", toolCallId: `call-${index}`, toolName: "read", isError: false, result: { content: [] } });
+  }
+  session.emit({ type: "agent_settled" });
+  gate.resolve();
+  await subject.stop();
+  const final = reports.at(-1);
+  assert.equal(final.activity, "settled");
+  assert.ok(final.process?.some((entry) => entry.toolCallId === "call-79" && entry.completed));
+  assert.equal(finalReportFailures, 1);
+  assert.ok(reports.length >= 2, "the final snapshot should be delivered after a temporary report failure");
+  assert.equal(health.at(-1)?.status, "healthy");
+  assert.ok(reports.length <= 50, `delivery reports should stay bounded, got ${reports.length}`);
+});
+
+test("a failed lifecycle snapshot survives later heartbeat coalescing and is retried", async () => {
+  const session = deliverySession();
+  const reports = [];
+  const health = [];
+  let failed = false;
+  const subject = new PiSessionObserver(session, {
+    target: { kind: "lead" }, attempt: 1, timeoutMs: 60_000, workspaceRoot: "/tmp/wiki",
+    heartbeatMs: 1_000,
+    async report(telemetry) {
+      const completed = telemetry.process?.some((entry) => entry.toolCallId === "call-final" && entry.completed);
+      if (completed && !failed) {
+        failed = true;
+        throw new Error("temporary lifecycle failure");
+      }
+      reports.push(telemetry);
+    },
+    onHealth(input) { health.push(input); },
+  });
+  subject.start();
+  await waitFor(() => reports.length === 1);
+  session.emit({ type: "tool_execution_start", toolCallId: "call-final", toolName: "read", args: { path: "wiki/overview.md" } });
+  session.emit({ type: "tool_execution_end", toolCallId: "call-final", toolName: "read", isError: false, result: { content: [] } });
+  for (let index = 0; index < 4; index += 1) {
+    session.emit({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: `frame-${index}` }] } });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 280));
+  await subject.stop();
+  assert.equal(failed, true);
+  assert.ok(reports.some((telemetry) => telemetry.process?.some((entry) => entry.toolCallId === "call-final" && entry.completed)));
+  assert.equal(health.at(-1)?.status, "healthy");
+});

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -234,4 +234,288 @@ test("task_settled projects the already-durable receipt, session and execution i
   assert.equal(record.sessionFile, "/sessions/write-1.jsonl");
   assert.equal(record.execution.phase, "terminal");
   assert.equal(record.agent.status, "complete");
+});
+
+async function eventFileNames(workspace) {
+  const directory = path.join(workspace, "runs", "run-1", "events");
+  return (await readdir(directory)).filter((name) => /^\d{16}\.json$/.test(name)).sort();
+}
+
+async function plantEventFiles(workspace, count) {
+  const eventsDir = path.join(workspace, "runs", "run-1", "events");
+  const lastName = (await eventFileNames(workspace)).at(-1);
+  const last = JSON.parse(await readFile(path.join(eventsDir, lastName), "utf8"));
+  let sequence = last.event.sequence;
+  let state = last.state;
+  for (let index = 0; index < count; index += 1) {
+    sequence += 1;
+    const at = `2026-01-01T01:${String(Math.floor(sequence / 60)).padStart(2, "0")}:${String(sequence % 60).padStart(2, "0")}.000Z`;
+    state = { ...state, lastEventSequence: sequence, updatedAt: at };
+    const event = { version: 1, runId: "run-1", sequence, at, type: "progress", message: `planted ${sequence}` };
+    await writeFile(path.join(eventsDir, `${String(sequence).padStart(16, "0")}.json`), `${JSON.stringify({ version: 1, event, state })}\n`);
+  }
+  await writeFile(path.join(workspace, "runs", "run-1", "run-state.json"), `${JSON.stringify(state, null, 2)}\n`);
+  return sequence;
+}
+
+function leadTelemetry(overrides = {}) {
+  return {
+    target: { kind: "lead" },
+    attempt: 1,
+    sampledAt: "2026-01-01T02:00:00.000Z",
+    activity: "waiting_model",
+    activeTools: [],
+    lastHeartbeatAt: "2026-01-01T02:00:00.000Z",
+    lastActivityAt: "2026-01-01T01:59:00.000Z",
+    ...overrides,
+  };
+}
+
+function toolProcess({ toolCallId = "call-1", completed = false, summary = "wiki/overview.md", sequence = 1 } = {}) {
+  return {
+    sequence, at: "2026-01-01T02:00:00.000Z", kind: "tool", severity: "info", target: { kind: "lead" },
+    message: "", toolCallId, toolName: "read", summary, completed,
+  };
+}
+
+test("coalesce telemetry after planted events does not add an event file or bump lastEventSequence", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  const planted = await plantEventFiles(workspace, 18);
+  assert.equal(planted, 20);
+  assert.equal((await eventFileNames(workspace)).length, 20);
+
+  const event = await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({ usage: { turns: 1, toolCalls: 0 } }),
+  }, authority);
+  assert.equal(event, undefined);
+  assert.equal((await eventFileNames(workspace)).length, 20);
+  assert.equal((await ledger.read("run-1")).lastEventSequence, 20);
+  await assert.rejects(readFile(path.join(workspace, "runs", "run-1", "pending-transaction.json"), "utf8"), { code: "ENOENT" });
+  const record = await ledger.readAgent("run-1", { kind: "lead" });
+  assert.equal(record.agent.lastHeartbeatAt, "2026-01-01T02:00:00.000Z");
+  assert.equal(record.agent.activity, "waiting_model");
+});
+
+test("must-flush tool-start telemetry after planted events adds exactly one event file", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await plantEventFiles(workspace, 18);
+  assert.equal((await eventFileNames(workspace)).length, 20);
+
+  const event = await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({
+      activity: "using_tool",
+      activeTools: [{ id: "call-1", name: "read", startedAt: "2026-01-01T02:00:00.000Z", summary: "wiki/overview.md" }],
+      process: [toolProcess()],
+    }),
+  }, authority);
+  assert.equal(event.sequence, 21);
+  assert.equal(event.type, "telemetry");
+  assert.equal((await eventFileNames(workspace)).length, 21);
+  assert.equal((await ledger.read("run-1")).lastEventSequence, 21);
+  const updates = await ledger.updates("run-1", 20);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].event.sequence, 21);
+  assert.equal((await ledger.readAgent("run-1", { kind: "lead" })).process[0].toolCallId, "call-1");
+});
+
+test("sidecar usage is folded into the next durable snapshot", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({ usage: { turns: 3, toolCalls: 2 } }),
+  }, authority);
+  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 3, toolCalls: 2 });
+
+  await ledger.recordObservation("run-1", { kind: "progress", message: "still working" }, authority);
+  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 3, toolCalls: 2 });
+
+  const event = await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({
+      sampledAt: "2026-01-01T02:00:01.000Z",
+      activity: "using_tool",
+      activeTools: [{ id: "call-1", name: "read", startedAt: "2026-01-01T02:00:01.000Z", summary: "wiki/overview.md" }],
+      process: [toolProcess({ sequence: 2 })],
+    }),
+  }, authority);
+  assert.equal(event.type, "telemetry");
+  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 3, toolCalls: 2 });
+});
+
+test("multiple agent sidecars aggregate without replaying the agent directory", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await ledger.recordObservation("run-1", {
+    kind: "batch", batch: 1, phase: "queued", tasks: [
+      { id: "write-a", role: "write", status: "queued", attempt: 1, updatedAt: "2026-01-01T02:00:00.000Z" },
+      { id: "write-b", role: "write", status: "queued", attempt: 1, updatedAt: "2026-01-01T02:00:00.000Z" },
+    ],
+  }, authority);
+  for (const [taskId, turns] of [["write-a", 2], ["write-b", 5]]) {
+    await ledger.recordObservation("run-1", {
+      kind: "telemetry", target: { kind: "task", batch: 1, taskId },
+      telemetry: {
+        target: { kind: "task", batch: 1, taskId }, attempt: 1,
+        sampledAt: "2026-01-01T02:00:01.000Z", activity: "waiting_model", activeTools: [],
+        usage: { turns },
+      },
+    }, authority);
+  }
+  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 7 });
+  assert.equal((await ledger.readAgent("run-1", { kind: "task", batch: 1, taskId: "write-a" })).agent.usage.turns, 2);
+  assert.equal((await ledger.readAgent("run-1", { kind: "task", batch: 1, taskId: "write-b" })).agent.usage.turns, 5);
+});
+
+test("usage checkpoint payload stays fixed-size across many targets", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  const tasks = Array.from({ length: 32 }, (_, index) => ({
+    id: `write-${index + 1}`, role: "write", status: "queued", attempt: 1, updatedAt: "2026-01-01T02:00:00.000Z",
+  }));
+  await ledger.recordObservation("run-1", { kind: "batch", batch: 1, phase: "queued", tasks }, authority);
+  for (const task of tasks) {
+    await ledger.recordObservation("run-1", {
+      kind: "telemetry", target: { kind: "task", batch: 1, taskId: task.id },
+      telemetry: {
+        target: { kind: "task", batch: 1, taskId: task.id }, attempt: 1,
+        sampledAt: "2026-01-01T02:00:01.000Z", activity: "waiting_model", activeTools: [], usage: { turns: 1 },
+      },
+    }, authority);
+  }
+  const checkpoint = await readFile(path.join(workspace, "runs", "run-1", "usage-checkpoint.json"), "utf8");
+  const state = await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8");
+  assert.ok(checkpoint.length < 256);
+  assert.doesNotMatch(checkpoint, /usageByAttempt|write-32/);
+  assert.doesNotMatch(state, /usageByAttempt/);
+  assert.equal((await ledger.read("run-1")).progress.usage.turns, 32);
+});
+
+test("usage checkpoints retain aggregate totals while bounding attempts per target", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" }, telemetry: leadTelemetry({ usage: { turns: 2 } }),
+  }, authority);
+  await ledger.transition("run-1", { kind: "paused", at: "2026-01-01T03:00:00.000Z", pause: { reason: "quota", summary: "wait" } }, authority);
+  const nextToken = "execution-token-0000000000002";
+  const nextAuthority = { attempt: 2, executionToken: nextToken };
+  await ledger.transition("run-1", { kind: "resumed", at: "2026-01-01T03:00:01.000Z", executionToken: nextToken, owner },);
+  await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" }, telemetry: leadTelemetry({ attempt: 2, usage: { turns: 3 } }),
+  }, nextAuthority);
+  const state = await ledger.read("run-1");
+  assert.equal(state.progress.usage.turns, 5);
+  assert.equal(state.usageByAttempt, undefined);
+  const checkpoint = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "usage-checkpoint.json"), "utf8"));
+  assert.deepEqual(Object.keys(checkpoint), ["version", "usage"]);
+  assert.deepEqual(checkpoint.usage, { turns: 5 });
+  assert.ok(JSON.stringify(checkpoint).length < 256);
+});
+
+test("tool summary-patch telemetry stays sidecar after a flushed tool start", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({ process: [toolProcess({ summary: "wiki/overview.md" })] }),
+  }, authority);
+  const before = (await ledger.read("run-1")).lastEventSequence;
+  const files = (await eventFileNames(workspace)).length;
+
+  const event = await ledger.recordObservation("run-1", {
+    kind: "telemetry", target: { kind: "lead" },
+    telemetry: leadTelemetry({
+      sampledAt: "2026-01-01T02:00:01.000Z",
+      lastHeartbeatAt: "2026-01-01T02:00:01.000Z",
+      process: [toolProcess({ summary: "wiki/runtime.md" })],
+    }),
+  }, authority);
+  assert.equal(event, undefined);
+  assert.equal((await eventFileNames(workspace)).length, files);
+  assert.equal((await ledger.read("run-1")).lastEventSequence, before);
+  assert.equal((await ledger.readAgent("run-1", { kind: "lead" })).process[0].summary, "wiki/runtime.md");
+});
+
+test("sidecar checkpoint recovery keeps state usage and agent process consistent", async (t) => {
+  for (const point of ["afterSidecarJournal", "afterSidecarState", "afterSidecarAgent"]) {
+    const workspace = await root(t);
+    const stable = createWikiRunLedger(workspace);
+    await started(stable, workspace);
+    await begin(stable);
+    await stable.recordObservation("run-1", {
+      kind: "telemetry", target: { kind: "lead" },
+      telemetry: leadTelemetry({ process: [toolProcess({ summary: "wiki/overview.md" })] }),
+    }, authority);
+    let crashed = false;
+    let pending;
+    const crashing = createWikiRunLedger(workspace, { async fault(actual) {
+      if (!crashed && actual === point) {
+        crashed = true;
+        pending = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "pending-sidecar.json"), "utf8"));
+        throw new Error(`sidecar-${point}`);
+      }
+    } });
+    await assert.rejects(crashing.recordObservation("run-1", {
+      kind: "telemetry", target: { kind: "lead" },
+      telemetry: leadTelemetry({
+        sampledAt: "2026-01-01T02:00:01.000Z", process: [toolProcess({ summary: "wiki/runtime.md" })], usage: { turns: 6 },
+      }),
+    }, authority), new RegExp(`sidecar-${point}`));
+
+    const recovered = createWikiRunLedger(workspace);
+    const state = await recovered.read("run-1");
+    assert.equal(state.progress.usage.turns, 6);
+    const record = await recovered.readAgent("run-1", { kind: "lead" });
+    assert.equal(record.agent.usage.turns, 6);
+    assert.equal(record.process[0].summary, "wiki/runtime.md");
+    assert.deepEqual(Object.keys(pending), ["version", "runId", "usage", "agent"]);
+    assert.equal(pending.state, undefined);
+    assert.equal(pending.usageByAttempt, undefined);
+    assert.ok(JSON.stringify(pending).length < 2_000);
+    await assert.rejects(readFile(path.join(workspace, "runs", "run-1", "pending-sidecar.json"), "utf8"), { code: "ENOENT" });
+  }
+});
+
+test("health degraded writes one event sequence and healthy health stays sidecar", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  const before = (await ledger.read("run-1")).lastEventSequence;
+  const files = (await eventFileNames(workspace)).length;
+
+  const degraded = await ledger.recordObservation("run-1", {
+    kind: "health", target: { kind: "lead" }, status: "degraded", at: "2026-01-01T02:00:02.000Z", message: "queue saturated",
+  }, authority);
+  assert.equal(degraded.sequence, before + 1);
+  assert.equal(degraded.phase, "observability_health");
+  assert.equal((await eventFileNames(workspace)).length, files + 1);
+  assert.equal((await ledger.read("run-1")).lastEventSequence, before + 1);
+
+  const healthy = await ledger.recordObservation("run-1", {
+    kind: "health", target: { kind: "lead" }, status: "healthy", at: "2026-01-01T02:00:03.000Z",
+  }, authority);
+  assert.equal(healthy, undefined);
+  assert.equal((await eventFileNames(workspace)).length, files + 1);
+  assert.equal((await ledger.read("run-1")).lastEventSequence, before + 1);
+  assert.equal((await ledger.readAgent("run-1", { kind: "lead" })).agent.health, "healthy");
 });

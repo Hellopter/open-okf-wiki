@@ -14,6 +14,10 @@ import { createPiLeadRuntime, type PiWikiRoleModels } from "./lead-runtime.js";
 import { createWikiPublicationStore } from "./publication-store.js";
 import {
   createWikiRunLedger,
+  projectActivity,
+  projectAgent,
+  projectObservation,
+  projectQueuedAgent,
   resultFromState,
   type WikiProductionTransition,
   type WikiExecutionAuthority,
@@ -35,6 +39,7 @@ import {
 } from "./producer-types.js";
 import {
   WIKI_MANUAL_PAUSE,
+  type WikiAgentRecord,
   type WikiLeadExecutionRequest,
   type WikiLeadObservation,
   type WikiLeadRuntime,
@@ -45,7 +50,6 @@ import { pin, reopen, skillWorkspacePath } from "./skill-store.js";
 import { loadWikiWorkspace, ensureWikiWorkspaceInternalIgnore, type WikiGenerationProfile, type WikiRoleModelConfig } from "./workspace.js";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
-const RESULT_POLL_MS = 50;
 const UPDATE_IDLE_MS = 1_000;
 const CONTROL_SETTLE_MS = 1_000;
 
@@ -138,6 +142,11 @@ class WikiProductionRun {
   private publicationCritical = false;
   private readonly hub = new EventEmitter();
   private readonly ownerToken = randomUUID();
+  private readonly agents = new Map<string, WikiAgentRecord>();
+  private liveState?: WikiRunState;
+  private lastEvent?: WikiRunEvent;
+  private revision = 0;
+  private lastLiveKind: WikiRunUpdate["kind"] = "durable";
 
   constructor(
     private readonly workspaceRoot: string,
@@ -147,12 +156,14 @@ class WikiProductionRun {
   ) { this.hub.setMaxListeners(0); }
 
   async start(): Promise<void> {
+    await this.ensureLive();
     await this.commit({ kind: "started", at: this.timestamp() });
     const authority = await this.beginAttempt("attempt_started");
     this.launch(authority);
   }
 
   async recover(): Promise<void> {
+    await this.ensureLive();
     const state = await this.state();
     if (state.status === "succeeded") {
       if (state.productionPlan) await this.cleanup(state.productionPlan, false);
@@ -185,7 +196,7 @@ class WikiProductionRun {
   handle(): WikiRunHandle {
     return {
       id: this.runId,
-      view: async () => toView(await this.state()),
+      view: async () => this.currentView() ?? toView(await this.state()),
       updates: (after = 0, signal?: AbortSignal) => this.updateStream(after, signal),
       result: async () => await this.waitForResult(),
       control: async (action) => await this.control(action),
@@ -353,7 +364,31 @@ class WikiProductionRun {
       await this.assertCurrent(authority, signal);
       const event = await this.ledger.recordObservation(this.runId, observation, authority);
       if (event) await this.publishCommitted(event);
+      else if (await this.refreshLiveIfFenced(authority)) this.applyLiveObservation(observation);
     }
+  }
+
+  private applyLiveObservation(observation: WikiLeadObservation): void {
+    if (!this.liveState) return;
+    const target = observationTarget(observation);
+    const existing = target ? this.agents.get(agentKey(target)) : undefined;
+    const projected = projectObservation(this.liveState, existing, observation);
+    if (!projected) return;
+    this.liveState = projected.state;
+    if (projected.record && projected.target) this.agents.set(agentKey(projected.target), projected.record);
+    const event = projected.event ?? this.lastEvent ?? syntheticProgress(this.liveState);
+    this.lastEvent = event;
+    this.emitLive(event);
+  }
+
+  private async refreshLiveIfFenced(authority: WikiExecutionAuthority): Promise<boolean> {
+    const current = await this.ledger.read(this.runId).catch(() => undefined);
+    if (!current || current.status !== "running" || current.attempt !== authority.attempt
+      || current.executionToken !== authority.executionToken) {
+      if (current) await this.replaceLive(current);
+      return false;
+    }
+    return true;
   }
 
   private async assertCurrent(authority: WikiExecutionAuthority, signal: AbortSignal): Promise<void> {
@@ -384,43 +419,72 @@ class WikiProductionRun {
   private async publishCommitted(event: WikiRunEvent): Promise<void> {
     const update = (await this.ledger.updates(this.runId, event.sequence - 1)).find((candidate) => candidate.event.sequence === event.sequence);
     if (!update) throw new Error(`Missing durable Wiki update ${this.runId}/${event.sequence}`);
-    this.hub.emit("update", { event: update.event, view: toView(update.state) } satisfies WikiRunUpdate);
+    this.liveState = structuredClone(update.state);
+    const target = "target" in update.event ? update.event.target : undefined;
+    if (target) {
+      const record = await this.ledger.readAgent(this.runId, target).catch(() => undefined);
+      if (record) this.agents.set(agentKey(target), record);
+    }
+    await this.seedAgents(update.state);
+    this.overlayLiveAgents();
+    this.lastEvent = update.event;
+    this.emitLive(update.event, "durable");
   }
 
   private async *updateStream(after: number, signal?: AbortSignal): AsyncIterable<WikiRunUpdate> {
     const controller = new AbortController();
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let cursor = Math.max(0, Math.trunc(after));
-    const queued: WikiRunUpdate[] = [];
-    const enqueue = (update: WikiRunUpdate) => { queued.push(update); };
+    let revision = 0;
+    let catchUp = true;
+    let durablePending = false;
+    let sidecar: WikiRunUpdate | undefined;
+    const enqueue = (update: WikiRunUpdate) => {
+      if (update.kind === "durable") {
+        // Durable transitions are replayed from the ledger, so this marker is
+        // constant-size and cannot lose an event under a slow subscriber.
+        durablePending = true;
+      } else if (update.event.sequence >= cursor && update.revision > revision
+        && (!sidecar || update.revision > sidecar.revision)) {
+        // Sidecars are replaceable: only the newest projection for this
+        // durable sequence is useful to a subscriber.
+        sidecar = update;
+      }
+    };
     this.hub.on("update", enqueue);
     try {
-      let catchUp = true;
       while (!combined.aborted) {
-        if (catchUp) {
+        if (catchUp || durablePending) {
+          durablePending = false;
           for (const update of await this.ledger.updates(this.runId, cursor)) {
             if (combined.aborted || update.event.sequence <= cursor) continue;
             cursor = update.event.sequence;
-            yield { event: update.event, view: toView(update.state) };
+            revision = Math.max(revision + 1, update.event.sequence);
+            if (sidecar && sidecar.event.sequence < cursor) sidecar = undefined;
+            yield { kind: "durable", revision, event: update.event, view: toView(update.state) };
             if (isTerminalEvent(update.event)) return;
           }
           catchUp = false;
         }
-        while (queued.length > 0 && !combined.aborted) {
-          const update = queued.shift()!;
-          if (update.event.sequence <= cursor) continue;
-          if (update.event.sequence !== cursor + 1) {
-            queued.unshift(update);
-            catchUp = true;
-            break;
-          }
-          cursor = update.event.sequence;
-          yield update;
-          if (isTerminalEvent(update.event)) return;
+        if (sidecar && sidecar.event.sequence === cursor && sidecar.revision > revision) {
+          const update = sidecar;
+          sidecar = undefined;
+          revision = update.revision;
+          yield { kind: "sidecar", revision: update.revision, event: update.event, view: update.view };
+          continue;
         }
-        if (catchUp) continue;
-        await waitForUpdate(this.hub, combined, () => queued.length > 0);
-        if (queued.length === 0) catchUp = true;
+        if (sidecar && sidecar.event.sequence > cursor) {
+          catchUp = true;
+          continue;
+        }
+        const live = this.liveHubUpdate();
+        if (live && live.kind === "sidecar" && live.event.sequence === cursor && live.revision > revision) {
+          revision = live.revision;
+          yield { kind: "sidecar", revision: live.revision, event: live.event, view: live.view };
+          continue;
+        }
+        const arrived = await waitForUpdate(this.hub, combined, () => durablePending || Boolean(sidecar));
+        if (!arrived && !durablePending && !sidecar) catchUp = true;
       }
     } finally {
       this.hub.off("update", enqueue);
@@ -429,29 +493,45 @@ class WikiProductionRun {
   }
 
   private async waitForResult() {
-    while (true) {
-      const state = await this.state();
-      if (TERMINAL.has(state.status)) {
-        const execution = this.active?.settled;
-        if (execution) await execution;
-        const settled = await this.state();
-        if (settled.status === "succeeded") return resultFromState(settled);
-        if (settled.status === "failed" || settled.status === "cancelled") {
-          throw new WikiRunResultError(this.runId, settled.status, settled.error ?? `Wiki run ${settled.status}`);
+    const controller = new AbortController();
+    try {
+      while (true) {
+        const live = this.liveState;
+        if (live && TERMINAL.has(live.status)) return await this.settleResult(live);
+        const arrived = await waitForUpdate(this.hub, controller.signal, () => Boolean(this.liveState && TERMINAL.has(this.liveState.status)));
+        if (this.liveState && TERMINAL.has(this.liveState.status)) continue;
+        if (!arrived) {
+          const disk = await this.state();
+          if (TERMINAL.has(disk.status)) {
+            this.liveState = structuredClone(disk);
+            return await this.settleResult(disk);
+          }
         }
-        throw new Error(`Terminal Wiki run ${this.runId} regressed to ${settled.status}`);
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, RESULT_POLL_MS));
+    } finally {
+      controller.abort();
     }
   }
 
+  private async settleResult(state: WikiRunState) {
+    const execution = this.active?.settled;
+    if (execution) await execution;
+    const settled = this.liveState && TERMINAL.has(this.liveState.status) ? this.liveState : state;
+    if (settled.status === "succeeded") return resultFromState(settled);
+    if (settled.status === "failed" || settled.status === "cancelled") {
+      throw new WikiRunResultError(this.runId, settled.status, settled.error ?? `Wiki run ${settled.status}`);
+    }
+    throw new Error(`Terminal Wiki run ${this.runId} regressed to ${settled.status}`);
+  }
+
   private async inspectAgent(target: WikiAgentTarget, options?: WikiInspectOptions): Promise<WikiAgentInspection | undefined> {
-    const state = await this.state();
-    const record = await this.ledger.readAgent(this.runId, target);
+    const state = this.liveState ?? await this.state();
+    const record = this.agents.get(agentKey(target))
+      ?? (this.liveState ? projectQueuedAgent(this.liveState, target) : await this.ledger.readAgent(this.runId, target));
     const agent = record?.agent ?? (target.kind === "lead" ? state.progress?.lead : undefined);
     if (!agent) return undefined;
-    const includeHandoff = options?.handoff !== false;
-    const includeTranscript = options?.transcript !== false;
+    const includeHandoff = options?.handoff === true;
+    const includeTranscript = options?.transcript === true;
     const ref = record?.receipt?.outputs?.at(-1);
     let handoff: string | undefined;
     if (includeHandoff && ref) { try { handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref); } catch { handoff = undefined; } }
@@ -464,6 +544,63 @@ class WikiProductionRun {
       ...(handoff !== undefined ? { handoff } : {}),
       ...(includeHandoff && ref?.relativePath ? { handoffPath: ref.relativePath } : {}),
     };
+  }
+
+  private currentView(): WikiRunView | undefined {
+    return this.liveState ? toView(this.liveState) : undefined;
+  }
+
+  private emitLive(event: WikiRunEvent, kind: WikiRunUpdate["kind"] = "sidecar"): void {
+    if (!this.liveState) return;
+    this.revision = Math.max(this.revision + 1, event.sequence);
+    this.lastLiveKind = kind;
+    this.hub.emit("update", { kind, revision: this.revision, event, view: toView(this.liveState) } satisfies WikiRunUpdate);
+  }
+
+  private liveHubUpdate(): WikiRunUpdate | undefined {
+    if (!this.liveState || !this.lastEvent) return undefined;
+    return { kind: this.lastLiveKind, revision: this.revision, event: this.lastEvent, view: toView(this.liveState) };
+  }
+
+  private async ensureLive(): Promise<void> {
+    if (this.liveState) return;
+    await this.hydrate();
+  }
+
+  private async hydrate(): Promise<void> {
+    const state = await this.state();
+    await this.replaceLive(state);
+  }
+
+  private async replaceLive(state: WikiRunState): Promise<void> {
+    this.liveState = structuredClone(state);
+    this.revision = Math.max(this.revision, state.lastEventSequence);
+    await this.seedAgents(state);
+    this.overlayLiveAgents();
+  }
+
+  private overlayLiveAgents(): void {
+    if (!this.liveState) return;
+    for (const record of this.agents.values()) {
+      this.liveState = projectAgent(this.liveState, record.agent);
+      this.liveState = projectActivity(this.liveState, record.process);
+    }
+  }
+
+  private async seedAgents(state: WikiRunState): Promise<void> {
+    this.agents.clear();
+    const lead = await this.ledger.readAgent(this.runId, { kind: "lead" }).catch(() => undefined);
+    if (lead) this.agents.set(agentKey({ kind: "lead" }), lead);
+    const batches = [...(state.progress?.batches ?? [])];
+    const current = state.progress?.currentBatch;
+    if (current && !batches.some((batch) => batch.batch === current.batch)) batches.push(current);
+    for (const batch of batches) {
+      for (const task of batch.tasks) {
+        const target = { kind: "task" as const, batch: batch.batch, taskId: task.id };
+        const record = await this.ledger.readAgent(this.runId, target).catch(() => undefined);
+        if (record) this.agents.set(agentKey(target), record);
+      }
+    }
   }
 
   private async state(): Promise<WikiRunState> {
@@ -600,6 +737,20 @@ async function removeStagedEntries(root: string, remove: (location: string) => P
 }
 
 function runKey(workspaceRoot: string, runId: string): string { return `${path.resolve(workspaceRoot)}\0${runId}`; }
+function agentKey(target: WikiAgentTarget): string {
+  return target.kind === "lead" ? "lead" : `task:${target.batch}:${target.taskId}`;
+}
+function observationTarget(observation: WikiLeadObservation): WikiAgentTarget | undefined {
+  if (observation.kind === "telemetry" || observation.kind === "health") return observation.target;
+  if (observation.kind === "task_settled") return { kind: "task", batch: observation.batch, taskId: observation.taskId };
+  return undefined;
+}
+function syntheticProgress(state: WikiRunState): WikiRunEvent {
+  return {
+    version: 1, runId: state.id, sequence: Math.max(1, state.lastEventSequence), at: state.updatedAt,
+    type: "progress", message: state.progress?.lastMessage ?? "",
+  };
+}
 function currentAuthority(state: WikiRunState): WikiExecutionAuthority {
   if (state.status !== "running" || !state.executionToken) throw new Error("Wiki run has no active execution authority");
   return { attempt: state.attempt, executionToken: state.executionToken };
@@ -611,23 +762,27 @@ async function resolveWikiWorkspace(cwd: string) {
 }
 function normalizedFocus(value: string | undefined): string | undefined { return value?.trim() || undefined; }
 function isTerminalEvent(event: WikiRunEvent): boolean { return event.type === "completed" || event.type === "failed" || event.type === "cancelled"; }
-async function waitForUpdate(hub: EventEmitter, signal: AbortSignal, delivered: () => boolean): Promise<void> {
-  if (signal.aborted || delivered()) return;
-  await new Promise<void>((resolve) => {
+async function waitForUpdate(hub: EventEmitter, signal: AbortSignal, delivered: () => boolean): Promise<boolean> {
+  if (signal.aborted) return false;
+  if (delivered()) return true;
+  return await new Promise<boolean>((resolve) => {
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
-    const complete = () => {
+    const finish = (arrived: boolean) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      hub.off("update", complete);
-      signal.removeEventListener("abort", complete);
-      resolve();
+      hub.off("update", onUpdate);
+      signal.removeEventListener("abort", onAbort);
+      resolve(arrived);
     };
-    hub.on("update", complete);
-    if (delivered() || signal.aborted) { complete(); return; }
-    timer = setTimeout(complete, UPDATE_IDLE_MS);
-    signal.addEventListener("abort", complete, { once: true });
+    const onUpdate = () => finish(true);
+    const onAbort = () => finish(false);
+    hub.on("update", onUpdate);
+    if (delivered()) { finish(true); return; }
+    if (signal.aborted) { finish(false); return; }
+    timer = setTimeout(() => finish(false), UPDATE_IDLE_MS);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 async function settleBounded(execution: Promise<void> | undefined): Promise<boolean> {

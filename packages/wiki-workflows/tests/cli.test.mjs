@@ -273,7 +273,7 @@ test("process tab shows tool outcomes without start or complete verbs", () => {
   assert.equal(lines[3].find((span) => span.text.includes("Path is not assigned"))?.role, "error");
 });
 
-test("process tab shows model messages on their own lines", () => {
+test("process tab shows tool rows and omits assistant messages", () => {
   const inspection = {
     runId: "run-1",
     agent: {
@@ -281,7 +281,8 @@ test("process tab shows model messages on their own lines", () => {
       activity: "streaming", activeTools: [], health: "healthy",
     },
     process: [
-      { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: true },
+      { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: false },
+      { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "grep", summary: "TODO  src", completed: true },
     ],
     messages: [
       { at: "2026-08-12T00:00:01.000Z", text: "I will read auth next.\nThen write the page." },
@@ -291,11 +292,10 @@ test("process tab shows model messages on their own lines", () => {
   const rendered = renderWikiAgent(inspection, "process");
   assert.equal(rendered, [
     "Wiki run-1  ·  lead  ·  process",
-    "◆ model",
-    "I will read auth next.",
-    "Then write the page.",
-    "✓ read  src/a.ts",
+    "◆ read  src/a.ts",
+    "✓ grep  TODO  src",
   ].join("\n"));
+  assert.doesNotMatch(rendered, /I will read auth next|Then write the page|◆ model/);
 });
 
 test("retrying agents share one warning presentation across structured and plain output", () => {

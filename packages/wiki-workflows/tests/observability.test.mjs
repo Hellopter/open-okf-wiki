@@ -150,6 +150,9 @@ test("process tab projection includes incomplete tool entries", () => {
       { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "", toolCallId: "c1", toolName: "read", summary: "src/a.ts", completed: false },
       { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolCallId: "c2", toolName: "grep", summary: "TODO  src", durationMs: 400, completed: true },
     ],
+    messages: [
+      { at: "2026-08-12T00:00:01.500Z", text: "I will inspect the source first." },
+    ],
   };
   const lines = projectWikiAgentLines(inspection, "process");
   const rendered = lines.map((line) => line.map((span) => span.text).join("")).join("\n");
@@ -158,6 +161,7 @@ test("process tab projection includes incomplete tool entries", () => {
     "◆ read  src/a.ts",
     "✓ grep · 0s  TODO  src",
   ].join("\n"));
+  assert.doesNotMatch(rendered, /I will inspect the source first|◆ model/);
   assert.equal(lines[1].find((span) => span.text === "◆ ")?.role, "accent");
   assert.equal(lines[2].find((span) => span.text === "✓ ")?.role, "success");
 });

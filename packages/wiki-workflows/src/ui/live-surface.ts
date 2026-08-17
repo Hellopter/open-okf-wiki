@@ -26,6 +26,10 @@ export function wikiWidgetLines(view: WikiRunView): string[] | undefined {
   return lines.slice(0, 6);
 }
 
+export function wikiWidgetLinesFingerprint(lines: readonly string[] | undefined): string {
+  return lines?.join("\n") ?? "";
+}
+
 export function themeWikiLiveText(theme: unknown, text: string): string {
   const value = theme as { fg?(color: string, text: string): string } | undefined;
   if (typeof value?.fg !== "function") return text;

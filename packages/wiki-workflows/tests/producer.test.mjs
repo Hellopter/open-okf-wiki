@@ -73,6 +73,22 @@ function deferred() {
   return { promise, resolve };
 }
 
+function runningToolTelemetry(overrides = {}) {
+  return {
+    target: { kind: "lead" },
+    attempt: 1,
+    sampledAt: "2026-08-12T00:00:01.000Z",
+    activity: "using_tool",
+    activeTools: [{ id: "call-1", name: "read", startedAt: "2026-08-12T00:00:01.000Z", summary: "wiki/overview.md" }],
+    process: [{
+      sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info",
+      target: { kind: "lead" }, message: "read", toolCallId: "call-1", toolName: "read",
+      summary: "wiki/overview.md", completed: false,
+    }],
+    ...overrides,
+  };
+}
+
 test("production applies lead observations during run, not only after it settles", async (t) => {
   const root = await workspace(t);
   const live = deferred();
@@ -91,6 +107,132 @@ test("production applies lead observations during run, not only after it settles
   assert.equal((await handle.result()).summary, "done");
 });
 
+test("record projects a running tool into view and inspectAgent immediately", async (t) => {
+  const root = await workspace(t);
+  const live = deferred();
+  const release = deferred();
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry() });
+    live.resolve();
+    await release.promise;
+    return { kind: "pause", reason: "quota", summary: "wait" };
+  } }) });
+  const handle = await producer.start({ cwd: root });
+  await live.promise;
+  const view = await handle.view();
+  assert.equal(view.progress?.lead?.activity, "using_tool");
+  assert.equal(view.progress?.lead?.activeTools[0]?.name, "read");
+  assert.equal(view.progress?.lead?.activeTools[0]?.id, "call-1");
+  assert.equal(view.progress?.recentActivity?.some((entry) => entry.toolCallId === "call-1" && entry.completed === false), true);
+  const inspection = await handle.inspectAgent({ kind: "lead" });
+  assert.equal(inspection?.process[0]?.toolCallId, "call-1");
+  assert.equal(inspection?.process[0]?.completed, false);
+  assert.equal(inspection?.agent.activeTools[0]?.name, "read");
+  release.resolve();
+  while ((await handle.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+});
+
+test("sidecar telemetry yields on updates without bumping lastEventSequence", async (t) => {
+  const root = await workspace(t);
+  const live = deferred();
+  const afterTool = deferred();
+  const release = deferred();
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry() });
+    live.resolve();
+    await afterTool.promise;
+    await request.record({
+      kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry({
+        sampledAt: "2026-08-12T00:00:02.000Z",
+        lastHeartbeatAt: "2026-08-12T00:00:02.000Z",
+        process: undefined,
+      }),
+    });
+    await release.promise;
+    return { kind: "pause", reason: "quota", summary: "wait" };
+  } }) });
+  const handle = await producer.start({ cwd: root });
+  await live.promise;
+  const sequence = (await handle.view()).lastEventSequence;
+  const seen = [];
+  const stop = new AbortController();
+  const consume = (async () => {
+    try {
+      for await (const update of handle.updates(sequence, stop.signal)) seen.push(update);
+    } catch { /* aborted */ }
+  })();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  afterTool.resolve();
+  const deadline = Date.now() + 2_000;
+  while (!seen.some((update) => update.view.progress?.lead?.lastHeartbeatAt === "2026-08-12T00:00:02.000Z") && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const sidecar = seen.find((update) => update.view.progress?.lead?.lastHeartbeatAt === "2026-08-12T00:00:02.000Z");
+  assert.ok(sidecar);
+  assert.equal(sidecar.kind, "sidecar");
+  assert.ok(sidecar.revision > sequence);
+  assert.equal(sidecar.event.sequence, sequence);
+  assert.equal(sidecar.view.lastEventSequence, sequence);
+  assert.equal(sidecar.view.progress?.lead?.activeTools[0]?.name, "read");
+  release.resolve();
+  const pausedUpdateDeadline = Date.now() + 2_000;
+  while (!seen.some((update) => update.event.type === "paused") && Date.now() < pausedUpdateDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const pausedUpdate = seen.find((update) => update.event.type === "paused");
+  assert.ok(pausedUpdate);
+  assert.equal(pausedUpdate.kind, "durable");
+  assert.ok(pausedUpdate.revision > sidecar.revision);
+  stop.abort();
+  await consume;
+  const pausedDeadline = Date.now() + 2_000;
+  while ((await handle.view()).status !== "paused" && Date.now() < pausedDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal((await handle.view()).status, "paused");
+});
+
+test("reopened handle overlays persisted agent sidecars into its live view", async (t) => {
+  const root = await workspace(t);
+  const observed = deferred();
+  const release = deferred();
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry({ process: undefined, usage: { turns: 4 } }) });
+    observed.resolve();
+    await release.promise;
+    return { kind: "pause", reason: "quota", summary: "wait" };
+  } }) });
+  const handle = await producer.start({ cwd: root });
+  await observed.promise;
+  const sequence = (await handle.view()).lastEventSequence;
+  release.resolve();
+  while ((await handle.view()).status !== "paused") await new Promise((resolve) => setTimeout(resolve, 5));
+
+  const reopened = await createConfiguredWikiProducer().open(handle.id, root);
+  const view = await reopened.view();
+  assert.equal(view.lastEventSequence, sequence + 1);
+  assert.equal(view.progress?.lead?.activeTools[0]?.id, "call-1");
+  assert.equal(view.progress?.usage?.turns, 4);
+  assert.equal((await reopened.inspectAgent({ kind: "lead" }))?.agent.activeTools[0]?.id, "call-1");
+});
+
+test("waitForResult resolves from a hub terminal without polling disk on a 50ms interval", async (t) => {
+  const root = await workspace(t);
+  const entered = deferred();
+  const release = deferred();
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    entered.resolve();
+    await release.promise;
+    await completeCandidate(request);
+    return { kind: "complete", summary: "hub-terminal" };
+  } }) });
+  const handle = await producer.start({ cwd: root });
+  await entered.promise;
+  const pending = handle.result();
+  release.resolve();
+  assert.equal((await pending).summary, "hub-terminal");
+});
+
 test("updates replay every durable transition with its same-sequence view including terminal", async (t) => {
   const root = await workspace(t);
   const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
@@ -105,6 +247,7 @@ test("updates replay every durable transition with its same-sequence view includ
   assert.equal((await handle.view()).operation, undefined);
   const updates = [];
   for await (const update of handle.updates()) updates.push(update);
+  assert.ok(updates.every((update) => update.kind === "durable"));
   assert.equal(updates.at(-1).event.type, "completed");
   assert.equal(updates.at(-1).view.status, "succeeded");
   assert.equal(updates.at(-1).view.lastEventSequence, updates.at(-1).event.sequence);
@@ -320,6 +463,44 @@ test("two producer instances do not intern the same Run handle; open/list use th
   while ((await reopened.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(secondCalls, 1);
   assert.equal((await reopened.view()).status, "failed");
+});
+
+test("inspectAgent without options does not read the session transcript", async (t) => {
+  const root = await workspace(t);
+  const sessionFile = path.join(root, "lead-session.jsonl");
+  await writeFile(sessionFile, [
+    JSON.stringify({ type: "session", version: 3, id: "sess-1", timestamp: "2026-08-12T00:00:00.000Z", cwd: root }),
+    JSON.stringify({
+      type: "message", id: "a1", parentId: null, timestamp: "2026-08-12T00:00:01.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "I will inspect the source first." }],
+        timestamp: Date.parse("2026-08-12T00:00:01.000Z"),
+      },
+    }),
+  ].join("\n"));
+  const live = deferred();
+  const release = deferred();
+  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: {
+      target: { kind: "lead" }, attempt: 1, sampledAt: "2026-08-12T00:00:00.000Z", activity: "streaming", activeTools: [],
+      sessionFile,
+    } });
+    live.resolve();
+    await release.promise;
+    return { kind: "pause", reason: "quota", summary: "wait" };
+  } }) });
+  const handle = await producer.start({ cwd: root });
+  await live.promise;
+  const overview = await handle.inspectAgent({ kind: "lead" });
+  assert.ok(overview);
+  assert.equal("messages" in overview, false);
+  const processView = await handle.inspectAgent({ kind: "lead" }, { transcript: false });
+  assert.equal("messages" in processView, false);
+  const output = await handle.inspectAgent({ kind: "lead" }, { transcript: true });
+  assert.deepEqual(output.messages, [{ at: "2026-08-12T00:00:01.000Z", text: "I will inspect the source first." }]);
+  release.resolve();
+  while ((await handle.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
 });
 
 test("resume uses pinned paths even when workspace config becomes invalid", async (t) => {

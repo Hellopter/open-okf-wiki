@@ -59,3 +59,51 @@ test("missing session files yield an empty transcript", async () => {
   await writeFile(path.join(root, "empty.jsonl"), "");
   assert.deepEqual(await readWikiSessionTranscript(path.join(root, "empty.jsonl")), []);
 });
+
+test("session tail reads survive a multibyte byte boundary and preserve order", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-"));
+  const file = path.join(root, "large-session.jsonl");
+  const prefix = Buffer.from(`${"é".repeat(600_000)}\n`);
+  const entries = [
+    {
+      type: "message", id: "tail-1", timestamp: "2026-08-12T00:01:00.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "先に確認。" }] },
+    },
+    {
+      type: "message", id: "tail-2", timestamp: "2026-08-12T00:02:00.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "確認完了。" }] },
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  await writeFile(file, Buffer.concat([prefix, Buffer.from(`${entries}\n`)]));
+
+  assert.deepEqual(await readWikiSessionTranscript(file), [
+    { at: "2026-08-12T00:01:00.000Z", text: "先に確認。" },
+    { at: "2026-08-12T00:02:00.000Z", text: "確認完了。" },
+  ]);
+});
+
+test("oversized transcript lines are bounded and latest messages remain ordered", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-"));
+  const file = path.join(root, "many-messages.jsonl");
+  const entries = Array.from({ length: 205 }, (_, index) => JSON.stringify({
+    type: "message", id: `m-${index}`, timestamp: `2026-08-12T00:${String(index).padStart(2, "0")}:00.000Z`,
+    message: { role: "assistant", content: [{ type: "text", text: `message-${index}` }] },
+  })).join("\n");
+  await writeFile(file, `${"x".repeat(1_100_000)}\n${entries}\n`);
+
+  const messages = await readWikiSessionTranscript(file);
+  assert.equal(messages.length, 200);
+  assert.equal(messages[0].text, "message-5");
+  assert.equal(messages.at(-1).text, "message-204");
+});
+
+test("an oversized single JSONL line does not produce a partial message", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-"));
+  const file = path.join(root, "oversized-line.jsonl");
+  await writeFile(file, JSON.stringify({
+    type: "message", id: "huge", timestamp: "2026-08-12T00:00:00.000Z",
+    message: { role: "assistant", content: [{ type: "text", text: "界".repeat(600_000) }] },
+  }));
+
+  assert.deepEqual(await readWikiSessionTranscript(file), []);
+});
