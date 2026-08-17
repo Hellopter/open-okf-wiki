@@ -19,6 +19,7 @@ import {
   type WikiDelegateFollowup,
 } from "./delegate-contracts.js";
 import { ingestEvidenceHandoff } from "./evidence-ledger.js";
+import { WikiRejectedError } from "./wiki-reject.js";
 import { classifyWikiAttemptFailure, decideWikiAgentAttempt } from "./agent-attempt-policy.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
 import { WIKI_MANUAL_PAUSE } from "./runtime-types.js";
@@ -289,13 +290,19 @@ export class WikiTaskRuntime {
         }
       }
     }
-    if (this.writePaths.hasActive()) throw new Error("wiki_finish is blocked while Wiki writes are active");
+    const defects: string[] = [];
+    if (this.writePaths.hasActive()) defects.push("wiki_finish is blocked while Wiki writes are active");
+    const unfinished: string[] = [];
+    const uncollected: string[] = [];
     for (const batch of this.batches.values()) {
       for (const record of batch.records.values()) {
-        if (record.state.phase !== "terminal") throw new Error("wiki_finish requires every delegated task to reach a terminal state");
-        if (!record.state.collected) throw new Error("wiki_finish requires every terminal delegated receipt to be collected");
+        if (record.state.phase !== "terminal") unfinished.push(record.state.task.id);
+        else if (!record.state.collected) uncollected.push(record.state.task.id);
       }
     }
+    if (unfinished.length) defects.push(`wiki_finish requires terminal tasks: ${unfinished.join(", ")}`);
+    if (uncollected.length) defects.push(`wiki_finish requires collected receipts: ${uncollected.join(", ")}`);
+    if (defects.length) throw new WikiRejectedError(defects);
   }
 
   private async launchBatch(batch: AsyncBatch, signal: AbortSignal): Promise<void> {

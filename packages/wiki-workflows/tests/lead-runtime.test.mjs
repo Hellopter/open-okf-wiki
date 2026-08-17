@@ -36,7 +36,7 @@ async function workspace(t) {
   await ledger.create({ id: "run-1", cwd: root, at });
   await ledger.transition("run-1", {
     kind: "attempt_started", at, executionToken: EXECUTION_TOKEN,
-    owner: { ownerToken: OWNER_TOKEN, pid: process.pid },
+    owner: { pid: process.pid },
   });
   const skillRoot = await materializeProductionSkill(root, "run-1");
   return { root, candidateWikiRoot, skillRoot };
@@ -512,7 +512,7 @@ test("Pi research finish rejects an invalid citation and accepts a same-session 
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff().replace("repo:source/a.ts#L1-L1", "source/a.ts#L1-L1") });
-      await assert.rejects(execute(options.customTools, "wiki_research_finish", { status: "complete" }), /wiki_research_finish rejected:.*repo:/);
+      await assert.rejects(execute(options.customTools, "wiki_research_finish", { status: "complete" }), /wiki_research_finish rejected:.*invalid citations: source\/a\.ts#L1-L1/);
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
       await execute(options.customTools, "wiki_research_finish", { status: "complete" });
     })(options),
@@ -532,7 +532,7 @@ test("Pi review finish rejects a missing Evidence heading and accepts a same-ses
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
       await execute(options.customTools, "write", { path: ".okf-wiki/task/review.md", content: reviewHandoff().replace("## Evidence\n", "## Notes\n") });
-      await assert.rejects(execute(options.customTools, "wiki_review_finish", { verdict: "changes_requested" }), /wiki_review_finish rejected:.*evidence heading/);
+      await assert.rejects(execute(options.customTools, "wiki_review_finish", { verdict: "changes_requested" }), /wiki_review_finish rejected:.*missing headings: Evidence/);
       await execute(options.customTools, "write", { path: ".okf-wiki/task/review.md", content: reviewHandoff() });
       await execute(options.customTools, "wiki_review_finish", { verdict: "changes_requested" });
     })(options),
@@ -544,6 +544,108 @@ test("Pi review finish rejects a missing Evidence heading and accepts a same-ses
   assert.equal(result.review.verdict, "changes_requested");
 });
 
+test("Pi research finish reports every named defect from one rejected finish", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    skillRoot,
+    createSession: async (options) => sessionFactory(async () => {
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: [
+        "---", "followups: []", "summary: forged", "---",
+        "# Research Handoff",
+        "## Coverage", "assignment:forged",
+        "## Evidence", "source/a.ts#L1-L1",
+        "## Conflicts and alternatives", "None",
+        "## Gaps and failed reads", "None",
+        "",
+      ].join("\n") });
+      await assert.rejects(
+        execute(options.customTools, "wiki_research_finish", { status: "complete" }),
+        (error) => {
+          assert.match(error.message, /wiki_research_finish rejected:/);
+          assert.match(error.message, /unknown fields: summary/);
+          assert.match(error.message, /missing headings: Scope/);
+          assert.match(error.message, /invalid citations: source\/a\.ts#L1-L1/);
+          assert.match(error.message, /undeclared assignment IDs: forged \(declared: assignment-1\)/);
+          return true;
+        },
+      );
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
+      await execute(options.customTools, "wiki_research_finish", { status: "complete" });
+    })(options),
+  });
+  const result = await agent.run(
+    { id: "survey", role: "research", instruction: "Survey source", sourceScopeIds: ["source"], contextRefs: [], mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [] },
+    leafContext(root, candidateWikiRoot),
+  );
+  assert.equal(result.status, "complete");
+});
+
+test("Pi review finish reports every named defect from one rejected finish", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    skillRoot,
+    createSession: async (options) => sessionFactory(async () => {
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/review.md", content: [
+        "---",
+        "findings:",
+        "  - path: wiki/outside.md",
+        "    severity: major",
+        "profileCoverage: []",
+        "---",
+        "# Review Handoff",
+        "## Findings", "Needs a correction.",
+        "",
+      ].join("\n") });
+      await assert.rejects(
+        execute(options.customTools, "wiki_review_finish", { verdict: "changes_requested" }),
+        (error) => {
+          assert.match(error.message, /wiki_review_finish rejected:/);
+          assert.match(error.message, /path "wiki\/outside\.md" is outside assigned paths/);
+          assert.match(error.message, /missing headings: Evidence/);
+          assert.match(error.message, /requires at least one source-qualified citation/);
+          return true;
+        },
+      );
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/review.md", content: reviewHandoff() });
+      await execute(options.customTools, "wiki_review_finish", { verdict: "changes_requested" });
+    })(options),
+  });
+  const result = await agent.run(
+    { id: "review-source", role: "review", instruction: "Review source", sourceScopeIds: ["source"], contextRefs: [], reviewPaths: ["wiki/source/core/domain.md"], contractVersion: 2, contractId: "b1-review-source", contractDigest: "a".repeat(64), batchId: 1, reviewBasis: { version: 1, candidateRevision: 1, treeDigest: "b".repeat(64), policyDigest: "c".repeat(64), paths: ["wiki/source/core/domain.md"] } },
+    leafContext(root, candidateWikiRoot),
+  );
+  assert.equal(result.review.verdict, "changes_requested");
+});
+
+test("Pi write finish reports every named defect from one rejected finish", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    skillRoot,
+    createSession: async (options) => sessionFactory(async () => {
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "Updated page:other.md\n" });
+      await assert.rejects(
+        execute(options.customTools, "wiki_write_finish", {}),
+        (error) => {
+          assert.match(error.message, /wiki_write_finish rejected:/);
+          assert.match(error.message, /missing level-one role heading/);
+          assert.match(error.message, /missing headings: Write Handoff/);
+          return true;
+        },
+      );
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "# Write Handoff\n\nUpdated the assigned page.\n" });
+      await execute(options.customTools, "wiki_write_finish", {});
+    })(options),
+  }, { async replacePage() {} });
+  const result = await agent.run(
+    { id: "source-cluster", role: "write", instruction: "write source-cluster", sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/source/core/domain.md"] },
+    leafContext(root, candidateWikiRoot),
+  );
+  assert.match(result.markdown, /# Write Handoff/);
+});
+
 test("Pi write finish rejects a missing role heading and accepts a same-session rewrite", async (t) => {
   const { root, candidateWikiRoot, skillRoot } = await workspace(t);
   const agent = new PiWikiLeafAgent({
@@ -551,7 +653,7 @@ test("Pi write finish rejects a missing role heading and accepts a same-session 
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "Updated the assigned page.\n" });
-      await assert.rejects(execute(options.customTools, "wiki_write_finish", {}), /wiki_write_finish rejected:.*level-one role heading/);
+      await assert.rejects(execute(options.customTools, "wiki_write_finish", {}), /wiki_write_finish rejected:.*missing level-one role heading.*missing headings: Write Handoff/);
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "# Write Handoff\n\nUpdated the assigned page.\n" });
       await execute(options.customTools, "wiki_write_finish", {});
     })(options),

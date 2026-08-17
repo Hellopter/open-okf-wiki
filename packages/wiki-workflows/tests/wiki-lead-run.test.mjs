@@ -108,26 +108,12 @@ async function completeAndApprove(run) {
   return await settleReviews(run);
 }
 
-for (const point of ["afterJournal", "afterState", "afterRename", "afterVerify"]) {
-  test(`candidate transaction rolls forward after ${point}`, async (t) => {
-    let armed = true;
-    const { root, candidate, run, fence } = await fixture(t, (value) => { if (armed && value === point) throw new Error(`fault:${point}`); });
-    await assert.rejects(run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }), new RegExp(`fault:${point}`));
-    armed = false;
-    await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
-    assert.match(await readFile(path.join(candidate, "overview.md"), "utf8"), /Runtime behavior/);
-    await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", "run-1", "candidate-transaction.json")), { code: "ENOENT" });
-  });
-}
-
-test("candidate recovery rejects an externally modified target it cannot prove", async (t) => {
-  let armed = true;
-  const { root, candidate, run, fence } = await fixture(t, (value) => { if (armed && value === "afterJournal") throw new Error("fault"); });
-  await writeFile(path.join(candidate, "overview.md"), "old\n");
-  await assert.rejects(run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }), /fault/);
-  armed = false;
-  await writeFile(path.join(candidate, "overview.md"), "tampered\n");
-  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence }), WikiCandidateCorruptionError);
+test("successful page write leaves no candidate journal or lead lock", async (t) => {
+  const { root, candidate, run } = await fixture(t);
+  await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
+  assert.match(await readFile(path.join(candidate, "overview.md"), "utf8"), /Runtime behavior/);
+  await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", "run-1", "candidate-transaction.json")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", "run-1", "lead-operation.lock")), { code: "ENOENT" });
 });
 
 test("candidate rejects a symlink page and globally invalidates accepted review after any page write", async (t) => {
@@ -146,13 +132,11 @@ test("candidate rejects a symlink page and globally invalidates accepted review 
   await assert.rejects(run.finish(reviewPaths, []), /lacks passing independent review/);
 });
 
-test("independent WikiLeadRun instances serialize page commits without losing a global Candidate Revision", async (t) => {
+test("a second WikiLeadRun instance sees the latest Candidate Revision after the first writes", async (t) => {
   const { root, candidate, run: first, fence } = await fixture(t);
+  await first.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   const second = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
-  await Promise.all([
-    first.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" }),
-    second.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
-  ]);
+  await second.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
   assert.match(await readFile(path.join(candidate, "overview.md"), "utf8"), /Runtime behavior/);
   assert.match(await readFile(path.join(candidate, "source", "core", "domain.md"), "utf8"), /Runtime behavior/);
   const state = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json"), "utf8"));

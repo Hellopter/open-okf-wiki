@@ -141,12 +141,9 @@ class WikiProductionRun {
   private deferredResume?: WikiExecutionAuthority;
   private publicationCritical = false;
   private readonly hub = new EventEmitter();
-  private readonly ownerToken = randomUUID();
   private readonly agents = new Map<string, WikiAgentRecord>();
   private liveState?: WikiRunState;
   private lastEvent?: WikiRunEvent;
-  private revision = 0;
-  private lastLiveKind: WikiRunUpdate["kind"] = "durable";
 
   constructor(
     private readonly workspaceRoot: string,
@@ -197,7 +194,7 @@ class WikiProductionRun {
     return {
       id: this.runId,
       view: async () => this.currentView() ?? toView(await this.state()),
-      updates: (after = 0, signal?: AbortSignal) => this.updateStream(after, signal),
+      updates: (signal?: AbortSignal) => this.updateStream(signal),
       result: async () => await this.waitForResult(),
       control: async (action) => await this.control(action),
       inspectAgent: async (target, options) => await this.inspectAgent(target, options),
@@ -410,81 +407,39 @@ class WikiProductionRun {
 
   private async beginAttempt(kind: "attempt_started" | "resumed"): Promise<WikiExecutionAuthority> {
     const executionToken = randomUUID();
-    await this.commit({ kind, at: this.timestamp(), executionToken, owner: { ownerToken: this.ownerToken, pid: process.pid } });
+    await this.commit({ kind, at: this.timestamp(), executionToken, owner: { pid: process.pid } });
     const state = await this.state();
     if (state.executionToken !== executionToken) throw new Error("Wiki execution token was not durably committed");
     return { attempt: state.attempt, executionToken };
   }
 
   private async publishCommitted(event: WikiRunEvent): Promise<void> {
-    const update = (await this.ledger.updates(this.runId, event.sequence - 1)).find((candidate) => candidate.event.sequence === event.sequence);
-    if (!update) throw new Error(`Missing durable Wiki update ${this.runId}/${event.sequence}`);
-    this.liveState = structuredClone(update.state);
-    const target = "target" in update.event ? update.event.target : undefined;
-    if (target) {
-      const record = await this.ledger.readAgent(this.runId, target).catch(() => undefined);
-      if (record) this.agents.set(agentKey(target), record);
-    }
-    await this.seedAgents(update.state);
+    const state = await this.state();
+    this.liveState = structuredClone(state);
+    await this.seedAgents(state);
     this.overlayLiveAgents();
-    this.lastEvent = update.event;
-    this.emitLive(update.event, "durable");
+    this.lastEvent = event;
+    this.emitLive(event);
   }
 
-  private async *updateStream(after: number, signal?: AbortSignal): AsyncIterable<WikiRunUpdate> {
+  private async *updateStream(signal?: AbortSignal): AsyncIterable<WikiRunUpdate> {
     const controller = new AbortController();
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    let cursor = Math.max(0, Math.trunc(after));
-    let revision = 0;
-    let catchUp = true;
-    let durablePending = false;
-    let sidecar: WikiRunUpdate | undefined;
-    const enqueue = (update: WikiRunUpdate) => {
-      if (update.kind === "durable") {
-        // Durable transitions are replayed from the ledger, so this marker is
-        // constant-size and cannot lose an event under a slow subscriber.
-        durablePending = true;
-      } else if (update.event.sequence >= cursor && update.revision > revision
-        && (!sidecar || update.revision > sidecar.revision)) {
-        // Sidecars are replaceable: only the newest projection for this
-        // durable sequence is useful to a subscriber.
-        sidecar = update;
-      }
-    };
+    const pending: WikiRunUpdate[] = [];
+    const enqueue = (update: WikiRunUpdate) => { pending.splice(0, pending.length, update); };
     this.hub.on("update", enqueue);
     try {
+      await this.ensureLive();
+      if (this.liveState && this.lastEvent) yield { event: this.lastEvent, view: toView(this.liveState) };
+      if (this.lastEvent && isTerminalEvent(this.lastEvent)) return;
       while (!combined.aborted) {
-        if (catchUp || durablePending) {
-          durablePending = false;
-          for (const update of await this.ledger.updates(this.runId, cursor)) {
-            if (combined.aborted || update.event.sequence <= cursor) continue;
-            cursor = update.event.sequence;
-            revision = Math.max(revision + 1, update.event.sequence);
-            if (sidecar && sidecar.event.sequence < cursor) sidecar = undefined;
-            yield { kind: "durable", revision, event: update.event, view: toView(update.state) };
-            if (isTerminalEvent(update.event)) return;
-          }
-          catchUp = false;
-        }
-        if (sidecar && sidecar.event.sequence === cursor && sidecar.revision > revision) {
-          const update = sidecar;
-          sidecar = undefined;
-          revision = update.revision;
-          yield { kind: "sidecar", revision: update.revision, event: update.event, view: update.view };
+        const next = pending.shift();
+        if (next) {
+          yield next;
+          if (isTerminalEvent(next.event)) return;
           continue;
         }
-        if (sidecar && sidecar.event.sequence > cursor) {
-          catchUp = true;
-          continue;
-        }
-        const live = this.liveHubUpdate();
-        if (live && live.kind === "sidecar" && live.event.sequence === cursor && live.revision > revision) {
-          revision = live.revision;
-          yield { kind: "sidecar", revision: live.revision, event: live.event, view: live.view };
-          continue;
-        }
-        const arrived = await waitForUpdate(this.hub, combined, () => durablePending || Boolean(sidecar));
-        if (!arrived && !durablePending && !sidecar) catchUp = true;
+        await waitForUpdate(this.hub, combined, () => pending.length > 0);
       }
     } finally {
       this.hub.off("update", enqueue);
@@ -550,31 +505,18 @@ class WikiProductionRun {
     return this.liveState ? toView(this.liveState) : undefined;
   }
 
-  private emitLive(event: WikiRunEvent, kind: WikiRunUpdate["kind"] = "sidecar"): void {
+  private emitLive(event: WikiRunEvent): void {
     if (!this.liveState) return;
-    this.revision = Math.max(this.revision + 1, event.sequence);
-    this.lastLiveKind = kind;
-    this.hub.emit("update", { kind, revision: this.revision, event, view: toView(this.liveState) } satisfies WikiRunUpdate);
-  }
-
-  private liveHubUpdate(): WikiRunUpdate | undefined {
-    if (!this.liveState || !this.lastEvent) return undefined;
-    return { kind: this.lastLiveKind, revision: this.revision, event: this.lastEvent, view: toView(this.liveState) };
+    this.hub.emit("update", { event, view: toView(this.liveState) } satisfies WikiRunUpdate);
   }
 
   private async ensureLive(): Promise<void> {
     if (this.liveState) return;
-    await this.hydrate();
-  }
-
-  private async hydrate(): Promise<void> {
-    const state = await this.state();
-    await this.replaceLive(state);
+    await this.replaceLive(await this.state());
   }
 
   private async replaceLive(state: WikiRunState): Promise<void> {
     this.liveState = structuredClone(state);
-    this.revision = Math.max(this.revision, state.lastEventSequence);
     await this.seedAgents(state);
     this.overlayLiveAgents();
   }
@@ -733,7 +675,7 @@ function toView(state: WikiRunState): WikiRunView {
   return {
     id: state.id, cwd: state.cwd, ...(state.focus ? { focus: state.focus } : {}), status: state.status,
     createdAt: state.createdAt, updatedAt: state.updatedAt, ...(state.completedAt ? { completedAt: state.completedAt } : {}),
-    lastEventSequence: state.lastEventSequence, ...(state.error ? { error: state.error } : {}),
+    ...(state.error ? { error: state.error } : {}),
     ...(state.pause ? { pause: state.pause } : {}), ...(state.warnings?.length ? { warnings: state.warnings } : {}), ...(state.progress ? { progress: state.progress } : {}),
   };
 }
@@ -747,7 +689,7 @@ async function removeStagedEntries(root: string, remove: (location: string) => P
   }
   for (const entry of entries) {
     const location = path.join(root, entry.name);
-    if (entry.name === "lead-operation.lock" || entry.name === "candidate-transaction.json" || entry.name.endsWith(".candidate") || entry.name.includes(".tmp-")) {
+    if (entry.name.endsWith(".candidate") || entry.name.includes(".tmp-")) {
       await remove(location);
     } else if (entry.isDirectory()) await removeStagedEntries(location, remove);
   }
@@ -764,8 +706,8 @@ function observationTarget(observation: WikiLeadObservation): WikiAgentTarget | 
 }
 function syntheticProgress(state: WikiRunState): WikiRunEvent {
   return {
-    version: 1, runId: state.id, sequence: Math.max(1, state.lastEventSequence), at: state.updatedAt,
-    type: "progress", message: state.progress?.lastMessage ?? "",
+    version: 1, runId: state.id, at: state.updatedAt,
+    type: "stage", stage: state.progress?.stage ?? "lead", message: state.progress?.lastMessage ?? "",
   };
 }
 function currentAuthority(state: WikiRunState): WikiExecutionAuthority {

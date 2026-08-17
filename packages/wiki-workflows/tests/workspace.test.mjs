@@ -44,7 +44,7 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
   assert.equal(loaded.sources[0].path, ".");
   assert.equal(loaded.sources[0].realPath, root);
   assert.equal(loaded.wiki.sessionTimeoutSeconds, 1200);
-  assert.equal(sourceIsIgnored(loaded.sources[0], ".okf-wiki/runs/a/run-state.json", true), true);
+  assert.equal(sourceIsIgnored(loaded.sources[0], ".okf-wiki/runs/a/run.json", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "wiki/overview.md", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "src/index.ts", true), false);
   await assert.rejects(lstat(path.join(root, "workspace.yaml")), { code: "ENOENT" });

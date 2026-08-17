@@ -94,8 +94,22 @@ test("taxonomy cannot bypass discovery and must cover every pinned Source", asyn
   ]);
   await settleResearch(run, discovery.contracts);
   await collect(run, discovery.contracts);
-  await assert.rejects(run.saveTaxonomy({ revision: 1, decisions: [], conflictIds: [] }), /Invalid Wiki taxonomy checkpoint/);
+  await assert.rejects(run.saveTaxonomy({ revision: 1, decisions: [], conflictIds: [] }), /taxonomy decisions must not be empty/);
   await assert.rejects(run.saveTaxonomy({ revision: 1, decisions: [{ sourceScopeId: "source-a", domainId: "core", conceptIds: [] }], conflictIds: [] }), /cover every pinned Source: source-b/);
+  await assert.rejects(
+    run.saveTaxonomy({
+      extra: true,
+      revision: 1,
+      decisions: [{ sourceScopeId: "nope", domainId: "core", conceptIds: [] }],
+      conflictIds: [],
+    }),
+    (error) => {
+      assert.match(error.message, /unknown fields: extra/);
+      assert.match(error.message, /scopes outside pinned sources: nope \(allowed: source-a, source-b\)/);
+      assert.match(error.message, /cover every pinned Source: source-a, source-b/);
+      return true;
+    },
+  );
 });
 
 test("supplement inherits scopes and embeds the human question instead of blocker IDs", async (t) => {
@@ -130,7 +144,7 @@ test("taxonomy sourceScopeId must match the Wiki source folder", async (t) => {
   await settleResearch(run, discovery.contracts);
   await collect(run, discovery.contracts);
   await run.saveTaxonomy({ revision: 1, decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }], conflictIds: [] });
-  await assert.rejects(run.saveSpec({ pages: ["overview.md", "api/source.md", "api/core/domain.md"] }), /not owned by source source/);
+  await assert.rejects(run.saveSpec({ pages: ["overview.md", "api/source.md", "api/core/domain.md"] }), /taxonomy domains not owned by their source: source\/core/);
 });
 
 test("budget preflight leaves no partial active wave", async (t) => {

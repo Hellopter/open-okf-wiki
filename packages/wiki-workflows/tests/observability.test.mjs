@@ -18,7 +18,6 @@ function run(overrides = {}) {
   return {
     id: "run-1", cwd: "/repo", status: "running",
     createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T00:02:00.000Z",
-    lastEventSequence: 3,
     ...overrides,
   };
 }
@@ -46,18 +45,14 @@ test("status, agent, batch, and activity share one marker and tone matrix", () =
 });
 
 test("strict run events have one semantic projection without a compatibility data bag", () => {
-  const base = { version: 1, runId: "run-1", sequence: 2, at: "2026-08-15T00:00:00.000Z" };
+  const base = { version: 1, runId: "run-1", at: "2026-08-15T00:00:00.000Z" };
   assert.deepEqual(projectWikiRunEvent({
     ...base, type: "stage", stage: "validate", message: "Validating candidate",
   }), { text: "[validate] Validating candidate", tone: "accent", visible: true });
   assert.deepEqual(projectWikiRunEvent({
-    ...base, type: "delegate", phase: "updated", batch: 2, completed: 3, total: 4,
+    ...base, type: "delegate", phase: "settled", batch: 2, completed: 3, total: 4,
     taskId: "review-auth", message: "Reviewing",
   }), { text: "[batch 2 3/4] Reviewing review-auth", tone: "accent", visible: true });
-  assert.deepEqual(projectWikiRunEvent({
-    ...base, type: "telemetry", phase: "observability_health", target: { kind: "lead" },
-    status: "degraded", message: "Observer unavailable",
-  }), { text: "Observer unavailable", tone: "warning", visible: false });
   assert.deepEqual(projectWikiRunEvent({
     ...base, type: "warning", code: "cleanup_failed", detail: "temp directory remains", message: "Cleanup failed",
   }), { text: "Cleanup failed: temp directory remains", tone: "warning", visible: true });

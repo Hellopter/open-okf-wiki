@@ -4,7 +4,8 @@ import type {
   WikiDelegateRole,
   WikiResearchFollowupDraft,
 } from "./delegate-contracts.js";
-import { parsePage } from "./frontmatter.js";
+import { WikiRejectedError, allowedList, listed } from "./wiki-reject.js";
+import { splitWikiWorkFile } from "./wiki-work-files.js";
 
 export interface EvidenceLedgerCitation {
   scope: string;
@@ -48,20 +49,37 @@ export interface EvidenceHandoffValidationInput {
   followups?: readonly WikiResearchFollowupDraft[];
 }
 
+export interface EvidenceHandoffInspection {
+  defects: string[];
+  indexes?: EvidenceLedgerIndexes;
+}
+
 /** Format checks a leaf can fail in-session. Identity metadata is host-owned. */
-export function validateEvidenceHandoff(input: EvidenceHandoffValidationInput): EvidenceLedgerIndexes {
+export function inspectEvidenceHandoff(input: EvidenceHandoffValidationInput): EvidenceHandoffInspection {
   const role = input.contract.role;
-  if (Buffer.byteLength(input.markdown, "utf8") > MAX_WIKI_RESEARCH_ARTIFACT_BYTES) throw new Error(`Evidence handoff exceeds the ${MAX_WIKI_RESEARCH_ARTIFACT_BYTES}-byte limit`);
-  if (!input.markdown.trim()) throw new Error("Evidence handoff Markdown must not be empty");
-  const body = input.markdown.startsWith("---\n") ? parsePage(input.markdown).body : input.markdown;
-  const lines = body.split(/\r?\n/);
-  const sections = parseSections(lines);
-  for (const heading of requiredHeadings(role)) {
-    if (!sections.includes(heading.toLowerCase())) throw new Error(`${role} handoff requires a ${heading} heading`);
+  if (Buffer.byteLength(input.markdown, "utf8") > MAX_WIKI_RESEARCH_ARTIFACT_BYTES) {
+    return { defects: [`Evidence handoff exceeds the ${MAX_WIKI_RESEARCH_ARTIFACT_BYTES}-byte limit`] };
   }
-  const indexes = parseIndexes(lines);
-  validateRoleIndexes(role, input.contract, indexes, input.completedAssignmentIds, input.followups);
-  return indexes;
+  if (!input.markdown.trim()) return { defects: ["Evidence handoff Markdown must not be empty"] };
+  const split = splitWikiWorkFile(input.markdown);
+  if (split.hasFence && !split.terminated) return { defects: ["handoff must contain terminated YAML frontmatter"] };
+  const lines = split.body.split(/\r?\n/);
+  const defects: string[] = [];
+  const { sections, hasLevelOne } = collectSections(lines);
+  if (!hasLevelOne) defects.push("missing level-one role heading");
+  const missing = requiredHeadings(role).filter((heading) => !sections.includes(heading.slug));
+  if (missing.length) defects.push(`missing headings: ${listed(missing.map((heading) => heading.display))}`);
+  const parsed = collectIndexes(lines);
+  defects.push(...parsed.defects);
+  defects.push(...collectRoleIndexDefects(role, input.contract, parsed.indexes));
+  if (defects.length) return { defects };
+  return { defects: [], indexes: parsed.indexes };
+}
+
+export function validateEvidenceHandoff(input: EvidenceHandoffValidationInput): EvidenceLedgerIndexes {
+  const inspected = inspectEvidenceHandoff(input);
+  if (inspected.defects.length) throw new WikiRejectedError(inspected.defects);
+  return inspected.indexes!;
 }
 
 /** Validate and index one immutable handoff. Prose never crosses this seam. */
@@ -71,6 +89,8 @@ export function ingestEvidenceHandoff(input: EvidenceLedgerInput): EvidenceLedge
   if (input.artifact.kind !== expectedKind) throw new Error(`Evidence handoff kind ${input.artifact.kind} does not match ${role}`);
   if (!input.artifact.runId || !input.artifact.nodeId || input.artifact.attempt < 1) throw new Error("Evidence handoff requires host-owned identity metadata");
   const indexes = validateEvidenceHandoff(input);
+  const hostDefects = collectHostOwnedIndexDefects(role, input.contract, input.completedAssignmentIds, input.followups);
+  if (hostDefects.length) throw new WikiRejectedError(hostDefects);
   return {
     artifact: structuredClone(input.artifact),
     role,
@@ -84,27 +104,42 @@ function artifactKind(role: WikiDelegateRole): WikiArtifactKind {
   return role === "research" ? "research-handoff" : role === "write" ? "write-handoff" : "review-handoff";
 }
 
-function requiredHeadings(role: WikiDelegateRole): string[] {
-  if (role === "research") return ["research handoff", "scope", "coverage", "evidence", "conflicts and alternatives", "gaps and failed reads"];
-  if (role === "write") return ["write handoff"];
-  return ["review handoff", "findings", "evidence"];
+function requiredHeadings(role: WikiDelegateRole): Array<{ slug: string; display: string }> {
+  if (role === "research") {
+    return [
+      { slug: "research handoff", display: "Research Handoff" },
+      { slug: "scope", display: "Scope" },
+      { slug: "coverage", display: "Coverage" },
+      { slug: "evidence", display: "Evidence" },
+      { slug: "conflicts and alternatives", display: "Conflicts and alternatives" },
+      { slug: "gaps and failed reads", display: "Gaps and failed reads" },
+    ];
+  }
+  if (role === "write") return [{ slug: "write handoff", display: "Write Handoff" }];
+  return [
+    { slug: "review handoff", display: "Review Handoff" },
+    { slug: "findings", display: "Findings" },
+    { slug: "evidence", display: "Evidence" },
+  ];
 }
 
-function parseSections(lines: string[]): string[] {
+function collectSections(lines: string[]): { sections: string[]; hasLevelOne: boolean } {
   const sections: string[] = [];
   for (const line of lines) {
     const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
     if (match) sections.push(match[2].trim().toLowerCase());
   }
-  if (!sections.length || !/^#\s+/.test(lines.find((line) => line.trim()) ?? "")) throw new Error("Evidence handoff requires a level-one role heading");
-  return sections;
+  const first = lines.find((line) => line.trim()) ?? "";
+  return { sections, hasLevelOne: /^#\s+/.test(first) };
 }
 
-function parseIndexes(lines: string[]): EvidenceLedgerIndexes {
+function collectIndexes(lines: string[]): { indexes: EvidenceLedgerIndexes; defects: string[] } {
   const assignments: string[] = [];
   const pages: string[] = [];
   const findings: EvidenceLedgerFinding[] = [];
   const citations: EvidenceLedgerCitation[] = [];
+  const invalidCitations: string[] = [];
+  const invalidRanges: string[] = [];
   for (const line of lines) {
     for (const match of line.matchAll(/\bassignment:([A-Za-z0-9][A-Za-z0-9._-]{0,127})\b/g)) assignments.push(match[1]);
     for (const match of line.matchAll(/\bpage:([^\s,;)]+)\b/g)) pages.push(match[1]);
@@ -112,51 +147,100 @@ function parseIndexes(lines: string[]): EvidenceLedgerIndexes {
       const path = /\bpath:([^\s,;)]+)/.exec(line)?.[1];
       findings.push({ id: match[1], ...(path ? { path } : {}) });
     }
-    for (const match of line.matchAll(/repo:([^/\s]+)\/([^#\s]+)#L(\d+)-L(\d+)/g)) {
+    const citationTokens = [...line.matchAll(/\brepo:[^\s,)]+/g)].map((match) => match[0]);
+    for (const token of citationTokens) {
+      const match = /^repo:([^/\s]+)\/([^#\s]+)#L(\d+)-L(\d+)$/.exec(token);
+      if (!match) {
+        invalidCitations.push(token);
+        continue;
+      }
       const startLine = Number(match[3]);
       const endLine = Number(match[4]);
-      if (endLine < startLine) throw new Error("Invalid citation line range");
+      if (endLine < startLine) {
+        invalidRanges.push(token);
+        continue;
+      }
       citations.push({ scope: match[1], path: match[2], startLine, endLine });
     }
-    const citationTokens = [...line.matchAll(/\brepo:[^\s,)]+/g)].map((match) => match[0]);
-    if (citationTokens.some((token) => !/^repo:[^/\s]+\/[^#\s]+#L\d+-L\d+$/.test(token))) throw new Error("Evidence handoff citation must use repo:<scope>/<path>#Lx-Ly");
-    if (/[A-Za-z0-9._-]+\/[^#\s]+#L\d+-L\d+/.test(line.replace(/\brepo:[^\s,)]+/g, ""))) throw new Error("Evidence handoff citation must use repo:<scope>/<path>#Lx-Ly");
+    const remainder = line.replace(/\brepo:[^\s,)]+/g, "");
+    for (const match of remainder.matchAll(/[A-Za-z0-9._-]+\/[^#\s]+#L\d+-L\d+/g)) invalidCitations.push(match[0]);
   }
+  const defects: string[] = [];
+  if (invalidCitations.length) defects.push(`invalid citations: ${listed(invalidCitations)}`);
+  if (invalidRanges.length) defects.push(`invalid citation line ranges: ${listed(invalidRanges)}`);
   return {
-    assignmentIds: unique(assignments),
-    pageIds: unique(pages),
-    findings: uniqueFindings(findings),
-    citations,
+    indexes: {
+      assignmentIds: unique(assignments),
+      pageIds: unique(pages),
+      findings: uniqueFindings(findings),
+      citations,
+    },
+    defects,
   };
 }
 
-function validateRoleIndexes(
+function collectRoleIndexDefects(
   role: WikiDelegateRole,
   contract: WikiDelegateContract,
   indexes: EvidenceLedgerIndexes,
-  completed?: readonly string[],
-  followups?: readonly WikiResearchFollowupDraft[],
-): void {
-  if (role !== "write" && indexes.citations.length === 0) throw new Error("Evidence handoff requires at least one source-qualified citation");
-  const sourceScopes = new Set(contract.sourceScopeIds);
-  if (indexes.citations.some((citation) => !sourceScopes.has(citation.scope))) throw new Error("Evidence handoff citation is outside the pinned source scope");
+): string[] {
+  const defects: string[] = [];
+  if (role !== "write" && indexes.citations.length === 0) {
+    defects.push(`${role} handoff requires at least one source-qualified citation`);
+  }
+  const sourceScopes = contract.sourceScopeIds;
+  const outside = unique(indexes.citations.map((citation) => citation.scope).filter((scope) => !sourceScopes.includes(scope)));
+  if (outside.length) {
+    defects.push(`citation scopes outside pinned scopes: ${listed(outside)} (allowed: ${allowedList(sourceScopes)})`);
+  }
   if (role === "write") {
-    const assigned = new Set(contract.writePaths);
-    if (indexes.pageIds.some((page) => !assigned.has(page) && !assigned.has(`wiki/${page}`))) throw new Error("Write handoff contains an unassigned page ID");
-    return;
+    const assigned = contract.writePaths ?? [];
+    const assignedSet = new Set(assigned);
+    const unassigned = indexes.pageIds.filter((page) => !assignedSet.has(page) && !assignedSet.has(`wiki/${page}`));
+    if (unassigned.length) {
+      defects.push(`unassigned page IDs: ${listed(unassigned)} (assigned: ${allowedList(assigned)})`);
+    }
+    return defects;
   }
   if (role === "review") {
-    const assigned = new Set(contract.reviewPaths);
-    if (indexes.findings.some((finding) => finding.path !== undefined && !assigned.has(finding.path))) throw new Error("Review handoff finding is outside the assigned review paths");
-    return;
+    const assigned = contract.reviewPaths ?? [];
+    const assignedSet = new Set(assigned);
+    const outsidePaths = unique(
+      indexes.findings.flatMap((finding) => finding.path !== undefined && !assignedSet.has(finding.path) ? [finding.path] : []),
+    );
+    if (outsidePaths.length) {
+      defects.push(`review finding paths outside assigned paths: ${listed(outsidePaths)} (assigned: ${allowedList(assigned)})`);
+    }
+    return defects;
   }
   if (contract.role !== "research") throw new Error("Research handoff requires a research contract");
-  const assignments = new Set(contract.assignmentIds);
-  if (indexes.assignmentIds.some((id) => !assignments.has(id))) throw new Error("Research handoff contains an undeclared assignment ID");
-  if (completed?.some((id) => !assignments.has(id))) throw new Error("Research completion contains an undeclared assignment ID");
-  for (const followup of followups ?? []) {
-    if (followup.sourceScopeIds.some((scope) => !sourceScopes.has(scope))) throw new Error("Research followup source scope is outside the pinned source scope");
+  const declared = contract.assignmentIds;
+  const undeclared = indexes.assignmentIds.filter((id) => !declared.includes(id));
+  if (undeclared.length) {
+    defects.push(`undeclared assignment IDs: ${listed(undeclared)} (declared: ${allowedList(declared)})`);
   }
+  return defects;
+}
+
+function collectHostOwnedIndexDefects(
+  role: WikiDelegateRole,
+  contract: WikiDelegateContract,
+  completed?: readonly string[],
+  followups?: readonly WikiResearchFollowupDraft[],
+): string[] {
+  if (role !== "research" || contract.role !== "research") return [];
+  const defects: string[] = [];
+  const declared = contract.assignmentIds;
+  const undeclared = (completed ?? []).filter((id) => !declared.includes(id));
+  if (undeclared.length) {
+    defects.push(`undeclared assignment IDs: ${listed(undeclared)} (declared: ${allowedList(declared)})`);
+  }
+  const sourceScopes = contract.sourceScopeIds;
+  const outside = unique((followups ?? []).flatMap((followup) => followup.sourceScopeIds.filter((scope) => !sourceScopes.includes(scope))));
+  if (outside.length) {
+    defects.push(`followup scopes outside pinned scopes: ${listed(outside)} (allowed: ${allowedList(sourceScopes)})`);
+  }
+  return defects;
 }
 
 function unique(values: readonly string[]): string[] { return [...new Set(values)]; }

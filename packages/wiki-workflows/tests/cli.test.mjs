@@ -59,7 +59,6 @@ test("renders plain run, list, and progress output", () => {
     focus: "auth",
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
-    lastEventSequence: 1,
   }), "Wiki run-1 | running | auth");
   assert.equal(renderWikiRuns([]), "Wiki runs: none.");
   assert.match(renderWikiRuns([{ id: "run-1", status: "paused", updatedAt: "2026-08-12" }]), /run-1 \| paused/);
@@ -68,7 +67,7 @@ test("renders plain run, list, and progress output", () => {
 test("status snapshots state their freshness", () => {
   const rendered = renderWikiSnapshot({
     id: "run-1", cwd: "/repo", status: "running",
-    createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:02.000Z", lastEventSequence: 2,
+    createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:02.000Z",
   });
   const expected = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium", timeStyle: "medium",
@@ -83,7 +82,7 @@ test("renders absolute dates in the system timezone and preserves invalid values
   }).format(Date.parse(instant));
   const paused = renderWikiRun({
     id: "run-1", cwd: "/repo", status: "paused",
-    createdAt: instant, updatedAt: instant, lastEventSequence: 2,
+    createdAt: instant, updatedAt: instant,
     progress: { stage: "lead" },
     pause: { reason: "quota", retryAt: instant },
   });
@@ -137,7 +136,6 @@ test("renders a progress card with stage, batch, and task icons", () => {
     focus: "auth",
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:04:12.000Z",
-    lastEventSequence: 4,
     progress: {
       stage: "lead",
       lastMessage: "Wrote auth/domain.md",

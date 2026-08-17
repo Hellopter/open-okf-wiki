@@ -217,6 +217,29 @@ test("Wiki summaries ignore invalid control values and suppress Wiki error resul
   });
 });
 
+test("Wiki tool errors surface the host-labeled one-line reject reason", async () => {
+  await observe(async ({ session, wait }) => {
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "wiki-rejected",
+      toolName: "wiki_research_finish",
+      args: { status: "complete" },
+    });
+    await wait((entries) => entries.some((entry) => entry.toolCallId === "wiki-rejected" && !entry.completed));
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "wiki-rejected",
+      toolName: "wiki_research_finish",
+      isError: true,
+      result: { content: [{ type: "text", text: "wiki_research_finish rejected: missing headings: Scope" }] },
+    });
+    const { process } = await wait((entries) => entries.some((entry) => entry.toolCallId === "wiki-rejected" && entry.completed));
+    const entry = process.find((item) => item.toolCallId === "wiki-rejected");
+    assert.equal(entry.severity, "error");
+    assert.equal(entry.message, "missing headings: Scope");
+  });
+});
+
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdtemp, readdir, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import os from "os";
 import path from "node:path";
 import test from "node:test";
 import { createWikiRunLedger, UnsupportedWikiRunVersionError } from "../dist/run-ledger.js";
@@ -34,7 +34,7 @@ function plan(workspace) {
   };
 }
 
-const owner = { ownerToken: "owner-token-0000000000000001", pid: process.pid };
+const owner = { pid: process.pid };
 const token = "execution-token-0000000000001";
 const authority = { attempt: 1, executionToken: token };
 const begin = async (ledger, at = "2026-01-01T00:00:01.000Z") =>
@@ -43,227 +43,6 @@ const begin = async (ledger, at = "2026-01-01T00:00:01.000Z") =>
 async function started(ledger, workspace) {
   await ledger.create({ id: "run-1", cwd: workspace, at: "2026-01-01T00:00:00.000Z" });
   await ledger.transition("run-1", { kind: "started", at: "2026-01-01T00:00:00.000Z" });
-}
-
-test("semantic transitions persist current-format snapshots and same-sequence update projections", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  await ledger.transition("run-1", { kind: "plan_pinned", at: "2026-01-01T00:00:02.000Z", plan: plan(workspace) });
-  await ledger.transition("run-1", { kind: "stage_entered", at: "2026-01-01T00:00:03.000Z", stage: "lead" });
-  await ledger.transition("run-1", { kind: "lead_completed", at: "2026-01-01T00:00:04.000Z", summary: "done" });
-  await ledger.transition("run-1", { kind: "published", at: "2026-01-01T00:00:05.000Z", pages: ["overview.md"], sourceFingerprint: "a".repeat(64), finalTreeDigest: "d".repeat(64) });
-
-  const snapshot = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8"));
-  assert.equal(snapshot.version, 1);
-  assert.equal(snapshot.operation, undefined);
-  assert.equal(snapshot.productionPlan, undefined);
-  assert.equal(snapshot.progress?.recentActivity, undefined);
-  const pinned = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "production-plan.json"), "utf8"));
-  assert.equal(pinned.sourcePlan.fingerprint, "a".repeat(64));
-  const eventFile = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "events", "0000000000000006.json"), "utf8"));
-  assert.deepEqual(Object.keys(eventFile).sort(), ["event", "version"]);
-  const updates = await ledger.updates("run-1");
-  assert.deepEqual(updates.map(({ event }) => event.sequence), [1, 2, 3, 4, 5, 6]);
-  assert.equal(updates.at(-1).event.type, "completed");
-  assert.equal(updates.at(-1).state.status, "succeeded");
-  assert.equal(updates.at(-1).state.lastEventSequence, 6);
-  assert.equal((await ledger.read("run-1")).productionPlan.sourcePlan.fingerprint, "a".repeat(64));
-});
-
-test("transition table rejects illegal order and terminal snapshots are immutable", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await assert.rejects(ledger.transition("run-1", { kind: "stage_entered", at: "2026-01-01T00:00:01.000Z", stage: "lead" }), /pinned/);
-  await assert.rejects(ledger.transition("run-1", { kind: "resumed", at: "2026-01-01T00:00:01.000Z", executionToken: token, owner }), /paused/);
-  await ledger.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:02.000Z" });
-  await assert.rejects(ledger.transition("run-1", { kind: "attempt_started", at: "2026-01-01T00:00:03.000Z", executionToken: token, owner }), /immutable/);
-});
-
-test("pending transaction recovery is idempotent and restores its exact update", async (t) => {
-  const workspace = await root(t);
-  const stable = createWikiRunLedger(workspace);
-  await started(stable, workspace);
-  await begin(stable);
-  let crashed = false;
-  const crashing = createWikiRunLedger(workspace, { fault(point) {
-    if (!crashed && point === "afterState") { crashed = true; throw new Error("crash"); }
-  } });
-  await assert.rejects(crashing.transition("run-1", { kind: "plan_pinned", at: "2026-01-01T00:00:02.000Z", plan: plan(workspace) }), /crash/);
-
-  const recovered = createWikiRunLedger(workspace);
-  const state = await recovered.read("run-1");
-  assert.equal(state.productionPlan.sourcePlan.fingerprint, "a".repeat(64));
-  const updates = await recovered.updates("run-1");
-  assert.equal(updates.filter(({ event }) => event.sequence === 3).length, 1);
-  await assert.rejects(readFile(path.join(workspace, "runs", "run-1", "pending-transaction.json"), "utf8"), { code: "ENOENT" });
-});
-
-test("terminal pending recovery commits snapshot, event and active-marker release together", async (t) => {
-  const workspace = await root(t);
-  const stable = createWikiRunLedger(workspace);
-  await started(stable, workspace);
-  let crashed = false;
-  const crashing = createWikiRunLedger(workspace, { fault(point) {
-    if (!crashed && point === "afterEvent") { crashed = true; throw new Error("terminal crash"); }
-  } });
-  await assert.rejects(crashing.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:01.000Z" }), /terminal crash/);
-  const recovered = createWikiRunLedger(workspace);
-  assert.equal((await recovered.read("run-1")).status, "cancelled");
-  assert.equal((await recovered.updates("run-1")).at(-1).event.type, "cancelled");
-  await recovered.create({ id: "run-2", cwd: workspace, at: "2026-01-01T00:00:02.000Z" });
-});
-
-test("unsupported snapshot and legacy active marker fail closed without changing disk", async (t) => {
-  const workspace = await root(t);
-  const runDir = path.join(workspace, "runs", "old-run");
-  await mkdir(runDir, { recursive: true });
-  const legacyState = `${JSON.stringify({ version: 2, id: "old-run" })}\n`;
-  await writeFile(path.join(runDir, "run-state.json"), legacyState);
-  const ledger = createWikiRunLedger(workspace);
-  await assert.rejects(ledger.read("old-run"), UnsupportedWikiRunVersionError);
-  assert.equal(await readFile(path.join(runDir, "run-state.json"), "utf8"), legacyState);
-
-  const marker = path.join(workspace, "active-run");
-  await writeFile(marker, "old-run\n");
-  await assert.rejects(ledger.create({ id: "new-run", cwd: workspace, at: "2026-01-01T00:00:00.000Z" }), UnsupportedWikiRunVersionError);
-  assert.equal(await readFile(marker, "utf8"), "old-run\n");
-});
-
-test("updates after a sequence cursor skip older event files without parsing them", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  const first = path.join(workspace, "runs", "run-1", "events", "0000000000000001.json");
-  const invalid = { ...JSON.parse(await readFile(first, "utf8")), extra: true };
-  await writeFile(first, `${JSON.stringify(invalid)}\n`);
-  await assert.rejects(ledger.updates("run-1"), /unknown fields/);
-  const updates = await ledger.updates("run-1", 1);
-  assert.deepEqual(updates.map(({ event }) => event.sequence), [2]);
-  assert.equal(updates[0].event.type, "stage");
-  assert.equal(updates[0].event.stage, "prepare");
-});
-
-test("durable event parser rejects unknown payload fields instead of exposing a data bag", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  const eventsFile = path.join(workspace, "runs", "run-1", "events", "0000000000000001.json");
-  const first = JSON.parse((await readFile(eventsFile, "utf8")).trim());
-  const invalid = { ...first, event: { ...first.event, data: { stage: "lead" } } };
-  await writeFile(eventsFile, `${JSON.stringify(invalid)}\n`);
-  await assert.rejects(ledger.updates("run-1"), /unknown fields/);
-});
-
-test("an atomic event temp left by a crash is ignored and pending WAL still rolls forward", async (t) => {
-  const workspace = await root(t);
-  const stable = createWikiRunLedger(workspace);
-  await started(stable, workspace);
-  await mkdir(path.join(workspace, "runs", "run-1", "events"), { recursive: true });
-  await writeFile(path.join(workspace, "runs", "run-1", "events", ".0000000000000002.json.torn"), '{"version":2');
-  let crashed = false;
-  const subject = createWikiRunLedger(workspace, { fault(point) {
-    if (!crashed && point === "afterState") { crashed = true; throw new Error("crash after state"); }
-  } });
-  await assert.rejects(begin(subject), /crash after state/);
-  const recovered = createWikiRunLedger(workspace);
-  assert.deepEqual((await recovered.updates("run-1")).map(({ event }) => event.sequence), [1, 2]);
-  assert.equal((await recovered.read("run-1")).executionToken, token);
-});
-
-test("transaction and update envelopes reject extra fields and cross-field mismatches", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  const runRoot = path.join(workspace, "runs", "run-1");
-  const first = JSON.parse(await readFile(path.join(runRoot, "events", "0000000000000001.json"), "utf8"));
-  await writeFile(path.join(runRoot, "events", "0000000000000001.json"), `${JSON.stringify({ ...first, extra: true })}\n`);
-  await assert.rejects(ledger.updates("run-1"), /unknown fields/);
-
-  await rm(path.join(runRoot, "events"), { recursive: true, force: true });
-  const snapshot = JSON.parse(await readFile(path.join(runRoot, "run-state.json"), "utf8"));
-  const invalid = { version: 2, state: { ...snapshot, lastEventSequence: 2 }, event: first.event, active: "retain", extra: true };
-  await writeFile(path.join(runRoot, "pending-transaction.json"), `${JSON.stringify(invalid)}\n`);
-  await assert.rejects(ledger.read("run-1"), /unknown fields|sequence mismatch/);
-});
-
-test("production plan and receipt codecs reject extra or incomplete durable fields", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  await assert.rejects(ledger.transition("run-1", { kind: "plan_pinned", at: "2026-01-01T00:00:02.000Z", plan: { ...plan(workspace), extra: true } }, authority), /unknown fields/);
-
-  const task = createWikiDelegateContract(1, { id: "write-invalid", role: "write", instruction: "write", sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/overview.md"] });
-  await assert.rejects(ledger.recordObservation("run-1", { kind: "task_settled", batch: 1, taskId: task.id,
-    state: { task, phase: "terminal", attempt: 1, collected: false, receipt: {
-      id: task.id, role: "write", status: "complete", summary: "invalid", outputs: [], coverage: [], gaps: [], attempts: 1, extra: true,
-    } } }, authority), /unknown fields|contract/i);
-});
-
-test("running and paused runs retain the workspace marker until a terminal transition", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  await ledger.transition("run-1", { kind: "manual_paused", at: "2026-01-01T00:00:02.000Z" }, authority);
-  await assert.rejects(ledger.create({ id: "run-2", cwd: workspace, at: "2026-01-01T00:00:02.000Z" }), /already active/);
-  await ledger.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:03.000Z" });
-  await ledger.create({ id: "run-2", cwd: workspace, at: "2026-01-01T00:00:04.000Z" });
-});
-
-test("a completed run id cannot be reused and overwrite durable history", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await ledger.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:01.000Z" });
-  const before = await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8");
-  await assert.rejects(ledger.create({ id: "run-1", cwd: workspace, at: "2026-01-01T00:00:02.000Z" }), /already exists/);
-  assert.equal(await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8"), before);
-});
-
-test("task_settled projects the already-durable receipt, session and execution into agent inspection", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  const task = createWikiDelegateContract(1, { id: "write-1", role: "write", instruction: "write", sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/overview.md"] });
-  await begin(ledger);
-  const receipt = { id: "write-1", role: "write", status: "complete", summary: "written", outputs: [], coverage: ["wiki/overview.md"], gaps: [], attempts: 1,
-    contractId: task.contractId, contractDigest: task.contractDigest };
-  await ledger.recordObservation("run-1", {
-    kind: "task_settled", batch: 1, taskId: "write-1",
-    state: { task, phase: "terminal", attempt: 1, collected: false, sessionFile: "/sessions/write-1.jsonl", receipt },
-  }, authority);
-  const record = await ledger.readAgent("run-1", { kind: "task", batch: 1, taskId: "write-1" });
-  assert.deepEqual(record.receipt, receipt);
-  assert.equal(record.sessionFile, "/sessions/write-1.jsonl");
-  assert.equal(record.execution.phase, "terminal");
-  assert.equal(record.agent.status, "complete");
-});
-
-async function eventFileNames(workspace) {
-  const directory = path.join(workspace, "runs", "run-1", "events");
-  return (await readdir(directory)).filter((name) => /^\d{16}\.json$/.test(name)).sort();
-}
-
-async function plantEventFiles(workspace, count) {
-  const eventsDir = path.join(workspace, "runs", "run-1", "events");
-  const lastName = (await eventFileNames(workspace)).at(-1);
-  const last = JSON.parse(await readFile(path.join(eventsDir, lastName), "utf8"));
-  let sequence = last.event.sequence;
-  let state = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8"));
-  for (let index = 0; index < count; index += 1) {
-    sequence += 1;
-    const at = `2026-01-01T01:${String(Math.floor(sequence / 60)).padStart(2, "0")}:${String(sequence % 60).padStart(2, "0")}.000Z`;
-    state = { ...state, lastEventSequence: sequence, updatedAt: at };
-    const event = { version: 1, runId: "run-1", sequence, at, type: "progress", message: `planted ${sequence}` };
-    await writeFile(path.join(eventsDir, `${String(sequence).padStart(16, "0")}.json`), `${JSON.stringify({ version: 1, event })}\n`);
-  }
-  await writeFile(path.join(workspace, "runs", "run-1", "run-state.json"), `${JSON.stringify(state, null, 2)}\n`);
-  return sequence;
 }
 
 function leadTelemetry(overrides = {}) {
@@ -286,264 +65,132 @@ function toolProcess({ toolCallId = "call-1", completed = false, summary = "wiki
   };
 }
 
-test("coalesce telemetry after planted events does not add an event file or bump lastEventSequence", async (t) => {
+test("lifecycle writes run.json and plan.json without an event log", async (t) => {
   const workspace = await root(t);
-  const writer = createWikiRunLedger(workspace);
-  await started(writer, workspace);
-  await begin(writer);
-  const planted = await plantEventFiles(workspace, 18);
-  assert.equal(planted, 20);
-  assert.equal((await eventFileNames(workspace)).length, 20);
   const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await ledger.transition("run-1", { kind: "plan_pinned", at: "2026-01-01T00:00:02.000Z", plan: plan(workspace) });
+  await ledger.transition("run-1", { kind: "stage_entered", at: "2026-01-01T00:00:03.000Z", stage: "lead" });
+  await ledger.transition("run-1", { kind: "lead_completed", at: "2026-01-01T00:00:04.000Z", summary: "done" });
+  await ledger.transition("run-1", { kind: "published", at: "2026-01-01T00:00:05.000Z", pages: ["overview.md"], sourceFingerprint: "a".repeat(64), finalTreeDigest: "d".repeat(64) });
 
-  const event = await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" },
-    telemetry: leadTelemetry({ usage: { turns: 1, toolCalls: 0 } }),
-  }, authority);
-  assert.equal(event, undefined);
-  assert.equal((await eventFileNames(workspace)).length, 20);
-  assert.equal((await ledger.read("run-1")).lastEventSequence, 20);
-  await assert.rejects(readFile(path.join(workspace, "runs", "run-1", "pending-transaction.json"), "utf8"), { code: "ENOENT" });
-  const record = await ledger.readAgent("run-1", { kind: "lead" });
-  assert.equal(record.agent.lastHeartbeatAt, "2026-01-01T02:00:00.000Z");
-  assert.equal(record.agent.activity, "waiting_model");
+  const snapshot = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run.json"), "utf8"));
+  assert.equal(snapshot.version, 1);
+  assert.equal(snapshot.status, "succeeded");
+  assert.equal(snapshot.productionPlan, undefined);
+  const pinned = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "plan.json"), "utf8"));
+  assert.equal(pinned.sourcePlan.fingerprint, "a".repeat(64));
+  await assert.rejects(readdir(path.join(workspace, "runs", "run-1", "events")), { code: "ENOENT" });
+  assert.equal((await ledger.read("run-1")).productionPlan.sourcePlan.fingerprint, "a".repeat(64));
 });
 
-test("must-flush tool-start telemetry after planted events adds exactly one event file", async (t) => {
+test("transition table rejects illegal order and terminal snapshots are immutable", async (t) => {
   const workspace = await root(t);
-  const writer = createWikiRunLedger(workspace);
-  await started(writer, workspace);
-  await begin(writer);
-  await plantEventFiles(workspace, 18);
-  assert.equal((await eventFileNames(workspace)).length, 20);
   const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await assert.rejects(ledger.transition("run-1", { kind: "stage_entered", at: "2026-01-01T00:00:01.000Z", stage: "lead" }), /pinned/);
+  await assert.rejects(ledger.transition("run-1", { kind: "resumed", at: "2026-01-01T00:00:01.000Z", executionToken: token, owner }), /paused/);
+  await ledger.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:02.000Z" });
+  await assert.rejects(ledger.transition("run-1", { kind: "attempt_started", at: "2026-01-01T00:00:03.000Z", executionToken: token, owner }), /immutable/);
+});
 
+test("legacy process files fail closed", async (t) => {
+  const workspace = await root(t);
+  const runDir = path.join(workspace, "runs", "old-run");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "run-state.json"), `${JSON.stringify({ version: 1, id: "old-run" })}\n`);
+  const ledger = createWikiRunLedger(workspace);
+  await assert.rejects(ledger.read("old-run"), UnsupportedWikiRunVersionError);
+});
+
+test("running and paused runs retain the workspace marker until a terminal transition", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  await ledger.transition("run-1", { kind: "manual_paused", at: "2026-01-01T00:00:02.000Z" }, authority);
+  await assert.rejects(ledger.create({ id: "run-2", cwd: workspace, at: "2026-01-01T00:00:02.000Z" }), /already active/);
+  await ledger.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:03.000Z" });
+  await ledger.create({ id: "run-2", cwd: workspace, at: "2026-01-01T00:00:04.000Z" });
+});
+
+test("a completed run id cannot be reused", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await ledger.transition("run-1", { kind: "cancelled", at: "2026-01-01T00:00:01.000Z" });
+  const before = await readFile(path.join(workspace, "runs", "run-1", "run.json"), "utf8");
+  await assert.rejects(ledger.create({ id: "run-1", cwd: workspace, at: "2026-01-01T00:00:02.000Z" }), /already exists/);
+  assert.equal(await readFile(path.join(workspace, "runs", "run-1", "run.json"), "utf8"), before);
+});
+
+test("task_settled projects the receipt into the agent file", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  const task = createWikiDelegateContract(1, { id: "write-1", role: "write", instruction: "write", sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/overview.md"] });
+  await begin(ledger);
+  const receipt = { id: "write-1", role: "write", status: "complete", summary: "written", outputs: [], coverage: ["wiki/overview.md"], gaps: [], attempts: 1,
+    contractId: task.contractId, contractDigest: task.contractDigest };
+  const event = await ledger.recordObservation("run-1", {
+    kind: "task_settled", batch: 1, taskId: "write-1",
+    state: { task, phase: "terminal", attempt: 1, collected: false, sessionFile: "/sessions/write-1.jsonl", receipt },
+  }, authority);
+  assert.equal(event.type, "delegate");
+  assert.equal(event.phase, "settled");
+  const record = await ledger.readAgent("run-1", { kind: "task", batch: 1, taskId: "write-1" });
+  assert.deepEqual(record.receipt, receipt);
+  assert.equal(record.sessionFile, "/sessions/write-1.jsonl");
+  assert.equal(record.agent.status, "complete");
+});
+
+test("telemetry writes the agent file and does not create events", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
   const event = await ledger.recordObservation("run-1", {
     kind: "telemetry", target: { kind: "lead" },
     telemetry: leadTelemetry({
       activity: "using_tool",
       activeTools: [{ id: "call-1", name: "read", startedAt: "2026-01-01T02:00:00.000Z", summary: "wiki/overview.md" }],
       process: [toolProcess()],
-    }),
-  }, authority);
-  assert.equal(event.sequence, 21);
-  assert.equal(event.type, "telemetry");
-  assert.equal((await eventFileNames(workspace)).length, 21);
-  assert.equal((await ledger.read("run-1")).lastEventSequence, 21);
-  const updates = await ledger.updates("run-1", 20);
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].event.sequence, 21);
-  assert.equal((await ledger.readAgent("run-1", { kind: "lead" })).process[0].toolCallId, "call-1");
-});
-
-test("sidecar usage is folded into the next durable snapshot", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" },
-    telemetry: leadTelemetry({ usage: { turns: 3, toolCalls: 2 } }),
-  }, authority);
-  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 3, toolCalls: 2 });
-
-  await ledger.recordObservation("run-1", { kind: "progress", message: "still working" }, authority);
-  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 3, toolCalls: 2 });
-
-  const event = await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" },
-    telemetry: leadTelemetry({
-      sampledAt: "2026-01-01T02:00:01.000Z",
-      activity: "using_tool",
-      activeTools: [{ id: "call-1", name: "read", startedAt: "2026-01-01T02:00:01.000Z", summary: "wiki/overview.md" }],
-      process: [toolProcess({ sequence: 2 })],
-    }),
-  }, authority);
-  assert.equal(event.type, "telemetry");
-  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 3, toolCalls: 2 });
-});
-
-test("multiple agent sidecars aggregate without replaying the agent directory", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  await ledger.recordObservation("run-1", {
-    kind: "batch", batch: 1, phase: "queued", tasks: [
-      { id: "write-a", role: "write", status: "queued", attempt: 1, updatedAt: "2026-01-01T02:00:00.000Z" },
-      { id: "write-b", role: "write", status: "queued", attempt: 1, updatedAt: "2026-01-01T02:00:00.000Z" },
-    ],
-  }, authority);
-  for (const [taskId, turns] of [["write-a", 2], ["write-b", 5]]) {
-    await ledger.recordObservation("run-1", {
-      kind: "telemetry", target: { kind: "task", batch: 1, taskId },
-      telemetry: {
-        target: { kind: "task", batch: 1, taskId }, attempt: 1,
-        sampledAt: "2026-01-01T02:00:01.000Z", activity: "waiting_model", activeTools: [],
-        usage: { turns },
-      },
-    }, authority);
-  }
-  assert.deepEqual((await ledger.read("run-1")).progress.usage, { turns: 7 });
-  assert.equal((await ledger.readAgent("run-1", { kind: "task", batch: 1, taskId: "write-a" })).agent.usage.turns, 2);
-  assert.equal((await ledger.readAgent("run-1", { kind: "task", batch: 1, taskId: "write-b" })).agent.usage.turns, 5);
-});
-
-test("usage checkpoint payload stays fixed-size across many targets", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  const tasks = Array.from({ length: 32 }, (_, index) => ({
-    id: `write-${index + 1}`, role: "write", status: "queued", attempt: 1, updatedAt: "2026-01-01T02:00:00.000Z",
-  }));
-  await ledger.recordObservation("run-1", { kind: "batch", batch: 1, phase: "queued", tasks }, authority);
-  for (const task of tasks) {
-    await ledger.recordObservation("run-1", {
-      kind: "telemetry", target: { kind: "task", batch: 1, taskId: task.id },
-      telemetry: {
-        target: { kind: "task", batch: 1, taskId: task.id }, attempt: 1,
-        sampledAt: "2026-01-01T02:00:01.000Z", activity: "waiting_model", activeTools: [], usage: { turns: 1 },
-      },
-    }, authority);
-  }
-  const checkpoint = await readFile(path.join(workspace, "runs", "run-1", "usage-checkpoint.json"), "utf8");
-  const state = await readFile(path.join(workspace, "runs", "run-1", "run-state.json"), "utf8");
-  assert.ok(checkpoint.length < 256);
-  assert.doesNotMatch(checkpoint, /usageByAttempt|write-32/);
-  assert.doesNotMatch(state, /usageByAttempt/);
-  assert.equal((await ledger.read("run-1")).progress.usage.turns, 32);
-});
-
-test("usage checkpoints retain aggregate totals while bounding attempts per target", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" }, telemetry: leadTelemetry({ usage: { turns: 2 } }),
-  }, authority);
-  await ledger.transition("run-1", { kind: "paused", at: "2026-01-01T03:00:00.000Z", pause: { reason: "quota", summary: "wait" } }, authority);
-  const nextToken = "execution-token-0000000000002";
-  const nextAuthority = { attempt: 2, executionToken: nextToken };
-  await ledger.transition("run-1", { kind: "resumed", at: "2026-01-01T03:00:01.000Z", executionToken: nextToken, owner },);
-  await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" }, telemetry: leadTelemetry({ attempt: 2, usage: { turns: 3 } }),
-  }, nextAuthority);
-  const state = await ledger.read("run-1");
-  assert.equal(state.progress.usage.turns, 5);
-  assert.equal(state.usageByAttempt, undefined);
-  const checkpoint = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "usage-checkpoint.json"), "utf8"));
-  assert.deepEqual(Object.keys(checkpoint), ["version", "usage"]);
-  assert.deepEqual(checkpoint.usage, { turns: 5 });
-  assert.ok(JSON.stringify(checkpoint).length < 256);
-});
-
-test("tool summary-patch telemetry stays sidecar after a flushed tool start", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" },
-    telemetry: leadTelemetry({ process: [toolProcess({ summary: "wiki/overview.md" })] }),
-  }, authority);
-  const before = (await ledger.read("run-1")).lastEventSequence;
-  const files = (await eventFileNames(workspace)).length;
-
-  const event = await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" },
-    telemetry: leadTelemetry({
-      sampledAt: "2026-01-01T02:00:01.000Z",
-      lastHeartbeatAt: "2026-01-01T02:00:01.000Z",
-      process: [toolProcess({ summary: "wiki/runtime.md" })],
+      usage: { turns: 1, toolCalls: 1 },
     }),
   }, authority);
   assert.equal(event, undefined);
-  assert.equal((await eventFileNames(workspace)).length, files);
-  assert.equal((await ledger.read("run-1")).lastEventSequence, before);
-  assert.equal((await ledger.readAgent("run-1", { kind: "lead" })).process[0].summary, "wiki/runtime.md");
+  await assert.rejects(readdir(path.join(workspace, "runs", "run-1", "events")), { code: "ENOENT" });
+  const record = await ledger.readAgent("run-1", { kind: "lead" });
+  assert.equal(record.agent.activity, "using_tool");
+  assert.equal(record.process[0].toolCallId, "call-1");
 });
 
-test("sidecar checkpoint recovery keeps state usage and agent process consistent", async (t) => {
-  for (const point of ["afterSidecarJournal", "afterSidecarState", "afterSidecarAgent"]) {
-    const workspace = await root(t);
-    const stable = createWikiRunLedger(workspace);
-    await started(stable, workspace);
-    await begin(stable);
-    await stable.recordObservation("run-1", {
-      kind: "telemetry", target: { kind: "lead" },
-      telemetry: leadTelemetry({ process: [toolProcess({ summary: "wiki/overview.md" })] }),
-    }, authority);
-    let crashed = false;
-    let pending;
-    const crashing = createWikiRunLedger(workspace, { async fault(actual) {
-      if (!crashed && actual === point) {
-        crashed = true;
-        pending = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "pending-sidecar.json"), "utf8"));
-        throw new Error(`sidecar-${point}`);
-      }
-    } });
-    await assert.rejects(crashing.recordObservation("run-1", {
-      kind: "telemetry", target: { kind: "lead" },
-      telemetry: leadTelemetry({
-        sampledAt: "2026-01-01T02:00:01.000Z", process: [toolProcess({ summary: "wiki/runtime.md" })], usage: { turns: 6 },
-      }),
-    }, authority), new RegExp(`sidecar-${point}`));
-
-    const recovered = createWikiRunLedger(workspace);
-    const state = await recovered.read("run-1");
-    assert.equal(state.progress.usage.turns, 6);
-    const record = await recovered.readAgent("run-1", { kind: "lead" });
-    assert.equal(record.agent.usage.turns, 6);
-    assert.equal(record.process[0].summary, "wiki/runtime.md");
-    assert.deepEqual(Object.keys(pending), ["version", "runId", "usage", "agent"]);
-    assert.equal(pending.state, undefined);
-    assert.equal(pending.usageByAttempt, undefined);
-    assert.ok(JSON.stringify(pending).length < 2_000);
-    await assert.rejects(readFile(path.join(workspace, "runs", "run-1", "pending-sidecar.json"), "utf8"), { code: "ENOENT" });
-  }
-});
-
-test("identical persist fingerprint skips a second sidecar write", async (t) => {
+test("health updates stay on the agent record", async (t) => {
   const workspace = await root(t);
   const ledger = createWikiRunLedger(workspace);
   await started(ledger, workspace);
   await begin(ledger);
-  await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" },
-    telemetry: leadTelemetry({ lastHeartbeatAt: "2026-01-01T02:00:00.000Z" }),
-  }, authority);
-  const agent = path.join(workspace, "runs", "run-1", "agents", "lead.json");
-  const before = await readFile(agent, "utf8");
-  await ledger.recordObservation("run-1", {
-    kind: "telemetry", target: { kind: "lead" },
-    telemetry: leadTelemetry({ lastHeartbeatAt: "2026-01-01T02:00:05.000Z" }),
-  }, authority);
-  assert.equal(await readFile(agent, "utf8"), before);
-});
-
-test("health degraded writes one event sequence and healthy health stays sidecar", async (t) => {
-  const workspace = await root(t);
-  const ledger = createWikiRunLedger(workspace);
-  await started(ledger, workspace);
-  await begin(ledger);
-  const before = (await ledger.read("run-1")).lastEventSequence;
-  const files = (await eventFileNames(workspace)).length;
-
   const degraded = await ledger.recordObservation("run-1", {
     kind: "health", target: { kind: "lead" }, status: "degraded", at: "2026-01-01T02:00:02.000Z", message: "queue saturated",
   }, authority);
-  assert.equal(degraded.sequence, before + 1);
-  assert.equal(degraded.phase, "observability_health");
-  assert.equal((await eventFileNames(workspace)).length, files + 1);
-  assert.equal((await ledger.read("run-1")).lastEventSequence, before + 1);
-
-  const healthy = await ledger.recordObservation("run-1", {
+  assert.equal(degraded, undefined);
+  assert.equal((await ledger.readAgent("run-1", { kind: "lead" })).agent.health, "degraded");
+  await ledger.recordObservation("run-1", {
     kind: "health", target: { kind: "lead" }, status: "healthy", at: "2026-01-01T02:00:03.000Z",
   }, authority);
-  assert.equal(healthy, undefined);
-  assert.equal((await eventFileNames(workspace)).length, files + 1);
-  assert.equal((await ledger.read("run-1")).lastEventSequence, before + 1);
   assert.equal((await ledger.readAgent("run-1", { kind: "lead" })).agent.health, "healthy");
+});
+
+test("dead pid is a stale execution owner", async (t) => {
+  const workspace = await root(t);
+  const ledger = createWikiRunLedger(workspace);
+  await started(ledger, workspace);
+  await begin(ledger);
+  assert.equal(await ledger.executionOwner("run-1"), "live");
+  const snapshot = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run.json"), "utf8"));
+  snapshot.pid = 2 ** 22;
+  await writeFile(path.join(workspace, "runs", "run-1", "run.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
+  const fresh = createWikiRunLedger(workspace);
+  assert.equal(await fresh.executionOwner("run-1"), "stale");
 });

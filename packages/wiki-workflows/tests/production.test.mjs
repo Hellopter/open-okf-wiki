@@ -139,9 +139,9 @@ test("initial production plan pins workspace policy and role models", async (t) 
   assert.deepEqual(pinned.models.research, { provider: "test", id: "research" });
   assert.match(pinned.prompt, /Simplified Chinese/);
   const runDir = path.join(root, ".okf-wiki", "runs", (await producer.list(root))[0].id);
-  const disk = JSON.parse(await readFile(path.join(runDir, "run-state.json"), "utf8"));
+  const disk = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8"));
   assert.equal(disk.productionPlan, undefined);
-  const plan = JSON.parse(await readFile(path.join(runDir, "production-plan.json"), "utf8"));
+  const plan = JSON.parse(await readFile(path.join(runDir, "plan.json"), "utf8"));
   assert.deepEqual(plan, pinned);
 });
 
@@ -198,7 +198,7 @@ test("successful publication keeps provenance and run history while removing tra
   const result = await run.result();
   assert.deepEqual(result.pages, ["overview.md", "source/runtime/domain.md", "source/source.md"]);
   const runRoot = path.join(root, ".okf-wiki", "runs", run.id);
-  const state = JSON.parse(await readFile(path.join(runRoot, "run-state.json"), "utf8"));
+  const state = JSON.parse(await readFile(path.join(runRoot, "run.json"), "utf8"));
   assert.equal(state.status, "succeeded");
   assert.deepEqual(state.publication.pages, result.pages);
   assert.equal(state.publication.sourceFingerprint, result.sourceFingerprint);
@@ -213,8 +213,7 @@ test("successful publication keeps provenance and run history while removing tra
   assert.equal(JSON.parse(await readFile(path.join(runRoot, "manifest.json"), "utf8")).artifacts.length, 1);
   assert.equal(JSON.parse(await readFile(path.join(runRoot, "lead-state.json"), "utf8")).delegates.batches.length, 3);
   assert.match(await readFile(path.join(root, artifact.relativePath), "utf8"), /handoff/);
-  const eventRecords = await readdir(path.join(runRoot, "events"));
-  assert.match(await readFile(path.join(runRoot, "events", eventRecords.at(-1)), "utf8"), /"completed"/);
+  await assert.rejects(readdir(path.join(runRoot, "events")), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(runRoot, "activity.jsonl"), "utf8"), { code: "ENOENT" });
   const published = await readFile(path.join(root, "wiki", "overview.md"), "utf8");
   assert.match(published, /generated:/);

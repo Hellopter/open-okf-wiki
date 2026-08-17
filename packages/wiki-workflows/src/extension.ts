@@ -47,10 +47,24 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
     pi.on("session_start", async (_event, active) => {
       context = active;
-      currentProducer(active);
+      const engine = currentProducer(active);
+      try {
+        const cwd = await workspaceRoot(active.cwd);
+        const running = (await engine.list(cwd)).find((run) => run.status === "running");
+        if (!running) return;
+        const handle = await engine.open(running.id, cwd);
+        if (!handle) return;
+        const view = await handle.view();
+        refresh(active as ExtensionCommandContext, view);
+        attachStream(pi, active as ExtensionCommandContext, handle, refresh, streams);
+      } catch {
+        // No Workspace or readable Run yet; /wiki still starts or opens one.
+      }
     });
 
-    pi.on("session_shutdown", async () => {
+    pi.on("session_shutdown", async (event) => {
+      const reason = event && typeof event === "object" && "reason" in event ? String(event.reason) : "";
+      const keepLive = reason === "reload" || reason === "new" || reason === "fork";
       for (const controller of streams.values()) controller.abort();
       streams.clear();
       widget.reset();
@@ -58,7 +72,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         context.ui.setStatus("wiki", undefined);
         context.ui.setWidget("wiki", undefined);
       }
-      if (producer && context) {
+      if (!keepLive && producer && context) {
         try {
           const cwd = await workspaceRoot(context.cwd);
           const active = (await producer.list(cwd)).find((run) => run.status === "running");
@@ -67,7 +81,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           // The durable ledger recovers an interrupted running process as paused.
         }
       }
-      producer = undefined;
+      if (!keepLive) producer = undefined;
       context = undefined;
     });
 
@@ -89,13 +103,8 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           }
           const cwd = await workspaceRoot(active.cwd);
           const engine = currentProducer(active);
-          await dispatch(pi, active, engine, cwd, command, refresh, (handle, after) => {
-            if (streams.has(handle.id)) return;
-            const controller = new AbortController();
-            streams.set(handle.id, controller);
-            void streamRun(pi, active, handle, after, controller.signal, refresh).finally(() => {
-              if (streams.get(handle.id) === controller) streams.delete(handle.id);
-            });
+          await dispatch(pi, active, engine, cwd, command, refresh, (handle) => {
+            attachStream(pi, active, handle, refresh, streams);
           });
         } catch (error) {
           active.ui.notify(errorMessage(error), "error");
@@ -114,7 +123,7 @@ async function dispatch(
   cwd: string,
   command: Exclude<WikiCliCommand, { action: "init" | "source-add" }>,
   refresh: LiveSurfaceRefresh,
-  ensureStream: (handle: WikiRunHandle, after?: number) => void,
+  ensureStream: (handle: WikiRunHandle) => void,
 ): Promise<void> {
   if (command.action === "run") {
     const handle = await producer.start({
@@ -141,7 +150,7 @@ async function dispatch(
   output(pi, context, renderWikiRun(view));
   refresh(context, view);
   if (command.action === "resume") {
-    ensureStream(handle, view.lastEventSequence);
+    ensureStream(handle);
   }
 }
 
@@ -151,7 +160,7 @@ async function dispatchStatus(
   handle: WikiRunHandle | undefined,
   command: Extract<WikiCliCommand, { action: "status" }>,
   refresh: LiveSurfaceRefresh,
-  ensureStream: (handle: WikiRunHandle, after?: number) => void,
+  ensureStream: (handle: WikiRunHandle) => void,
 ): Promise<void> {
   if (!handle) {
     output(pi, context, renderWikiRun(undefined));
@@ -161,7 +170,7 @@ async function dispatchStatus(
   if (!command.target) {
     output(pi, context, renderWikiSnapshot(view));
     refresh(context, view);
-    if (view.status === "running") ensureStream(handle, view.lastEventSequence);
+    if (view.status === "running") ensureStream(handle);
     await openStatusOverlay(context, handle, command, refresh);
     return;
   }
@@ -251,17 +260,17 @@ async function streamRun(
   pi: ExtensionAPI,
   context: ExtensionCommandContext,
   handle: WikiRunHandle,
-  after = 0,
   signal: AbortSignal | undefined,
   refresh: LiveSurfaceRefresh,
 ): Promise<void> {
-  let notifiedSequence = Math.max(0, Math.trunc(after));
+  const notified = new Set<string>();
   try {
-    for await (const update of handle.updates(after, signal)) {
+    for await (const update of handle.updates(signal)) {
       if (signal?.aborted) break;
       const event = projectWikiRunEvent(update.event);
-      if (event.visible && update.kind !== "sidecar" && update.event.sequence > notifiedSequence) {
-        notifiedSequence = update.event.sequence;
+      const key = `${update.event.type}:${update.event.at}:${update.event.message}`;
+      if (shouldNotifyRunEvent(update.event) && event.visible && !notified.has(key)) {
+        notified.add(key);
         output(pi, context, event.text, event.tone === "error" ? "error" : event.tone === "warning" ? "warning" : "info");
       }
       refresh(context, update.view);
@@ -275,6 +284,27 @@ async function streamRun(
       // Keep the last successful surface if the handle can no longer be read.
     }
   }
+}
+
+function attachStream(
+  pi: ExtensionAPI,
+  context: ExtensionCommandContext,
+  handle: WikiRunHandle,
+  refresh: LiveSurfaceRefresh,
+  streams: Map<string, AbortController>,
+): void {
+  if (streams.has(handle.id)) return;
+  const controller = new AbortController();
+  streams.set(handle.id, controller);
+  void streamRun(pi, context, handle, controller.signal, refresh).finally(() => {
+    if (streams.get(handle.id) === controller) streams.delete(handle.id);
+  });
+}
+
+function shouldNotifyRunEvent(event: { type: string; phase?: string }): boolean {
+  if (event.type === "delegate") return event.phase === "queued" || event.phase === "settled";
+  return event.type === "paused" || event.type === "failed" || event.type === "completed"
+    || event.type === "cancelled" || event.type === "warning";
 }
 
 type LiveSurfaceRefresh = (context: ExtensionCommandContext, view: WikiRunView) => void;

@@ -21,8 +21,8 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 - Runs are isolated full generations. Every Run starts from an empty Candidate;
   the Published Wiki and final WikiSpec are provenance only.
-- Replaced separate event and view subscriptions with transaction-aligned
-  `WikiRunHandle.updates()` values containing both event and durable view.
+- `WikiRunHandle.updates()` is a live hub of the current view plus notify-worthy
+  lifecycle facts. There is no retained event log.
 - Version-1 Run state is incompatible and requires explicit human cleanup; it is
   never migrated or automatically deleted.
 

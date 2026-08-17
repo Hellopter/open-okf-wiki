@@ -57,6 +57,8 @@ export type DurableFilePhase =
 
 export interface DurableFileOptions {
   fault?: (phase: DurableFilePhase) => void | Promise<void>;
+  /** `file` skips the directory fsync. Use for replaceable live agent snapshots. */
+  sync?: "all" | "file";
 }
 
 export interface DurableRemoveOptions extends DurableFileOptions {
@@ -86,8 +88,10 @@ export async function writeFileDurable(
     }
     await rename(temporary, location);
     await options.fault?.("renamed");
-    await syncDirectory(directory);
-    await options.fault?.("directory_synced");
+    if (options.sync !== "file") {
+      await syncDirectory(directory);
+      await options.fault?.("directory_synced");
+    }
   } finally {
     await rm(temporary, { force: true }).catch(() => {});
   }

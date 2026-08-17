@@ -31,9 +31,13 @@ to its durable Source, Task Receipt, and Candidate state.
    `sourceScopeId` as the matching Wiki source folder, and reconcile
    source-local domains, cross-source relations, conflicts, and minority
    evidence. Call `wiki_taxonomy` with no arguments; it consumes that file.
+   If the host rejects the file, fix every named defect in the same rewrite,
+   then submit again.
 5. Read [topology](references/topology.md), edit
    `.okf-wiki/current/wiki-spec.yaml` in place under the host-written source
    folders, then call `wiki_plan` with no arguments. It consumes that file.
+   If the host rejects the file, fix every named defect in the same rewrite,
+   then submit again.
 6. Re-read the board and call `wiki_delegate_start` with no arguments for each
    ready write or review wave. The host derives tasks, Candidate paths,
    upstream artifacts, and review assignments. Collect each wave before
@@ -41,6 +45,7 @@ to its durable Source, Task Receipt, and Candidate state.
 7. When the board shows the Candidate complete with current passing review
    coverage, write a concise completion summary to
    `.okf-wiki/current/completion.md`, then call `wiki_finish` with no arguments.
+   If the host rejects, fix every named defect, then finish again.
 
 `wiki_delegate_cancel` accepts only an optional short `reasonCode`. Use it when
 the current pending wave is no longer useful. Business prose belongs in the

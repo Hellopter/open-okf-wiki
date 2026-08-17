@@ -25,13 +25,15 @@ import {
 import { createWikiArtifactStore } from "./artifact-store.js";
 import {
   boundedDelegateSummary,
+  projectWikiLeadSnapshot,
   WikiTaskExecutionError,
   WikiTaskPauseError,
   type WikiDelegateContract,
   type WikiResearchSignal,
 } from "./delegate-contracts.js";
-import { validateEvidenceHandoff } from "./evidence-ledger.js";
-import { decodeUtf8Fatal, parseResearchHandoff, parseReviewHandoff, summarizeWikiMarkdown } from "./wiki-work-files.js";
+import { inspectEvidenceHandoff } from "./evidence-ledger.js";
+import { WikiRejectedError } from "./wiki-reject.js";
+import { decodeUtf8Fatal, inspectResearchHandoff, inspectReviewHandoff, summarizeWikiMarkdown } from "./wiki-work-files.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
 import type { WikiLeadObservation, WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
 import type { WikiExecutionBudgets } from "./producer-types.js";
@@ -49,7 +51,7 @@ import {
   wikiLeadMayWrite,
   wikiSpecPagePaths,
   WikiLeadRun,
-  WikiWorkCoordinator,
+  type WikiDelegateCancelReasonCode,
   type WikiSpec,
 } from "./lead.js";
 import { wikiToolRejected } from "./wiki-tool-error.js";
@@ -266,21 +268,51 @@ async function runLeadSession(
       await tasks.resume(controller.signal);
       let finishSummary: string | undefined;
       let pause: WikiTaskPauseError | undefined;
-      const work = new WikiWorkCoordinator({
-        run: leadRun,
-        tasks,
-        writeLease,
-        signal: controller.signal,
-        snapshotDiscoverySlots: async () => await readDiscoveryPlan(
-          policy.workspaceRoot,
-          leadFileSlots,
-          request.sourcePlan.sources.map((source) => source.scopeId),
-        ),
-        onPause(error) {
-          pause = error;
-          controller.abort(error);
-        },
-      });
+      const startCurrent = async () => {
+        const firstWave = leadRun.taskRuntimeState.batches.length === 0;
+        const discoveryPlan = firstWave
+          ? structuredClone(await readDiscoveryPlan(
+            policy.workspaceRoot,
+            leadFileSlots,
+            request.sourcePlan.sources.map((source) => source.scopeId),
+          ))
+          : [];
+        const queued = await leadRun.startNextReadyWave(discoveryPlan);
+        try {
+          if (queued.wave === "review") writeLease.assertReviewAllowed();
+          const started = await tasks.start(queued.contracts, controller.signal);
+          if (started.batchId !== queued.batchId) {
+            throw new Error(`TaskRuntime started batch ${started.batchId}, expected queued batch ${queued.batchId}`);
+          }
+          return { wave: queued.wave, batchId: started.batchId };
+        } catch (error) {
+          await leadRun.rollbackDelegateBatch(queued.batchId);
+          throw error;
+        }
+      };
+      const requireActiveWave = async (operation: "collect" | "cancel") => {
+        const active = await leadRun.currentActiveWave();
+        if (!active) throw new Error(`No active Wiki wave to ${operation}`);
+        return active;
+      };
+      const presentBatch = async (snapshot: Awaited<ReturnType<WikiTaskRuntime["collect"]>>) =>
+        projectWikiLeadSnapshot(await leadRun.presentSnapshot(snapshot));
+      const collectCurrent = async (collectOptions: { until: "any" | "all"; timeoutSeconds: number }) => {
+        const active = await requireActiveWave("collect");
+        try {
+          return await presentBatch(await tasks.collect(active.batchId, collectOptions, controller.signal));
+        } catch (error) {
+          if (error instanceof WikiTaskPauseError) {
+            pause = error;
+            controller.abort(error);
+          }
+          throw error;
+        }
+      };
+      const cancelCurrent = async (reasonCode?: WikiDelegateCancelReasonCode) => {
+        const active = await requireActiveWave("cancel");
+        return await presentBatch(await tasks.cancel(active.batchId, undefined, reasonCode));
+      };
       const leadTools = withExecutionModes([
         ...workflowTools(policy, "lead", undefined, request.sourcePlan.sources.map((source) => source.scopeId), undefined, pageWriter, undefined, leadFileSlots),
         createWikiTaxonomyTool(async () => withBoard(
@@ -299,18 +331,18 @@ async function runLeadSession(
         }),
         createWikiDelegateStartTool(async () => {
           try {
-            return withBoard(leadRun.compactionObserved, await work.startCurrent());
+            return withBoard(leadRun.compactionObserved, await startCurrent());
           } catch (error) {
             rejectWikiTool("wiki_delegate_start", error);
           }
         }),
         createWikiDelegateCollectTool(async (collectOptions) => withBoard(
           leadRun.compactionObserved,
-          await work.collectCurrent(collectOptions),
+          await collectCurrent(collectOptions),
         )),
         createWikiDelegateCancelTool(async (reasonCode) => withBoard(
           leadRun.compactionObserved,
-          await work.cancelCurrent(reasonCode),
+          await cancelCurrent(reasonCode),
         )),
         createWikiFinishTool(async () => {
           if (finishSummary) throw new Error("wiki_finish may be accepted only once");
@@ -318,17 +350,21 @@ async function runLeadSession(
             policy.workspaceRoot,
             leadSlot(leadFileSlots, ".okf-wiki/current/completion.md"),
           )));
-          if (!summary.trim()) throw new Error("wiki_finish requires a summary");
-          if (!specRecord) throw new Error("wiki_finish requires an accepted WikiSpec");
+          const defects: string[] = [];
+          if (!summary.trim()) defects.push("wiki_finish requires a summary");
+          if (!specRecord) defects.push("wiki_finish requires an accepted WikiSpec");
           try {
             tasks.assertFinishable();
           } catch (error) {
             if (error instanceof WikiTaskPauseError) {
               pause = error;
               controller.abort(error);
+              throw error;
             }
-            throw error;
+            if (error instanceof WikiRejectedError) defects.push(...error.defects);
+            else throw error;
           }
+          if (defects.length) throw new WikiRejectedError(defects);
           await leadRun.finish(undefined, requiredReviewCoverage);
           finishSummary = boundedDelegateSummary(summary);
           return withBoard(leadRun.compactionObserved, { accepted: true });
@@ -460,31 +496,28 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         if (review) throw new Error("wiki_review_finish may be accepted only once");
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
         const markdown = Buffer.from(bytes).toString("utf8");
-        const result = parseReviewHandoff(bytes, verdict, task.reviewPaths ?? []);
-        validateEvidenceHandoff({ markdown, contract: task });
+        const parsed = inspectReviewHandoff(bytes, verdict, task.reviewPaths ?? []);
+        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task });
+        rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
         markdownSnapshot = markdown;
-        review = result;
+        review = parsed.result!;
       })] : []),
       ...(role === "researcher" ? [researchFinishTool(async (status) => {
         if (researchSignal) throw new Error("wiki_research_finish may be accepted only once");
         if (task.role !== "research") throw new Error("Research completion requires a research contract");
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
         const markdown = Buffer.from(bytes).toString("utf8");
-        const result = parseResearchHandoff(bytes, status, task.sourceScopeIds);
-        validateEvidenceHandoff({
-          markdown,
-          contract: task,
-          completedAssignmentIds: status === "complete" ? task.assignmentIds : [],
-          followups: result.followups,
-        });
+        const parsed = inspectResearchHandoff(bytes, status, task.sourceScopeIds);
+        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task });
+        rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
         markdownSnapshot = markdown;
-        researchSignal = result;
+        researchSignal = parsed.signal!;
       })] : []),
       ...(role === "writer" ? [writeFinishTool(async () => {
         if (writeFinished) throw new Error("wiki_write_finish may be accepted only once");
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
         const markdown = Buffer.from(bytes).toString("utf8");
-        validateEvidenceHandoff({ markdown, contract: task });
+        rejectHandoffDefects(inspectEvidenceHandoff({ markdown, contract: task }).defects);
         markdownSnapshot = markdown;
         writeFinished = true;
       })] : []),
@@ -773,11 +806,17 @@ async function readDiscoveryPlan(
   sourceScopeIds: readonly string[],
 ): Promise<Array<{ sourceScopeId: string; instruction: string }>> {
   const research = slots.filter((slot) => slot.logicalPath.startsWith(".okf-wiki/current/research/"));
-  return await Promise.all(sourceScopeIds.map(async (sourceScopeId, index) => {
+  const defects: string[] = [];
+  const entries = await Promise.all(sourceScopeIds.map(async (sourceScopeId, index) => {
     const instruction = decodeUtf8Fatal(await readWikiWorkflowFile(workspaceRoot, research[index])).trim();
-    if (!instruction) throw new Error(`Discovery direction file is empty: ${research[index].logicalPath}`);
+    if (!instruction) {
+      defects.push(`Discovery direction file is empty: ${research[index].logicalPath}`);
+      return undefined;
+    }
     return { sourceScopeId, instruction };
   }));
+  if (defects.length) throw new WikiRejectedError(defects);
+  return entries.filter((entry): entry is { sourceScopeId: string; instruction: string } => entry !== undefined);
 }
 
 async function readYamlWorkflowFile(workspaceRoot: string, slot: WikiWorkflowFileSlot): Promise<unknown> {
@@ -810,6 +849,10 @@ function withBoard<T extends object>(compactionObserved: boolean, value: T): T &
     board: ".okf-wiki/current/board.md",
     ...(compactionObserved ? { note: "Read board.md before dispatching or finishing" } : {}),
   };
+}
+
+function rejectHandoffDefects(defects: readonly string[]): void {
+  if (defects.length) throw new WikiRejectedError(defects);
 }
 
 function rejectWikiTool(tool: string, error: unknown): never {

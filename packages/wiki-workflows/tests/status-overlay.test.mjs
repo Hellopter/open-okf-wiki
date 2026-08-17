@@ -12,7 +12,7 @@ const lead = {
 };
 const view = {
   id: "run-1", cwd: "/repo", status: "running",
-  createdAt: "2026-08-12T00:00:00Z", updatedAt: "2026-08-12T00:00:03Z", lastEventSequence: 2,
+  createdAt: "2026-08-12T00:00:00Z", updatedAt: "2026-08-12T00:00:03Z",
   progress: { stage: "lead", language: "en", lead, currentBatch: { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: "write-auth", role: "write", status: "running" }] } },
 };
 
@@ -688,8 +688,8 @@ test("missing custom UI returns without reading the handle", async () => {
 });
 
 test("overlay ignores stale updates and renders the terminal transaction view", async () => {
-  const stale = { ...view, status: "failed", lastEventSequence: 1 };
-  const terminal = { ...view, status: "succeeded", completedAt: "2026-08-12T00:00:04Z", lastEventSequence: 3 };
+  const stale = { ...view, status: "failed" };
+  const terminal = { ...view, status: "succeeded", completedAt: "2026-08-12T00:00:04Z" };
   const subject = handle({
     async *updates() {
       yield { event: { version: 1, runId: view.id, sequence: 1, at: view.updatedAt, type: "failed", message: "stale" }, view: stale };
@@ -727,7 +727,7 @@ function pushableUpdates() {
     subscribe,
     push(nextView) {
       queued.push({
-        event: { version: 1, runId: nextView.id, sequence: nextView.lastEventSequence, at: nextView.updatedAt, type: "progress", message: "tick" },
+        event: { version: 1, runId: nextView.id, at: nextView.updatedAt, type: "stage", stage: "lead", message: "tick" },
         view: nextView,
       });
       const notify = wake;
@@ -758,7 +758,6 @@ test("run-list and overview updates refresh the navigator without re-inspecting 
 
   stream.push({
     ...view,
-    lastEventSequence: 3,
     updatedAt: "2026-08-12T00:00:04Z",
     progress: { ...view.progress, lead: { ...lead, activity: "streaming" } },
   });
@@ -773,7 +772,6 @@ test("run-list and overview updates refresh the navigator without re-inspecting 
 
   stream.push({
     ...view,
-    lastEventSequence: 4,
     updatedAt: "2026-08-12T00:00:05Z",
     progress: { ...view.progress, lead: { ...lead, activity: "synthesizing", lastActivityAt: "2026-08-12T00:00:05Z" } },
   });
@@ -802,13 +800,12 @@ test("process and output tabs inspect lazily and only re-inspect selected teleme
   assert.notEqual(inspected.at(-1).options.transcript, true);
   const afterProcessTab = inspected.length;
 
-  stream.push({ ...view, lastEventSequence: 3, updatedAt: "2026-08-12T00:00:04Z" });
+  stream.push({ ...view, updatedAt: "2026-08-12T00:00:04Z" });
   await flush();
   assert.equal(inspected.length, afterProcessTab);
 
   stream.push({
     ...view,
-    lastEventSequence: 4,
     updatedAt: "2026-08-12T00:00:05Z",
     progress: {
       ...view.progress,

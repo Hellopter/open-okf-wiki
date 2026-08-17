@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { WikiRejectedError, listed } from "../wiki-reject.js";
 
 const TOPOLOGY_VERSION = 2 as const;
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -136,33 +137,49 @@ export function sameWikiCluster(paths: readonly string[]): boolean {
 
 /** Parse an untrusted persisted or Agent-produced WikiSpec and enforce v2 topology. */
 export function parseWikiSpec(value: unknown): WikiSpec {
+  const inspected = inspectWikiSpec(value);
+  if (inspected.defects.length) throw new WikiRejectedError(inspected.defects);
+  return inspected.spec!;
+}
+
+function inspectWikiSpec(value: unknown): { defects: string[]; spec?: WikiSpec } {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("WikiSpec must be an object");
+    return { defects: ["WikiSpec must be an object"] };
   }
   const record = value as Record<string, unknown>;
+  const defects: string[] = [];
   const extras = Object.keys(record).filter((key) => key !== "pages" && key !== "topologyVersion");
-  if (extras.length) throw new Error(`WikiSpec has unknown field: ${extras[0]}`);
+  if (extras.length) defects.push(`WikiSpec has unknown fields: ${listed(extras)}`);
   if (record.topologyVersion !== undefined && record.topologyVersion !== TOPOLOGY_VERSION) {
-    throw new Error("WikiSpec topologyVersion must be 2");
+    defects.push("WikiSpec topologyVersion must be 2");
   }
-  if (!("pages" in record)) throw new Error("WikiSpec pages is required");
+  if (!("pages" in record)) {
+    defects.push("WikiSpec missing fields: pages");
+    return { defects };
+  }
   const pages = record.pages;
   if (!Array.isArray(pages) || pages.some((page) => typeof page !== "string")) {
-    throw new Error("WikiSpec pages must be an array of strings");
+    defects.push("WikiSpec pages must be an array of strings");
+    return { defects };
   }
-  if (new Set(pages).size !== pages.length) throw new Error("WikiSpec page paths must be unique");
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  const illegal: string[] = [];
   for (const page of pages) {
-    if (page !== wikiSpecRelativePath(page) || !wikiSpecPageType(page)) {
-      throw new Error(`WikiSpec page is not a legal Source -> Domain -> Concept path: ${page}`);
-    }
+    if (seen.has(page)) duplicates.push(page);
+    else seen.add(page);
+    if (page !== wikiSpecRelativePath(page) || !wikiSpecPageType(page)) illegal.push(page);
   }
-  if (!pages.includes("overview.md")) throw new Error("WikiSpec must include overview.md");
+  if (duplicates.length) defects.push(`duplicate page paths: ${listed(duplicates)}`);
+  if (illegal.length) defects.push(`illegal page paths: ${listed(illegal)}`);
+  if (!pages.includes("overview.md")) defects.push("WikiSpec must include overview.md");
 
   const sources = new Set<string>();
   const sourcePages = new Set<string>();
   const domains = new Set<string>();
   const domainPages = new Set<string>();
   for (const page of pages) {
+    if (page !== wikiSpecRelativePath(page) || !wikiSpecPageType(page)) continue;
     const source = wikiSpecSourceId(page);
     if (!source) continue;
     sources.add(source);
@@ -174,16 +191,18 @@ export function parseWikiSpec(value: unknown): WikiSpec {
       if (wikiSpecPageType(page) === "domain") domainPages.add(key);
     }
   }
-  if (!sources.size) throw new Error("WikiSpec must include at least one source.md");
-  for (const source of sources) {
-    if (!sourcePages.has(source)) throw new Error(`WikiSpec source ${source} must include exactly one source.md`);
-  }
-  if (!domains.size) throw new Error("WikiSpec must include at least one domain.md");
-  for (const domain of domains) {
-    if (!domainPages.has(domain)) throw new Error(`WikiSpec domain ${domain} must include exactly one domain.md`);
-  }
+  if (!sources.size) defects.push("WikiSpec must include at least one source.md");
+  const missingSources = [...sources].filter((source) => !sourcePages.has(source));
+  if (missingSources.length) defects.push(`missing source.md for: ${listed(missingSources)}`);
+  if (!domains.size) defects.push("WikiSpec must include at least one domain.md");
+  const missingDomains = [...domains].filter((domain) => !domainPages.has(domain));
+  if (missingDomains.length) defects.push(`missing domain.md for: ${listed(missingDomains)}`);
+  if (defects.length) return { defects };
   return {
-    pages: [...pages],
-    ...(record.topologyVersion === TOPOLOGY_VERSION ? { topologyVersion: TOPOLOGY_VERSION } : {}),
+    defects: [],
+    spec: {
+      pages: [...pages],
+      ...(record.topologyVersion === TOPOLOGY_VERSION ? { topologyVersion: TOPOLOGY_VERSION } : {}),
+    },
   };
 }

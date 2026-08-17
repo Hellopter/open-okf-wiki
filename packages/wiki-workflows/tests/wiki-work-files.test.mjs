@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { truncateUtf8 } from "../dist/delegate-contracts.js";
+import { WikiRejectedError } from "../dist/wiki-reject.js";
 import {
   MAX_WIKI_WORK_FILE_BYTES,
   decodeUtf8Fatal,
+  inspectResearchHandoff,
   parseResearchHandoff,
   parseReviewHandoff,
   summarizeWikiMarkdown,
@@ -113,9 +115,55 @@ test("parseResearchHandoff truncates oversized followup questions to 512 UTF-8 b
   assert.equal(result.followups[0].question, "中".repeat(170));
 });
 
-test("parseResearchHandoff rejects unknown YAML keys with file fields", () => {
-  assert.throws(() => parseResearchHandoff(research("followups: []\nsummary: forged"), "complete", ["source"]), /handoff\.md frontmatter has unknown field: summary/);
-  assert.throws(() => parseResearchHandoff(research("followups:\n  - kind: evidence_gap\n    question: gap\n    source: forged"), "incomplete", ["source"]), /handoff\.md frontmatter\.followups\[0\] has unknown field: source/);
+test("parseResearchHandoff collects every work-file semantic defect", () => {
+  assert.throws(
+    () => parseResearchHandoff(research("summary: forged"), "complete", ["source"]),
+    (error) => {
+      assert.ok(error instanceof WikiRejectedError);
+      assert.match(error.message, /handoff\.md frontmatter has unknown fields: summary/);
+      assert.match(error.message, /handoff\.md frontmatter missing fields: followups/);
+      return true;
+    },
+  );
+  assert.throws(
+    () => parseResearchHandoff(research([
+      "followups:",
+      "  - kind: nope",
+      "    question: ",
+      "    source: forged",
+      "  - kind: evidence_gap",
+    ].join("\n")), "incomplete", ["source"]),
+    (error) => {
+      assert.match(error.message, /followups\[0\] has unknown fields: source/);
+      assert.match(error.message, /followups\[0\]\.kind "nope" is not supported \(allowed: unread_scope, evidence_gap, conflict, taxonomy_uncertain, tool_failure\)/);
+      assert.match(error.message, /followups\[0\]\.question must be a nonempty string/);
+      assert.match(error.message, /followups\[1\] missing fields: question/);
+      return true;
+    },
+  );
+  assert.throws(
+    () => parseResearchHandoff(research("followups: []"), "incomplete", ["source"]),
+    /incomplete research requires followups/,
+  );
+});
+
+test("inspectResearchHandoff keeps structural defects from later semantic collection", () => {
+  const inspected = inspectResearchHandoff("---\nfollowups: []\n---\n   ", "complete", ["source"]);
+  assert.equal(inspected.structural, true);
+  assert.deepEqual(inspected.defects, ["handoff.md body must be nonempty"]);
+  assert.equal(inspected.signal, undefined);
+});
+
+test("parseResearchHandoff accepts an outline-only body and falls back for the summary", () => {
+  const result = parseResearchHandoff(research("followups: []", [
+    "# Research Handoff",
+    "## Scope",
+    "- **Source:** source",
+    "## Coverage",
+    "- **Covered:** assignment-1",
+  ].join("\n")), "complete", ["source"]);
+  assert.equal(result.summary, "**Source:** source");
+  assert.ok(Buffer.byteLength(result.summary, "utf8") <= 1024);
 });
 
 test("handoff parsers reject empty bodies, malformed bytes, and files over 256 KiB", () => {
@@ -149,16 +197,23 @@ test("parseReviewHandoff validates assignments and host-mints deterministic find
   });
 });
 
-test("parseReviewHandoff rejects unknown fields and findings outside assigned paths", () => {
-  assert.throws(() => parseReviewHandoff(research([
-    "findings:",
-    "  - path: wiki/outside.md",
-    "    severity: critical",
-    "profileCoverage: []",
-  ].join("\n")), "changes_requested", ["wiki/a.md"]), /review\.md frontmatter\.findings\[0\]\.path is outside assigned paths/);
-  assert.throws(() => parseReviewHandoff(research([
-    "findings: []",
-    "profileCoverage: []",
-    "reviewedPaths: []",
-  ].join("\n")), "pass", ["wiki/a.md"]), /review\.md frontmatter has unknown field: reviewedPaths/);
+test("parseReviewHandoff collects unknown fields and findings outside assigned paths", () => {
+  assert.throws(
+    () => parseReviewHandoff(research([
+      "findings:",
+      "  - path: wiki/outside.md",
+      "    severity: critical",
+      "  - path: wiki/also-out.md",
+      "    severity: nope",
+      "profileCoverage: []",
+      "reviewedPaths: []",
+    ].join("\n")), "changes_requested", ["wiki/a.md"]),
+    (error) => {
+      assert.match(error.message, /review\.md frontmatter has unknown fields: reviewedPaths/);
+      assert.match(error.message, /findings\[0\]\.path "wiki\/outside\.md" is outside assigned paths \(assigned: wiki\/a\.md\)/);
+      assert.match(error.message, /findings\[1\]\.path "wiki\/also-out\.md" is outside assigned paths/);
+      assert.match(error.message, /findings\[1\]\.severity must be critical, major, or minor/);
+      return true;
+    },
+  );
 });

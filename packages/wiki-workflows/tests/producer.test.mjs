@@ -164,7 +164,7 @@ test("record projects a running tool into view and inspectAgent immediately", as
   while ((await handle.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
 });
 
-test("sidecar telemetry yields on updates without bumping lastEventSequence", async (t) => {
+test("live telemetry yields on updates without writing an event type", async (t) => {
   const root = await workspace(t);
   const live = deferred();
   const afterTool = deferred();
@@ -185,12 +185,11 @@ test("sidecar telemetry yields on updates without bumping lastEventSequence", as
   } }) });
   const handle = await producer.start({ cwd: root });
   await live.promise;
-  const sequence = (await handle.view()).lastEventSequence;
   const seen = [];
   const stop = new AbortController();
   const consume = (async () => {
     try {
-      for await (const update of handle.updates(sequence, stop.signal)) seen.push(update);
+      for await (const update of handle.updates(stop.signal)) seen.push(update);
     } catch { /* aborted */ }
   })();
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -201,10 +200,6 @@ test("sidecar telemetry yields on updates without bumping lastEventSequence", as
   }
   const sidecar = seen.find((update) => update.view.progress?.lead?.lastHeartbeatAt === "2026-08-12T00:00:02.000Z");
   assert.ok(sidecar);
-  assert.equal(sidecar.kind, "sidecar");
-  assert.ok(sidecar.revision > sequence);
-  assert.equal(sidecar.event.sequence, sequence);
-  assert.equal(sidecar.view.lastEventSequence, sequence);
   assert.equal(sidecar.view.progress?.lead?.activeTools[0]?.name, "read");
   release.resolve();
   const pausedUpdateDeadline = Date.now() + 2_000;
@@ -213,8 +208,6 @@ test("sidecar telemetry yields on updates without bumping lastEventSequence", as
   }
   const pausedUpdate = seen.find((update) => update.event.type === "paused");
   assert.ok(pausedUpdate);
-  assert.equal(pausedUpdate.kind, "durable");
-  assert.ok(pausedUpdate.revision > sidecar.revision);
   stop.abort();
   await consume;
   const pausedDeadline = Date.now() + 2_000;
@@ -236,13 +229,11 @@ test("reopened handle overlays persisted agent sidecars into its live view", asy
   } }) });
   const handle = await producer.start({ cwd: root });
   await observed.promise;
-  const sequence = (await handle.view()).lastEventSequence;
   release.resolve();
   while ((await handle.view()).status !== "paused") await new Promise((resolve) => setTimeout(resolve, 5));
 
   const reopened = await createConfiguredWikiProducer().open(handle.id, root);
   const view = await reopened.view();
-  assert.equal(view.lastEventSequence, sequence + 1);
   assert.equal(view.progress?.lead?.activeTools[0]?.id, "call-1");
   assert.equal(view.progress?.usage?.turns, 4);
   assert.equal((await reopened.inspectAgent({ kind: "lead" }))?.agent.activeTools[0]?.id, "call-1");
@@ -279,11 +270,8 @@ test("updates replay every durable transition with its same-sequence view includ
   assert.equal((await handle.view()).operation, undefined);
   const updates = [];
   for await (const update of handle.updates()) updates.push(update);
-  assert.ok(updates.every((update) => update.kind === "durable"));
   assert.equal(updates.at(-1).event.type, "completed");
   assert.equal(updates.at(-1).view.status, "succeeded");
-  assert.equal(updates.at(-1).view.lastEventSequence, updates.at(-1).event.sequence);
-  assert.deepEqual(updates.map(({ event }) => event.sequence), updates.map((_, index) => index + 1));
 });
 
 test("paused run serializes its workspace and resume reuses the exact pinned plan", async (t) => {
@@ -390,13 +378,11 @@ test("cancel fences observations from a slow prior attempt", async (t) => {
   } }) });
   const run = await producer.start({ cwd: root });
   await entered.promise;
-  const cancelled = await run.control("cancel");
-  const sequence = cancelled.lastEventSequence;
+  await run.control("cancel");
   release.resolve();
   await attempted.promise;
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal((await run.view()).status, "cancelled");
-  assert.equal((await run.view()).lastEventSequence, sequence);
 });
 
 test("cancel fences direct Candidate mutations from an abort-ignoring Lead", async (t) => {
@@ -442,12 +428,12 @@ test("a second handle from the same producer attaches to the live run", async (t
   } }) });
   const first = await producer.start({ cwd: root });
   await entered.promise;
-  const before = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run-state.json"), "utf8"));
+  const before = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run.json"), "utf8"));
   const second = await producer.open(first.id, path.join(root, "src"));
   assert.ok(second);
   assert.equal((await second.control("pause")).status, "paused");
   const resumed = await second.control("resume");
-  const after = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run-state.json"), "utf8"));
+  const after = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run.json"), "utf8"));
   assert.equal(resumed.status, "running");
   assert.equal(after.attempt, before.attempt + 1);
   assert.notEqual(after.executionToken, before.executionToken);

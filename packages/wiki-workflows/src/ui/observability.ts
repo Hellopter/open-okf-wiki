@@ -101,10 +101,8 @@ export function projectWikiRunEvent(event: WikiRunEvent): WikiRunEventObservabil
       return { text: `[${event.stage}] ${message}`, tone: "accent", visible: true };
     case "delegate": {
       const task = event.taskId ? ` ${event.taskId}` : "";
-      return { text: `[batch ${event.batch} ${event.completed}/${event.total}] ${message}${task}`, tone: "accent", visible: true };
+      return { text: `[batch ${event.batch} ${event.completed}/${event.total}] ${message}${task}`, tone: "accent", visible: event.phase === "queued" || event.phase === "settled" };
     }
-    case "telemetry":
-      return { text: message, tone: event.phase === "observability_health" && event.status === "degraded" ? "warning" : "muted", visible: false };
     case "warning":
       return { text: event.detail === message ? message : `${message}: ${event.detail}`, tone: "warning", visible: true };
     case "paused":
@@ -116,7 +114,6 @@ export function projectWikiRunEvent(event: WikiRunEvent): WikiRunEventObservabil
     case "cancelled":
       return { text: message, tone: "muted", visible: true };
     case "started":
-    case "progress":
     case "resumed":
       return { text: message, tone: "accent", visible: true };
   }

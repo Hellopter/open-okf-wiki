@@ -10,7 +10,7 @@ import { formatLocalDateTime } from "../dist/ui/time-format.js";
 
 const now = Date.parse("2026-08-12T00:01:00.000Z");
 function view(overrides = {}) {
-  return { id: "run-1", cwd: "/repo", status: "running", createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z", lastEventSequence: 1, ...overrides };
+  return { id: "run-1", cwd: "/repo", status: "running", createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:00.000Z", ...overrides };
 }
 function lead(overrides = {}) {
   return { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "synthesizing", activeTools: [], health: "healthy", lastActivityAt: "2026-08-12T00:00:57.000Z", lastHeartbeatAt: "2026-08-12T00:00:59.000Z", usage: { turns: 8, contextPercent: 24 }, ...overrides };

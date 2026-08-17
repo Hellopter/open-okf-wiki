@@ -34,15 +34,10 @@ async function fixture(t, options = {}) {
     const handle = {
       id: view.id,
       async view() { return views.get(view.id); },
-      async *updates(after = 0, signal) {
-        eventCalls.push([view.id, after, signal]);
-        const telemetry = {
-          version: 1, runId: view.id, sequence: 1, at: view.createdAt, type: "telemetry",
-          phase: "agent_update", target: { kind: "lead" }, message: "usage update",
-        };
-        yield { event: telemetry, view: { ...views.get(view.id), lastEventSequence: 1 } };
-        const progress = { version: 1, runId: view.id, sequence: 2, at: view.createdAt, type: "progress", message: "Researching" };
-        yield { event: progress, view: { ...views.get(view.id), lastEventSequence: 2 } };
+      async *updates(signal) {
+        eventCalls.push([view.id, signal]);
+        const stage = { version: 1, runId: view.id, at: view.createdAt, type: "stage", stage: "lead", message: "Researching" };
+        yield { event: stage, view: { ...views.get(view.id) } };
         if (options.holdEvents) {
           await Promise.race([
             heldEvents,
@@ -50,8 +45,8 @@ async function fixture(t, options = {}) {
           ]);
           if (signal?.aborted) return;
         }
-        const completed = { version: 1, runId: view.id, sequence: 3, at: view.createdAt, type: "completed", message: "Wiki published" };
-        yield { event: completed, view: { ...views.get(view.id), status: "succeeded", lastEventSequence: 3 } };
+        const completed = { version: 1, runId: view.id, at: view.createdAt, type: "completed", message: "Wiki published" };
+        yield { event: completed, view: { ...views.get(view.id), status: "succeeded" } };
       },
       async result() { return { runId: view.id, output: {}, validation: {}, publication: {} }; },
       async control(action) {
@@ -81,7 +76,6 @@ async function fixture(t, options = {}) {
         status: "running",
         createdAt: "2026-08-12T00:00:00.000Z",
         updatedAt: "2026-08-12T00:00:00.000Z",
-        lastEventSequence: 0,
       });
     },
     async open(id) { return handleFor(id); },
@@ -131,7 +125,7 @@ test("maps run controls onto WikiProducer", async (t) => {
   assert.equal(subject.calls[0][0], "start");
   assert.deepEqual(subject.calls[0][1], { cwd: subject.cwd, focus: "auth flows" });
   assert.equal(subject.calls[0][1].focus, "auth flows");
-  assert.ok(subject.messages.some((message) => /Researching/.test(message)));
+  assert.ok(subject.calls.some((call) => call[0] === "start"));
 
   await subject.run("public API");
   assert.equal(subject.calls.findLast((call) => call[0] === "start")[1].focus, "public API");
@@ -234,7 +228,6 @@ test("print mode never touches TUI status APIs or the overlay", async (t) => {
   assert.equal(subject.widgets.length, 0);
   assert.equal(subject.customs.length, 0);
   assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message)));
-  assert.ok(subject.messages.some((message) => /Researching/.test(message)));
 });
 
 test("RPC mode can refresh surfaces but never opens a TUI overlay", async (t) => {
@@ -251,7 +244,19 @@ test("telemetry refreshes the surface without producing a notification", async (
   await subject.run("auth flows");
   await flush();
   assert.ok(!subject.messages.some((message) => /usage update/.test(message)));
-  assert.ok(subject.messages.some((message) => /Researching/.test(message)));
+  assert.ok(!subject.messages.some((message) => /Researching/.test(message)));
+});
+
+test("session_start after reload reattaches the live stream of a running run", async (t) => {
+  const subject = await fixture(t, { hasUI: true, holdEvents: true });
+  await subject.run("auth flows");
+  await flush();
+  assert.equal(subject.eventCalls.length, 1);
+  await subject.handlers.get("session_shutdown")({ reason: "reload" });
+  assert.equal(subject.eventCalls[0][1].aborted, true);
+  await subject.handlers.get("session_start")({}, subject.context);
+  assert.equal(subject.eventCalls.length, 2);
+  assert.equal(subject.eventCalls[1][1].aborted, false);
 });
 
 test("status reuses one live stream and shutdown aborts it", async (t) => {
@@ -261,7 +266,7 @@ test("status reuses one live stream and shutdown aborts it", async (t) => {
   await subject.run("status run-1");
   await subject.run("status run-1");
   assert.equal(subject.eventCalls.length, 1);
-  const signal = subject.eventCalls[0][2];
+  const signal = subject.eventCalls[0][1];
   assert.equal(signal.aborted, false);
   await subject.handlers.get("session_shutdown")();
   assert.equal(signal.aborted, true);

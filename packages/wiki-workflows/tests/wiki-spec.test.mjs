@@ -87,6 +87,26 @@ test("requires source and domain descriptor pages", () => {
   assert.throws(() => parseWikiSpec({ pages: ["overview.md", "api/source.md", "api/billing/invoice/concept.md"] }), /domain/);
 });
 
+test("collects every WikiSpec defect in one throw", () => {
+  assert.throws(
+    () => parseWikiSpec({
+      extra: true,
+      topologyVersion: 1,
+      pages: ["api/billing/invoice.md", "billing/domain.md", "api/billing/invoice.md"],
+    }),
+    (error) => {
+      assert.match(error.message, /unknown fields: extra/);
+      assert.match(error.message, /topologyVersion must be 2/);
+      assert.match(error.message, /duplicate page paths: api\/billing\/invoice\.md/);
+      assert.match(error.message, /illegal page paths: api\/billing\/invoice\.md, billing\/domain\.md/);
+      assert.match(error.message, /must include overview\.md/);
+      assert.match(error.message, /at least one source\.md/);
+      assert.match(error.message, /at least one domain\.md/);
+      return true;
+    },
+  );
+});
+
 test("source-aware helpers and clusters preserve same domain slugs", () => {
   const spec = parseWikiSpec(validSpec());
   assert.equal(wikiSpecSourceId("api/source.md"), "api");

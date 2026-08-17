@@ -169,7 +169,7 @@ export class PiSessionObserver {
         const completed = {
           kind: "tool" as const,
           severity: event.isError ? "error" as const : "info" as const,
-          message: event.isError ? isWikiTool(event.toolName) ? "failed" : toolErrorReason(event.result) ?? "failed" : "",
+          message: event.isError ? toolErrorMessage(event.toolName, event.result) : "",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           summary: tool?.summary ?? existing?.summary,
@@ -451,6 +451,20 @@ function toolErrorReason(result: unknown): string | undefined {
   const content = record(result)?.content;
   const text = record(Array.isArray(content) ? content[0] : undefined)?.text;
   return typeof text === "string" ? shortString(text.split(/\r?\n/, 1)[0] ?? "", MAX_SUMMARY_CHARS) : undefined;
+}
+
+/**
+ * Process-log error for one tool call. Wiki result bodies stay suppressed
+ * unless the host labeled the error (`<tool> rejected: …` or input exactness),
+ * which wikiToolRejected already collapses to one safe line; the redundant
+ * tool-name prefix is stripped because the row already labels the tool.
+ */
+function toolErrorMessage(name: string, result: unknown): string {
+  const reason = toolErrorReason(result);
+  if (!reason) return "failed";
+  if (!isWikiTool(name)) return reason;
+  if (!reason.startsWith(`${name} `)) return "failed";
+  return reason.slice(name.length + 1).replace(/^rejected: /, "").trim() || "failed";
 }
 
 function safeToolSummary(name: string, rawArgs: unknown, workspaceRoot: string): string | undefined {

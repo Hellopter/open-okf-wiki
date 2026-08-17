@@ -635,7 +635,7 @@ test("start returns before background tasks finish and collect exposes an immedi
 
   const started = await startBatch(r, [task("background")], new AbortController().signal);
   assert.deepEqual(started, { batchId: 1 });
-  assert.throws(() => r.assertFinishable(), /terminal state/);
+  assert.throws(() => r.assertFinishable(), /terminal tasks/);
   const live = await r.collect(started.batchId, { until: "all", timeoutSeconds: 0 });
   assert.equal(live.status, "running");
   assert.deepEqual(live.pendingTaskIds, ["background"]);
@@ -677,7 +677,7 @@ test("collect timeout is bounded and does not cancel background work", async () 
   const { batchId } = await startBatch(r, [task("slow")], new AbortController().signal);
   const timedOut = await r.collect(batchId, { until: "any", timeoutSeconds: 0.01 });
   assert.equal(timedOut.status, "running");
-  assert.throws(() => r.assertFinishable(), /terminal state/);
+  assert.throws(() => r.assertFinishable(), /terminal tasks/);
   await assert.rejects(r.collect(batchId, { until: "all", timeoutSeconds: 1201 }), /between 0 and 1200/);
   finish();
   assert.equal((await r.collect(batchId, { until: "all", timeoutSeconds: 1 })).status, "complete");
@@ -815,14 +815,14 @@ test("terminal uncollected receipts survive reconstruction and block finish", as
   });
   const { batchId } = await startBatch(first, [task("durable")], new AbortController().signal);
   await waitFor(() => latestState?.batches[0]?.tasks[0]?.phase === "terminal");
-  assert.throws(() => first.assertFinishable(), /receipt to be collected/);
+  assert.throws(() => first.assertFinishable(), /collected receipts/);
 
   const restored = runtime({ run: async () => { throw new Error("terminal tasks must not restart"); } }, {
     restoredState: latestState,
     onStateChanged(state) { latestState = structuredClone(state); },
   });
   await restored.resume(new AbortController().signal);
-  assert.throws(() => restored.assertFinishable(), /receipt to be collected/);
+  assert.throws(() => restored.assertFinishable(), /collected receipts/);
   assert.equal((await restored.collect(batchId, { until: "all", timeoutSeconds: 0 })).status, "complete");
   assert.doesNotThrow(() => restored.assertFinishable());
   assert.equal(latestState.batches[0].tasks[0].collected, true);

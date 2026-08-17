@@ -10,27 +10,23 @@ export interface WikiProducerRequest {
 interface WikiRunEventBase {
   version: 1;
   runId: string;
-  sequence: number;
   at: string;
   message: string;
 }
 
-/** Durable run facts. Each variant owns its complete, typed payload. */
+/** Lifecycle facts worth showing once. Live agent progress lives on the view. */
 export type WikiRunEvent = WikiRunEventBase & (
   | { type: "started" }
   | { type: "stage"; stage: WikiRunStage; budgets?: WikiExecutionBudgets }
-  | { type: "progress" }
   | {
       type: "delegate";
-      phase: "queued" | "started" | "updated" | "completed" | "settled";
+      phase: "queued" | "settled";
       batch: number;
       completed: number;
       total: number;
       tasks?: WikiTaskSnapshot[];
       taskId?: string;
     }
-  | { type: "telemetry"; phase: "agent_update"; target: WikiAgentTarget }
-  | { type: "telemetry"; phase: "observability_health"; target: WikiAgentTarget; status: "degraded" | "healthy" }
   | { type: "paused"; reason?: WikiRunPause["reason"]; retryAt?: string }
   | { type: "resumed" }
   | { type: "cancelled" }
@@ -214,7 +210,6 @@ export interface WikiRunView {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
-  lastEventSequence: number;
   error?: string;
   pause?: WikiRunPause;
   warnings?: WikiRunWarning[];
@@ -251,7 +246,7 @@ export interface WikiInspectOptions {
 export interface WikiRunHandle {
   readonly id: string;
   view(): Promise<WikiRunView>;
-  updates(after?: number, signal?: AbortSignal): AsyncIterable<WikiRunUpdate>;
+  updates(signal?: AbortSignal): AsyncIterable<WikiRunUpdate>;
   result(): Promise<WikiProducerResult>;
   control(action: WikiRunControl): Promise<WikiRunView>;
   inspectAgent(target: WikiAgentTarget, options?: WikiInspectOptions): Promise<WikiAgentInspection | undefined>;
@@ -265,12 +260,7 @@ export interface WikiProducer {
 }
 
 export interface WikiRunUpdate {
-  /** Whether this update is a durable ledger replay or a replaceable live checkpoint. */
-  kind: "durable" | "sidecar";
-  /** Monotonic projection revision. Sidecars may share an event sequence but always have a newer revision. */
-  revision: number;
   event: WikiRunEvent;
-  /** Durable projection produced by the same run transaction as `event`. */
   view: WikiRunView;
 }
 

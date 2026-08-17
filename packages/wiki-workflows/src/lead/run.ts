@@ -31,6 +31,7 @@ import { sameStringSet, stableStringify } from "../util.js";
 import { projectWikiBoard, renderWikiBoard, wikiLeadMayWrite, wikiOpenResearchBlockerIds, type WikiBoardProjectionInput, type WikiBoardTaxonomyCheckpoint, type WikiBoardTaxonomyDecision } from "./board.js";
 import { assertDispatchable, type WikiDispatchTaskInput } from "./dispatch.js";
 import { UnsupportedWikiRunVersionError, WIKI_FORMAT } from "../run-ledger.js";
+import { WikiRejectedError, allowedList, listed } from "../wiki-reject.js";
 
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -59,12 +60,6 @@ export interface WikiLeadSpecRecord {
   spec: WikiSpec;
 }
 
-export interface WikiTaxonomyInput {
-  revision: number;
-  decisions: readonly WikiBoardTaxonomyDecision[];
-  conflictIds: readonly string[];
-}
-
 /** Host-resolved input read from the fixed discovery slot. It contains no authority IDs. */
 export interface WikiDiscoveryPlanEntry {
   sourceScopeId: string;
@@ -82,17 +77,7 @@ export interface WikiActiveWave {
   batchId: number;
 }
 
-interface CandidateTransaction {
-  version: typeof WIKI_FORMAT;
-  runId: string;
-  path: string;
-  staged: string;
-  oldDigest: string | null;
-  newDigest: string;
-  nextState: WikiLeadRunState;
-}
-
-export type WikiCandidateFaultPoint = "afterStage" | "afterJournal" | "afterState" | "afterRename" | "afterVerify";
+export type WikiCandidateFaultPoint = "afterStage" | "afterState" | "afterRename" | "afterVerify";
 export type WikiLeadFinalizeFaultPoint = "afterFinalizeJournal" | WikiFinalizeFaultPoint | "afterFinalize" | "afterSeal";
 
 export interface WikiLeadRunOptions {
@@ -163,8 +148,7 @@ export class WikiLeadRun {
     readonly runId: string,
     readonly candidateWikiRoot: string,
     private readonly stateFile: string,
-    private readonly journalFile: string,
-    private readonly lockFile: string,
+
     private readonly requiredSections: readonly string[],
     private readonly fault: WikiLeadRunOptions["fault"],
     private readonly finalizeFault: WikiLeadRunOptions["finalizeFault"],
@@ -185,8 +169,6 @@ export class WikiLeadRun {
     const runRoot = path.join(workspace, ".okf-wiki", "runs", options.runId);
     await mkdir(runRoot, { recursive: true });
     const stateFile = path.join(runRoot, "lead-state.json");
-    const journalFile = path.join(runRoot, "candidate-transaction.json");
-    const lockFile = path.join(runRoot, "lead-operation.lock");
     const policyDigest = hash(stableStringify(options.policy));
     const configuredSourceScopeIds = unique(options.sourcePlan?.sources.map((source) => source.scopeId) ?? options.allowedSourceScopeIds ?? []);
     let state = await readState(stateFile, options.runId);
@@ -198,7 +180,7 @@ export class WikiLeadRun {
     const pinnedRoots = options.sourcePlan
       ? await resolvePinnedWikiRoots(options.sourcePlan, options.language ?? "en", candidateDirectory(workspace, candidate))
       : undefined;
-    const subject = new WikiLeadRun(workspace, options.runId, candidate, stateFile, journalFile, lockFile, options.requiredSections ?? [], options.fault, options.finalizeFault, options.assertActive, options.executionToken, pinnedRoots, options.maxDelegatedTasks, state);
+    const subject = new WikiLeadRun(workspace, options.runId, candidate, stateFile, options.requiredSections ?? [], options.fault, options.finalizeFault, options.assertActive, options.executionToken, pinnedRoots, options.maxDelegatedTasks, state);
     await subject.serial(async () => {
       await subject.recover();
       if (subject.state.policyDigest !== policyDigest) {
@@ -239,8 +221,14 @@ export class WikiLeadRun {
       await this.recover();
       if (this.state.spec) throw new Error("Wiki taxonomy must be accepted before wiki_plan");
       assertResearchReady(this.state);
-      const checkpoint = parseTaxonomyCheckpoint(value);
-      assertTaxonomySources(checkpoint, this.state.sourceScopeIds);
+      const inspected = inspectTaxonomyCheckpoint(value);
+      const sourceDefects = inspected.checkpoint
+        ? collectTaxonomySourceDefects(inspected.checkpoint, this.state.sourceScopeIds)
+        : [];
+      if (inspected.defects.length || sourceDefects.length) {
+        throw new WikiRejectedError([...inspected.defects, ...sourceDefects]);
+      }
+      const checkpoint = inspected.checkpoint!;
       if (this.state.taxonomy && checkpoint.revision <= this.state.taxonomy.revision) {
         throw new Error(`Wiki taxonomy revision must advance beyond ${this.state.taxonomy.revision}`);
       }
@@ -258,7 +246,8 @@ export class WikiLeadRun {
       assertResearchReady(this.state);
       if (expectedRevision !== this.state.specRevision) throw new Error(`WikiSpec revision conflict: expected ${expectedRevision}, found ${this.state.specRevision}`);
       const spec = parseWikiSpec(specValue);
-      assertTaxonomyOwnership(this.state.taxonomy, spec, this.state.sourceScopeIds);
+      const ownership = collectTaxonomyOwnershipDefects(this.state.taxonomy, spec, this.state.sourceScopeIds);
+      if (ownership.length) throw new WikiRejectedError(ownership);
       const next = { ...this.state, spec, specRevision: this.state.specRevision + 1, candidateRevision: this.state.candidateRevision + 1, reviews: [] };
       await this.writeState(next);
       this.state = next;
@@ -298,9 +287,6 @@ export class WikiLeadRun {
       const oldDigest = await fileDigest(target);
       const newDigest = hash(canonical);
       const nextState: WikiLeadRunState = { ...this.state, candidateRevision: this.state.candidateRevision + 1, reviews: [] };
-      const transaction: CandidateTransaction = { version: WIKI_FORMAT, runId: this.runId, path: relative, staged, oldDigest, newDigest, nextState };
-      await writeText(this.journalFile, `${JSON.stringify(transaction, null, 2)}\n`);
-      await this.fault?.("afterJournal");
       await this.writeState(nextState);
       this.state = nextState;
       await this.fault?.("afterState");
@@ -309,8 +295,6 @@ export class WikiLeadRun {
       await this.fault?.("afterRename");
       if (await fileDigest(target) !== newDigest) throw new WikiCandidateCorruptionError(`Candidate page digest mismatch after replacement: ${relative}`);
       await this.fault?.("afterVerify");
-      await rm(this.journalFile, { force: true });
-      await syncDirectory(path.dirname(this.journalFile));
       await this.tryIndexes();
       return { candidateRevision: nextState.candidateRevision, digest: newDigest };
     });
@@ -571,17 +555,19 @@ export class WikiLeadRun {
     tree: string,
   ): Promise<void> {
     const board = projectWikiBoard(boardInput(this.state));
-    const blocked = board.clusters.find((cluster) => cluster.status === "blocked");
-    if (blocked) throw new Error(`Wiki cluster is blocked after 3 write/review attempts: ${blocked.id}`);
+    const defects: string[] = [];
+    const blocked = board.clusters.filter((cluster) => cluster.status === "blocked").map((cluster) => cluster.id);
+    if (blocked.length) defects.push(`Wiki clusters blocked after 3 write/review attempts: ${listed(blocked)}`);
     const current = this.state.reviews.filter((review) => sameBasis(review.basis, this.state, tree));
-    const requested = current.find((review) => review.verdict === "changes_requested");
-    if (requested) throw new Error(`Wiki review requested changes in contract ${requested.contractId}`);
+    const requested = current.filter((review) => review.verdict === "changes_requested").map((review) => review.contractId);
+    if (requested.length) defects.push(`Wiki review requested changes in contracts: ${listed(requested)}`);
     const covered = new Set(current.filter((review) => review.verdict === "pass").flatMap((review) => review.reviewedPaths));
     const missing = requiredPaths.filter((page) => !covered.has(page));
-    if (missing.length) throw new Error(`Current Wiki revision lacks passing independent review for: ${missing.join(", ")}`);
+    if (missing.length) defects.push(`Current Wiki revision lacks passing independent review for: ${listed(missing)}`);
     const profile = new Set(current.filter((review) => review.verdict === "pass").flatMap((review) => review.profileCoverage));
     const missingProfile = requiredProfileCoverage.filter((item) => !profile.has(item));
-    if (missingProfile.length) throw new Error(`Current Wiki review does not cover profile requirements: ${missingProfile.join(", ")}`);
+    if (missingProfile.length) defects.push(`Current Wiki review does not cover profile requirements: ${listed(missingProfile)}`);
+    if (defects.length) throw new WikiRejectedError(defects);
   }
 
   private async preparePublicationFinalization(input: {
@@ -628,29 +614,7 @@ export class WikiLeadRun {
   }
 
   private async recover(): Promise<void> {
-    const transaction = await readTransaction(this.journalFile, this.runId);
-    if (!transaction) {
-      this.state = await readState(this.stateFile, this.runId) ?? this.state;
-      return;
-    }
-    const target = path.join(this.candidateWikiRoot, ...transaction.path.split("/"));
-    await assertContainedAbsolutePath(this.candidateWikiRoot, target, true, "candidate Wiki");
-    const targetDigest = await fileDigest(target);
-    if (targetDigest !== transaction.oldDigest && targetDigest !== transaction.newDigest) {
-      throw new WikiCandidateCorruptionError(`Cannot recover externally modified candidate page: ${transaction.path}`);
-    }
-    await this.writeState(transaction.nextState);
-    this.state = transaction.nextState;
-    if (targetDigest === transaction.oldDigest) {
-      if (await fileDigest(transaction.staged) !== transaction.newDigest) throw new WikiCandidateCorruptionError(`Cannot recover missing or modified staged page: ${transaction.path}`);
-      await rename(transaction.staged, target);
-      await syncDirectory(path.dirname(target));
-    }
-    if (await fileDigest(target) !== transaction.newDigest) throw new WikiCandidateCorruptionError(`Candidate recovery digest mismatch: ${transaction.path}`);
-    await rm(transaction.staged, { force: true });
-    await rm(this.journalFile, { force: true });
-    await syncDirectory(path.dirname(this.journalFile));
-    await this.tryIndexes();
+    this.state = await readState(this.stateFile, this.runId) ?? this.state;
   }
 
   private async tryIndexes(): Promise<void> {
@@ -677,12 +641,8 @@ export class WikiLeadRun {
   private async serial<T>(operation: () => Promise<T>): Promise<T> {
     let result!: T;
     const next = this.chain.catch(() => {}).then(async () => {
-      const release = await acquireRunLease(this.lockFile);
-      try {
-        await assertExecutionActive(this.assertActive, this.executionToken);
-        result = await operation();
-      }
-      finally { await release(); }
+      await assertExecutionActive(this.assertActive, this.executionToken);
+      result = await operation();
     });
     this.chain = next.catch(() => {});
     await next;
@@ -747,51 +707,96 @@ function parseState(value: unknown, runId: string, requireDigest = true): WikiLe
 }
 
 function parseTaxonomyCheckpoint(value: unknown): WikiBoardTaxonomyCheckpoint {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Wiki taxonomy checkpoint");
-  const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some((key) => !["accepted", "revision", "decisions", "conflictIds", "digest"].includes(key))) throw new Error("Invalid Wiki taxonomy checkpoint");
-  if (raw.accepted !== undefined && raw.accepted !== true || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 1 || !Array.isArray(raw.decisions) || raw.decisions.length === 0 || !Array.isArray(raw.conflictIds)) {
-    throw new Error("Invalid Wiki taxonomy checkpoint");
+  const inspected = inspectTaxonomyCheckpoint(value);
+  if (inspected.defects.length) throw new WikiRejectedError(inspected.defects);
+  return inspected.checkpoint!;
+}
+
+function inspectTaxonomyCheckpoint(value: unknown): { defects: string[]; checkpoint?: WikiBoardTaxonomyCheckpoint } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { defects: ["taxonomy must be a mapping"] };
   }
-  const decisions: WikiBoardTaxonomyDecision[] = raw.decisions.map((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Invalid Wiki taxonomy decision");
-    const decision = entry as Record<string, unknown>;
-    if (Object.keys(decision).some((key) => !["sourceScopeId", "domainId", "conceptIds"].includes(key))
-      || typeof decision.sourceScopeId !== "string" || !decision.sourceScopeId
-      || typeof decision.domainId !== "string" || !decision.domainId
-      || !Array.isArray(decision.conceptIds) || decision.conceptIds.some((id) => typeof id !== "string" || !id)) {
-      throw new Error("Invalid Wiki taxonomy decision");
+  const raw = value as Record<string, unknown>;
+  const defects: string[] = [];
+  const extras = Object.keys(raw).filter((key) => !["accepted", "revision", "decisions", "conflictIds", "digest"].includes(key));
+  if (extras.length) defects.push(`taxonomy has unknown fields: ${listed(extras)}`);
+  if (raw.accepted !== undefined && raw.accepted !== true) defects.push("taxonomy accepted must be true");
+  if (!Number.isSafeInteger(raw.revision) || (raw.revision as number) < 1) defects.push("taxonomy revision must be a positive integer");
+  if (!Array.isArray(raw.decisions)) defects.push("taxonomy decisions must be an array");
+  else if (raw.decisions.length === 0) defects.push("taxonomy decisions must not be empty");
+  if (!Array.isArray(raw.conflictIds)) defects.push("taxonomy conflictIds must be an array");
+  const decisions: WikiBoardTaxonomyDecision[] = [];
+  if (Array.isArray(raw.decisions)) {
+    for (const [index, entry] of raw.decisions.entries()) {
+      const field = `taxonomy.decisions[${index}]`;
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        defects.push(`${field} must be a mapping`);
+        continue;
+      }
+      const decision = entry as Record<string, unknown>;
+      const unknown = Object.keys(decision).filter((key) => !["sourceScopeId", "domainId", "conceptIds"].includes(key));
+      if (unknown.length) defects.push(`${field} has unknown fields: ${listed(unknown)}`);
+      if (typeof decision.sourceScopeId !== "string" || !decision.sourceScopeId) defects.push(`${field}.sourceScopeId must be a nonempty string`);
+      if (typeof decision.domainId !== "string" || !decision.domainId) defects.push(`${field}.domainId must be a nonempty string`);
+      if (!Array.isArray(decision.conceptIds) || decision.conceptIds.some((id) => typeof id !== "string" || !id)) {
+        defects.push(`${field}.conceptIds must be an array of nonempty strings`);
+        continue;
+      }
+      if (typeof decision.sourceScopeId === "string" && decision.sourceScopeId && typeof decision.domainId === "string" && decision.domainId) {
+        decisions.push({
+          sourceScopeId: decision.sourceScopeId,
+          domainId: decision.domainId,
+          conceptIds: [...decision.conceptIds],
+        });
+      }
     }
-    return { sourceScopeId: decision.sourceScopeId, domainId: decision.domainId, conceptIds: [...decision.conceptIds] as string[] };
-  });
-  const conflictIds = raw.conflictIds.map((id) => {
-    if (typeof id !== "string" || !id) throw new Error("Invalid Wiki taxonomy conflict ID");
-    return id;
-  });
+  }
+  const conflictIds: string[] = [];
+  if (Array.isArray(raw.conflictIds)) {
+    for (const [index, id] of raw.conflictIds.entries()) {
+      if (typeof id !== "string" || !id) defects.push(`taxonomy.conflictIds[${index}] must be a nonempty string`);
+      else conflictIds.push(id);
+    }
+  }
+  if (!Number.isSafeInteger(raw.revision) || (raw.revision as number) < 1) return { defects };
   const body = { revision: raw.revision, decisions, conflictIds };
   const digest = raw.digest === undefined ? hash(stableStringify(body)) : raw.digest;
-  if (typeof digest !== "string" || digest !== hash(stableStringify(body))) throw new Error("Wiki taxonomy checkpoint digest mismatch");
-  return { accepted: true, revision: raw.revision as number, decisions, conflictIds, digest };
-}
-
-function assertTaxonomySources(checkpoint: WikiBoardTaxonomyCheckpoint, allowedSourceScopeIds: readonly string[]): void {
-  const allowed = new Set(allowedSourceScopeIds);
-  const covered = new Set<string>();
-  for (const decision of checkpoint.decisions) {
-    if (!allowed.has(decision.sourceScopeId)) throw new Error(`Wiki taxonomy references undeclared source scope: ${decision.sourceScopeId}`);
-    covered.add(decision.sourceScopeId);
+  if (typeof digest !== "string" || digest !== hash(stableStringify(body))) {
+    defects.push("taxonomy digest mismatch");
+    return { defects };
   }
-  const missing = allowedSourceScopeIds.filter((sourceScopeId) => !covered.has(sourceScopeId));
-  if (missing.length) throw new Error(`Wiki taxonomy must cover every pinned Source: ${missing.join(", ")}`);
+  return {
+    defects,
+    checkpoint: { accepted: true, revision: raw.revision as number, decisions, conflictIds, digest },
+  };
 }
 
-function assertTaxonomyOwnership(checkpoint: WikiBoardTaxonomyCheckpoint, spec: WikiSpec, allowedSourceScopeIds: readonly string[]): void {
-  assertTaxonomySources(checkpoint, allowedSourceScopeIds);
+function collectTaxonomySourceDefects(checkpoint: WikiBoardTaxonomyCheckpoint, allowedSourceScopeIds: readonly string[]): string[] {
+  const allowed = new Set(allowedSourceScopeIds);
+  const undeclared = [...new Set(checkpoint.decisions.map((decision) => decision.sourceScopeId).filter((scope) => !allowed.has(scope)))];
+  const covered = new Set(checkpoint.decisions.map((decision) => decision.sourceScopeId));
+  const missing = allowedSourceScopeIds.filter((sourceScopeId) => !covered.has(sourceScopeId));
+  const defects: string[] = [];
+  if (undeclared.length) {
+    defects.push(`taxonomy scopes outside pinned sources: ${listed(undeclared)} (allowed: ${allowedList(allowedSourceScopeIds)})`);
+  }
+  if (missing.length) defects.push(`Wiki taxonomy must cover every pinned Source: ${listed(missing)}`);
+  return defects;
+}
+
+function collectTaxonomyOwnershipDefects(
+  checkpoint: WikiBoardTaxonomyCheckpoint,
+  spec: WikiSpec,
+  allowedSourceScopeIds: readonly string[],
+): string[] {
+  const defects = collectTaxonomySourceDefects(checkpoint, allowedSourceScopeIds);
   const specSourceIds = wikiSpecSourceIds(spec);
+  const unownedDomains: string[] = [];
+  const unownedConcepts: string[] = [];
   for (const decision of checkpoint.decisions) {
     const ownedSources = specSourceIds.includes(decision.sourceScopeId) ? [decision.sourceScopeId] : [];
     if (!ownedSources.some((sourceId) => wikiSpecDomainIds(spec, sourceId).includes(decision.domainId))) {
-      throw new Error(`Wiki taxonomy domain is not owned by source ${decision.sourceScopeId}: ${decision.domainId}`);
+      unownedDomains.push(`${decision.sourceScopeId}/${decision.domainId}`);
     }
     const concepts = new Set(spec.pages.flatMap((page) => {
       if (!ownedSources.includes(wikiSpecSourceId(page) ?? "") || wikiSpecDomainId(page) !== decision.domainId) return [];
@@ -799,9 +804,12 @@ function assertTaxonomyOwnership(checkpoint: WikiBoardTaxonomyCheckpoint, spec: 
       return segments.length >= 4 ? [segments[2]] : [];
     }));
     for (const conceptId of decision.conceptIds) {
-      if (!concepts.has(conceptId)) throw new Error(`Wiki taxonomy concept is not owned by ${decision.sourceScopeId}/${decision.domainId}: ${conceptId}`);
+      if (!concepts.has(conceptId)) unownedConcepts.push(`${decision.sourceScopeId}/${decision.domainId}/${conceptId}`);
     }
   }
+  if (unownedDomains.length) defects.push(`taxonomy domains not owned by their source: ${listed(unownedDomains)}`);
+  if (unownedConcepts.length) defects.push(`taxonomy concepts not owned by their domain: ${listed(unownedConcepts)}`);
+  return defects;
 }
 
 function assertResearchReady(state: WikiLeadRunState): void {
@@ -1068,16 +1076,6 @@ function parseTaskPartial(value: unknown): NonNullable<WikiTaskRuntimeState["bat
   return { outputs: raw.outputs.map(parseWikiArtifactRef), coverage: [...raw.coverage] as string[], gaps: raw.gaps.map(parseWikiDelegateGap) };
 }
 
-async function readTransaction(location: string, runId: string): Promise<CandidateTransaction | undefined> {
-  try {
-    const raw = JSON.parse(await readFile(location, "utf8")) as CandidateTransaction;
-    if (raw.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/candidate-transaction.json`, raw.version);
-    if (raw.runId !== runId || typeof raw.path !== "string" || typeof raw.staged !== "string"
-      || raw.oldDigest !== null && !/^[a-f0-9]{64}$/.test(raw.oldDigest) || !/^[a-f0-9]{64}$/.test(raw.newDigest)) throw new Error("Invalid Wiki candidate transaction");
-    return { ...raw, nextState: parseState(raw.nextState, runId, false) };
-  } catch (error) { if (isMissing(error)) return undefined; throw error; }
-}
-
 async function readPublicationTransaction(location: string, runId: string): Promise<PublicationFinalizationTransaction | undefined> {
   try {
     const raw = JSON.parse(await readFile(location, "utf8")) as Record<string, unknown>;
@@ -1277,29 +1275,4 @@ function serializeState(state: WikiLeadRunState): string {
 function hash(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex"); }
 function isMissing(error: unknown): error is NodeJS.ErrnoException { return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT"); }
 
-async function acquireRunLease(location: string): Promise<() => Promise<void>> {
-  const deadline = Date.now() + 30_000;
-  while (true) {
-    try {
-      const handle = await open(location, "wx");
-      try { await handle.writeFile(`${process.pid}\n`, "utf8"); await handle.sync(); }
-      finally { await handle.close(); }
-      await syncDirectory(path.dirname(location));
-      return async () => { await rm(location, { force: true }); await syncDirectory(path.dirname(location)); };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const owner = Number.parseInt(await readFile(location, "utf8").catch(() => ""), 10);
-      if (Number.isSafeInteger(owner) && owner > 0 && owner !== process.pid && !processExists(owner)) {
-        await rm(location, { force: true });
-        continue;
-      }
-      if (Date.now() >= deadline) throw new Error(`Timed out waiting for Wiki Lead run lease: ${location}`);
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    }
-  }
-}
 
-function processExists(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
-}

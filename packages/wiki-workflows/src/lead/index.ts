@@ -56,7 +56,6 @@ export {
   type WikiLeadRunOptions,
   type WikiLeadSpecRecord,
   type WikiQueuedWave,
-  type WikiTaxonomyInput,
   type WikiTaskRuntimeTransitions,
 } from "./run.js";
 export {
@@ -69,10 +68,3 @@ export {
   WIKI_DELEGATE_CANCEL_REASON_CODES,
   type WikiDelegateCancelReasonCode,
 } from "./host-tools.js";
-export {
-  WikiWorkCoordinator,
-  type WikiPresentedBatch,
-  type WikiWorkCoordinatorOptions,
-  type WikiWorkCoordinatorRun,
-  type WikiWorkCoordinatorTasks,
-} from "./work-coordinator.js";

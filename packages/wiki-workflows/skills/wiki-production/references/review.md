@@ -31,8 +31,9 @@ provenance. `## Evidence` must include at least one
 After the review file covers the complete brief, call `wiki_review_finish`
 with only `verdict: pass` or `verdict: changes_requested`. Use
 `changes_requested` when `review.md` contains any required correction or a
-Source could not be checked. If the host rejects the file, fix the named
-headings and `repo:<scope>/<path>#Lx-Ly` citations, then finish again. The
+Source could not be checked. If the host rejects the file, fix every named
+defect in the same rewrite of `review.md`, then finish again. Do not call
+finish again on the unchanged file. The
 host binds the accepted file to the exact Review Assignment and persists its
 structured findings.
 

@@ -4,7 +4,7 @@ Canonical language lives in [CONTEXT.md](../../CONTEXT.md). Run isolation and pe
 
 ## External seam
 
-`createProductionWikiProducer()` returns the deep production module. Callers start one independent Run and consume transaction-aligned updates:
+`createProductionWikiProducer()` returns the deep production module. Callers start one independent Run and consume live `{ event, view }` updates:
 
 ```ts
 const run = await producer.start({ cwd, focus });
@@ -14,7 +14,7 @@ await run.control("resume");
 const result = await run.result();
 ```
 
-`view()` is a point query. `updates()` is the replay/live interface: each value contains an event and the current Run view. Catch-up pairs retained events with the snapshot at read time, not a historical view-at-sequence. The overlay ignores non-advancing sequences and keeps the latest view. The root package export contains only this caller surface; CLI and Pi adapters use explicit subpaths.
+`view()` is a point query. `updates()` is a live hub: each value is the current Run view plus a notify-worthy lifecycle fact when one happened. There is no retained event log and no catch-up by sequence. The overlay keeps the latest view. The root package export contains only this caller surface; CLI and Pi adapters use explicit subpaths.
 
 ## Run isolation
 
@@ -63,7 +63,7 @@ Indexes are deterministic projections. Final governance issues an opaque Publica
 
 ## Durable Run state
 
-Each lifecycle change is one snapshot transaction containing the event, Run view, affected Agent records, and task runtime state. The retained event log stores the event only; the current snapshot lives in `run-state.json`, and a pinned production plan lives in `production-plan.json`. Process tails project into `progress.recentActivity` for the live widget from in-memory Agent `process` records. There is no run-level activity log. A write-ahead transaction is persisted first and replayed idempotently after interruption. It owns lifecycle legality and active-Run release; callers never sequence state edits, event appends, and release themselves.
+Lifecycle facts live in `run.json`. The pinned plan is `plan.json`. Agent process tails live in `agents/*.json` and are replaced in place. There is no event log and no sidecar journal. Live `updates()` is an in-memory hub of the current view. Publication still uses `publish.json` because installing `wiki/` has a different filesystem lifetime.
 
 The current format is 1; anything else fails closed. Opening another format reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable. The Published Wiki is independent.
 
@@ -71,12 +71,12 @@ The current format is 1; anything else fails closed. Opening another format repo
 
 Observability is a projection, never a control plane. One pure semantic module interprets the strict event variants plus status, stage, health, liveness, activity, tone, marker, context pressure, and batch progress. Events have typed variant fields rather than an extensible data bag. CLI, live footer/widget, and overlay are media adapters over those semantics; the overlay does not depend on CLI rendering. They never reduce events into independent state.
 
-The overlay and Pi stream consume `updates()`, so a live event is never rendered with a separately queried stale view. Catch-up may attach the current snapshot to older sequences; the overlay ignores non-advancing sequences and accepts the terminal update before its stream ends. Agent inspection is a point query; there is no run-level activity log.
+The overlay and Pi stream consume `updates()`, so a live fact is never rendered with a separately queried stale view. The overlay keeps the latest view and accepts the terminal update before its stream ends. Agent inspection is a point query; there is no run-level activity log.
 
 ## Failure ownership
 
 Pi owns one Agent model loop, persistent session, compaction, cancellation, usage observation, and tool execution. The Wiki task runtime owns bounded fresh-session retry and task receipts. Throttling reduces shared admission and honors retry metadata; authentication, billing, schema, validation, hard quota, and usage-limit failures fail or durably pause without consuming transient retry budget.
 
-The current publication format is 1; anything else fails closed. Every new publication writes version 1 with the source fingerprint, summary, sealed WikiSpec, page set, and final tree digest. The journal binds that complete canonical metadata with its own digest, and reconciliation requires exact equality with current provenance. Publication journals, audit acknowledgement, run events, active markers, artifact blobs and manifests, production-skill snapshots, and cleanup use fsynced file and directory transitions so recovery knowledge or a returned receipt is durable before the next lifecycle step.
+The current publication format is 1; anything else fails closed. Every new publication writes version 1 with the source fingerprint, summary, sealed WikiSpec, page set, and final tree digest. The journal binds that complete canonical metadata with its own digest, and reconciliation requires exact equality with current provenance. Publication journals, audit acknowledgement, active markers, artifact blobs and manifests, production-skill snapshots, and cleanup use fsynced file and directory transitions so recovery knowledge or a returned receipt is durable before the next lifecycle step.
 
 Successful publication removes transient Candidate, transaction, session, finalization preimage, and materialized skill data. Content-addressed artifact blobs, their per-Run manifest, task receipts, Run state, published provenance, and acknowledged publication audit remain as durable evidence. Failed, paused, and cancelled Runs retain their recovery material. Cleanup failure is explicit and does not rewrite a successful publication as failed.

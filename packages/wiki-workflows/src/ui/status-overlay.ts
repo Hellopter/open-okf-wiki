@@ -123,7 +123,7 @@ function createStatusOverlay(args: {
   onControl?: (action: "pause" | "resume" | "cancel") => Promise<void>;
 }) {
   let view = args.view;
-  let revision = view.lastEventSequence;
+  let fingerprint = `${view.updatedAt}:${view.status}:${view.progress?.lead?.activity ?? ""}`;
   let state = initialWikiOverlayState({ runId: view.id, initialTarget: args.initialTarget, process: args.process });
   let inspection: WikiAgentInspection | undefined;
   let warning: string | undefined;
@@ -210,10 +210,10 @@ function createStatusOverlay(args: {
     finally { refreshing = false; invalidate(); args.tui.requestRender(); }
   };
 
-  subscribeUpdates(args.handle, view.lastEventSequence, controller.signal, (update) => {
-    const nextRevision = Number.isFinite(update.revision) ? update.revision : update.view.lastEventSequence;
-    if (nextRevision <= revision) return;
-    revision = nextRevision;
+  subscribeUpdates(args.handle, controller.signal, (update) => {
+    const nextFingerprint = `${update.view.updatedAt}:${update.view.status}:${update.view.progress?.lead?.activity ?? ""}`;
+    if (nextFingerprint === fingerprint && update.view.status === view.status) return;
+    fingerprint = nextFingerprint;
     view = update.view;
     state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
     now = Date.now();
@@ -667,4 +667,4 @@ function strong(theme: unknown, text: string, color: ThemeColor): string {
   if (typeof value?.bold !== "function") return painted;
   try { return String(value.bold.call(value, painted)); } catch { return painted; }
 }
-function subscribeUpdates(handle: Pick<WikiRunHandle, "updates">, after: number, signal: AbortSignal, onUpdate: (update: WikiRunUpdate) => void): void { void (async () => { try { for await (const update of handle.updates(after, signal)) { if (signal.aborted) return; onUpdate(update); } } catch { /* durable stream may end */ } })(); }
+function subscribeUpdates(handle: Pick<WikiRunHandle, "updates">, signal: AbortSignal, onUpdate: (update: WikiRunUpdate) => void): void { void (async () => { try { for await (const update of handle.updates(signal)) { if (signal.aborted) return; onUpdate(update); } } catch { /* durable stream may end */ } })(); }
