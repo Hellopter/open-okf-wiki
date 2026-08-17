@@ -67,7 +67,7 @@ function testHandoff(contract, body) {
     : contract.role === "write"
       ? contract.writePaths.map((path) => `page:${path}`).join("\n")
       : "";
-  const section = contract.role === "research" ? `## Assignments\n${ids}\n## Coverage\n${ids}\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone`
+  const section = contract.role === "research" ? `## Scope\n${ids}\n## Coverage\n${ids}\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone`
     : contract.role === "write" ? `## Pages\n${ids}` : "## Findings\n";
   return `# ${role} Handoff\n${section}\n## Evidence\nrepo:api/test.ts#L1-L1\n\n${body}`;
 }

@@ -71,8 +71,8 @@ function artifactKind(role: WikiDelegateRole): WikiArtifactKind {
 }
 
 function requiredHeadings(role: WikiDelegateRole): string[] {
-  if (role === "research") return ["research handoff", "assignments", "coverage", "evidence", "conflicts and alternatives", "gaps and failed reads"];
-  if (role === "write") return ["write handoff", "pages", "evidence"];
+  if (role === "research") return ["research handoff", "scope", "coverage", "evidence", "conflicts and alternatives", "gaps and failed reads"];
+  if (role === "write") return ["write handoff"];
   return ["review handoff", "findings", "evidence"];
 }
 
@@ -123,7 +123,7 @@ function validateRoleIndexes(
   completed?: readonly string[],
   followups?: readonly WikiResearchFollowupDraft[],
 ): void {
-  if (indexes.citations.length === 0) throw new Error("Evidence handoff requires at least one source-qualified citation");
+  if (role !== "write" && indexes.citations.length === 0) throw new Error("Evidence handoff requires at least one source-qualified citation");
   const sourceScopes = new Set(contract.sourceScopeIds);
   if (indexes.citations.some((citation) => !sourceScopes.has(citation.scope))) throw new Error("Evidence handoff citation is outside the pinned source scope");
   if (role === "write") {

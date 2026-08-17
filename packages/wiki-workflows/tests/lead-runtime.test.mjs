@@ -502,7 +502,7 @@ test("Lead taxonomy tool durably accepts a compact source-qualified checkpoint",
     createSession: async (options) => sessionFactory(async () => {
       const names = new Set(options.customTools.map((tool) => tool.name));
       if (names.has("wiki_research_finish")) {
-        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\n# Research Handoff\n## Assignments\nCovered the assigned Source.\n## Coverage\nComplete.\n## Conflicts and alternatives\nNone.\n## Gaps and failed reads\nNone.\n## Evidence\nrepo:source/a.ts#L1-L1\n" });
+        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\n# Research Handoff\n## Scope\nCovered the assigned Source.\n## Coverage\nComplete.\n## Conflicts and alternatives\nNone.\n## Gaps and failed reads\nNone.\n## Evidence\nrepo:source/a.ts#L1-L1\n" });
         await execute(options.customTools, "wiki_research_finish", { status: "complete" });
         return;
       }

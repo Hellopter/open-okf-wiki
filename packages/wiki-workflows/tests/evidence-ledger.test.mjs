@@ -14,7 +14,7 @@ test("EvidenceLedger indexes role-specific research Markdown without retaining p
     mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: ["runtime"], lensScopeIds: ["api"], resolvesIds: [],
   });
   const markdown = [
-    "# Research Handoff", "## Assignments", "assignment:assignment-1",
+    "# Research Handoff", "## Scope", "assignment:assignment-1",
     "## Coverage", "assignment:assignment-1", "## Conflicts and alternatives", "None", "## Gaps and failed reads", "None", "## Evidence", "repo:source/src/runtime.ts#L10-L20",
   ].join("\n");
   const entry = ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] });
@@ -28,7 +28,7 @@ test("EvidenceLedger accepts host completion coverage when Markdown omits assign
     id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
     mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
   });
-  const markdown = "# Research Handoff\n## Assignments\nCovered the assigned source scope.\n## Coverage\nVerified entry points.\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
+  const markdown = "# Research Handoff\n## Scope\nCovered the assigned source scope.\n## Coverage\nVerified entry points.\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
   const entry = ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] });
   assert.deepEqual(entry.completedAssignmentIds, ["assignment-1"]);
   assert.deepEqual(entry.indexes.assignmentIds, []);
@@ -39,7 +39,7 @@ test("EvidenceLedger indexes a handoff after valid leading YAML frontmatter", ()
     id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
     mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
   });
-  const markdown = "---\nfollowups: []\n---\n# Research Handoff\n## Assignments\nassignment:assignment-1\n## Coverage\nComplete\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
+  const markdown = "---\nfollowups: []\n---\n# Research Handoff\n## Scope\nassignment:assignment-1\n## Coverage\nComplete\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
   const entry = ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] });
   assert.deepEqual(entry.indexes.assignmentIds, ["assignment-1"]);
   assert.deepEqual(entry.indexes.citations, [{ scope: "source", path: "file.ts", startLine: 1, endLine: 2 }]);
@@ -50,7 +50,7 @@ test("EvidenceLedger rejects wrong handoff kind, undeclared assignments, and unq
     id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
     mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
   });
-  const markdown = "# Research Handoff\n## Assignments\nassignment:assignment-1\n## Coverage\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
+  const markdown = "# Research Handoff\n## Scope\nassignment:assignment-1\n## Coverage\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
   assert.throws(() => ingestEvidenceHandoff({ artifact: ref("write-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] }), /kind/);
   assert.throws(() => ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown: markdown.replaceAll("assignment-1", "other"), contract, completedAssignmentIds: ["other"] }), /undeclared/);
   assert.throws(() => ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown: markdown.replace("repo:source/file.ts#L1-L2", "repo:source/file.ts#L1"), contract, completedAssignmentIds: ["assignment-1"] }), /citation/);
@@ -61,7 +61,7 @@ test("EvidenceLedger citations cannot use artifact, domain, lens, or context sco
     id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: ["artifact-ref"],
     mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: ["runtime"], lensScopeIds: ["api"], resolvesIds: [],
   });
-  const markdown = "# Research Handoff\n## Assignments\nassignment:assignment-1\n## Coverage\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:runtime/file.ts#L1-L2";
+  const markdown = "# Research Handoff\n## Scope\nassignment:assignment-1\n## Coverage\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:runtime/file.ts#L1-L2";
   assert.throws(() => ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] }), /pinned source scope/);
 });
 
@@ -70,7 +70,70 @@ test("EvidenceLedger requires the documented conflict and failed-read sections",
     id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
     mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
   });
-  const base = "# Research Handoff\n## Assignments\nassignment:assignment-1\n## Coverage\n";
+  const base = "# Research Handoff\n## Scope\nassignment:assignment-1\n## Coverage\n";
   assert.throws(() => ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown: `${base}## Evidence\nrepo:source/file.ts#L1-L2`, contract, completedAssignmentIds: ["assignment-1"] }), /conflicts and alternatives/);
   assert.throws(() => ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown: `${base}## Conflicts and alternatives\nNone\n## Evidence\nrepo:source/file.ts#L1-L2`, contract, completedAssignmentIds: ["assignment-1"] }), /gaps and failed reads/);
+});
+
+test("EvidenceLedger accepts the Skill-format research handoff with Scope", () => {
+  const contract = createWikiDelegateContract(1, {
+    id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
+    mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
+  });
+  const markdown = [
+    "---", "followups: []", "---",
+    "# Research Handoff",
+    "## Scope", "- **Source:** source",
+    "## Coverage", "The runtime maps each request to a pinned Source.",
+    "## Evidence", "repo:source/file.ts#L1-L2",
+    "## Conflicts and alternatives", "None",
+    "## Gaps and failed reads", "None",
+  ].join("\n");
+  const entry = ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] });
+  assert.deepEqual(entry.indexes.citations, [{ scope: "source", path: "file.ts", startLine: 1, endLine: 2 }]);
+  assert.deepEqual(entry.indexes.assignmentIds, []);
+});
+
+test("EvidenceLedger rejects the retired Assignments heading as a substitute for Scope", () => {
+  const contract = createWikiDelegateContract(1, {
+    id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
+    mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
+  });
+  const markdown = "# Research Handoff\n## Assignments\nCovered the assigned source scope.\n## Coverage\nVerified entry points.\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone\n## Evidence\nrepo:source/file.ts#L1-L2";
+  assert.throws(() => ingestEvidenceHandoff({ artifact: ref("research-handoff"), markdown, contract, completedAssignmentIds: ["assignment-1"] }), /scope heading/);
+});
+
+test("EvidenceLedger accepts the Skill-format write completion handoff", () => {
+  const contract = createWikiDelegateContract(1, {
+    id: "task", role: "write", instruction: "Write", sourceScopeIds: ["source"], contextRefs: [],
+    writePaths: ["wiki/source/core/domain.md"],
+  });
+  const markdown = "# Write Handoff\n\nUpdated the assigned page.\n";
+  const entry = ingestEvidenceHandoff({ artifact: ref("write-handoff"), markdown, contract });
+  assert.deepEqual(entry.indexes.pageIds, []);
+  assert.deepEqual(entry.indexes.citations, []);
+});
+
+test("EvidenceLedger accepts the Skill-format review handoff", () => {
+  const contract = createWikiDelegateContract(1, {
+    id: "task", role: "review", instruction: "Review", sourceScopeIds: ["source"], contextRefs: [],
+    reviewPaths: ["wiki/source/core/domain.md"],
+  }, {
+    version: 1, candidateRevision: 1, treeDigest: "a".repeat(64), policyDigest: "b".repeat(64),
+    paths: ["wiki/source/core/domain.md"],
+  });
+  const markdown = [
+    "---",
+    "findings:",
+    "  - path: wiki/source/core/domain.md",
+    "    severity: major",
+    "profileCoverage:",
+    "  - evidence-fidelity",
+    "---",
+    "# Review Handoff",
+    "## Findings", "The page needs one evidence correction.",
+    "## Evidence", "repo:source/file.ts#L1-L2",
+  ].join("\n");
+  const entry = ingestEvidenceHandoff({ artifact: ref("review-handoff"), markdown, contract });
+  assert.deepEqual(entry.indexes.citations, [{ scope: "source", path: "file.ts", startLine: 1, endLine: 2 }]);
 });

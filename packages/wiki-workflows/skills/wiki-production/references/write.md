@@ -22,5 +22,9 @@ are `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, and
 relationships. Put `sequenceDiagram` blocks on the cluster `flows.md` unless
 they overflow to `sequences.md`.
 
+After every assigned Candidate page is updated, write `.okf-wiki/task/handoff.md`
+starting with `# Write Handoff` and a short note of what changed. Keep evidence
+on the Candidate pages.
+
 The host owns indexes and publication. It validates and atomically promotes
 the candidate after the Lead finishes.
