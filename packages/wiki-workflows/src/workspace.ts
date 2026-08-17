@@ -36,7 +36,7 @@ export interface WikiWorkspaceWikiConfig {
   transientRetries: number;
   /** Full-jitter retry window when the provider supplies no Retry-After value. */
   baseRetryDelayMs: number;
-  /** Wall-clock deadline, in seconds, for each Lead or delegated Agent session. */
+  /** Seconds of thinking time for the Lead session; wall-clock deadline for each delegated Agent session. */
   sessionTimeoutSeconds: number;
   /** Run-wide hard limit for delegated tasks across every batch. */
   maxDelegatedTasks: number;

@@ -4,6 +4,22 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Source identity
+
+- `scopeId` is the original workspace Source directory name. Implicit single
+  Source still uses the synthetic folder `source`. Mixed-case in-flight Runs
+  fail closed on resume; start a new Run.
+- Citations are `repo:<scopeId>/<path>#Lx-Ly` for research and published pages.
+  Wiki source folders use that same name; domain and concept segments stay
+  lowercase slugs.
+
+### Lead session budget
+
+- `wiki.sessionTimeoutSeconds` is thinking time for the Lead and wall-clock
+  time for delegated sessions. Waiting in `wiki_delegate_collect` does not
+  consume the Lead deadline. Collect no longer has a 1200s cap; omit
+  `timeoutSeconds` to wait until the wave is terminal.
+
 ### Skills
 
 - Split the host `/wiki` skill from the production Lead skill. Each run copies

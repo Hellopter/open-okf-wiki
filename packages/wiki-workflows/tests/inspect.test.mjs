@@ -129,12 +129,37 @@ test("inspects an implicit self repository with stable unprefixed paths and igno
   assert.equal(inspection.sources[0].logicalPath, ".");
 });
 
-test("wikiSourceSlug is the host-owned Wiki folder for a pinned path", () => {
-  assert.equal(wikiSourceSlug(".", ["."]), "source");
-  assert.equal(wikiSourceSlug("api", ["api"]), "api");
-  assert.equal(wikiSourceSlug("packages/accounting-core", ["packages/accounting-core"]), "accounting-core");
-  assert.equal(wikiSourceSlug("a/foo", ["a/foo", "b/foo"]), "a-foo");
-  assert.equal(wikiSourceSlug("b/foo", ["a/foo", "b/foo"]), "b-foo");
+test("inspect keeps the original source directory name as scopeId", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-inspect-case-"));
+  temporaryDirectories.push(parent);
+  const source = path.join(parent, "MyRepo");
+  const workspace = path.join(parent, "docs");
+  await mkdir(path.join(source, "src"), { recursive: true });
+  await writeFile(path.join(source, "src", "index.ts"), "export const value = 1;\n");
+  git(source, "init", "--quiet");
+  git(source, "config", "user.email", "wiki@example.test");
+  git(source, "config", "user.name", "Wiki Test");
+  git(source, "add", ".");
+  git(source, "commit", "--quiet", "-m", "Initial source");
+  await mkdir(workspace, { recursive: true });
+  await symlink(source, path.join(workspace, "MyRepo"), "dir");
+  await writeFile(path.join(workspace, "workspace.yaml"), [
+    "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:", "  exclude: []", "sources:",
+    "  - path: MyRepo", "    origin:", "      type: link", `      localPath: ${JSON.stringify(source)}`, "",
+  ].join("\n"));
+  await mkdir(path.join(workspace, "wiki"), { recursive: true });
+
+  const inspection = await inspectWiki(workspace);
+  assert.deepEqual(inspection.sources.map((entry) => entry.scopeId), ["MyRepo"]);
+  assert.equal(inspection.sources[0].logicalPath, "MyRepo");
+});
+
+test("wikiSourceSlug is the original source directory name", () => {
+  assert.equal(wikiSourceSlug("."), "source");
+  assert.equal(wikiSourceSlug(""), "source");
+  assert.equal(wikiSourceSlug("api"), "api");
+  assert.equal(wikiSourceSlug("MyRepo"), "MyRepo");
+  assert.equal(wikiSourceSlug("OpenOKF"), "OpenOKF");
 });
 
 test("pinned source verification ignores later presentation settings but rejects repository replacement", async () => {

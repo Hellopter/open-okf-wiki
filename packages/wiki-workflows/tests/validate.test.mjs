@@ -644,3 +644,65 @@ test("rejects an unsafe writer-requested page path before reading the Wiki tree"
     message: "Page is unsafe or reserved: ../escape.md",
   }]);
 });
+
+async function myRepoFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-validate-scope-"));
+  temporaryDirectories.push(root);
+  const source = path.join(root, "MyRepo");
+  await mkdir(path.join(source, "src"), { recursive: true });
+  await writeFile(path.join(source, "src", "index.ts"), "export const answer = 42;\nexport default answer;\n");
+  git(source, "init", "--quiet");
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1",
+    "language: zh",
+    "defaultSourceIgnores: true",
+    "sources:",
+    "  - path: MyRepo",
+    "    origin:",
+    "      type: clone",
+    "      remoteUrl: https://example.test/MyRepo.git",
+    "",
+  ].join("\n"));
+  await mkdir(path.join(root, "wiki"), { recursive: true });
+  return root;
+}
+
+test("citations resolve by case-sensitive scopeId under the pinned Source", async () => {
+  const root = await myRepoFixture();
+  const target = { pages: ["overview.md", "MyRepo/source.md", "MyRepo/core/domain.md"] };
+  await writePage(root, "overview.md", page({
+    sources: [{ id: "idx", resource: "repo:MyRepo/src/index.ts#L1-L2" }],
+  }));
+  assert.deepEqual(await validateWikiPage(root, target, "overview.md"), []);
+
+  await writePage(root, "overview.md", page({
+    sources: [{ id: "idx", resource: "repo:myrepo/src/index.ts#L1-L2" }],
+  }));
+  const issues = await validateWikiPage(root, target, "overview.md");
+  assert.ok(issues.some((entry) => entry.code === "source-reference" && entry.message.includes("repo:myrepo/src/index.ts#L1-L2")));
+});
+
+test("implicit Source citations use scopeId source and reject unprefixed paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-validate-implicit-"));
+  temporaryDirectories.push(root);
+  await mkdir(path.join(root, "src"), { recursive: true });
+  await writeFile(path.join(root, "src", "foo.ts"), "export const value = 1;\n");
+  git(root, "init", "--quiet");
+  git(root, "config", "user.email", "wiki@example.test");
+  git(root, "config", "user.name", "Wiki Test");
+  git(root, "add", "src/foo.ts");
+  git(root, "commit", "--quiet", "-m", "Initial source");
+  await mkdir(path.join(root, "wiki"), { recursive: true });
+  const target = { pages: ["overview.md", "source/source.md", "source/core/domain.md"] };
+
+  await writePage(root, "overview.md", page({
+    sources: [{ id: "idx", resource: "repo:source/src/foo.ts#L1-L1" }],
+  }));
+  assert.deepEqual(await validateWikiPage(root, target, "overview.md"), []);
+
+  await writePage(root, "overview.md", page({
+    sources: [{ id: "idx", resource: "repo:src/foo.ts#L1-L1" }],
+  }));
+  const issues = await validateWikiPage(root, target, "overview.md");
+  assert.ok(issues.some((entry) => entry.code === "source-reference" && entry.message.includes("repo:src/foo.ts#L1-L1")));
+});

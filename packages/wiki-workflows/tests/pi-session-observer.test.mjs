@@ -71,6 +71,32 @@ async function observe(run) {
   }
 }
 
+test("Lead observer deadline tracks remaining thinking time", async () => {
+  const reports = [];
+  const session = createSession();
+  let now = Date.parse("2026-08-12T00:00:00.000Z");
+  let remaining = 60_000;
+  const observer = new PiSessionObserver(session, {
+    target: { kind: "lead" },
+    attempt: 1,
+    timeoutMs: 60_000,
+    remainingTimeoutMs: () => remaining,
+    workspaceRoot: "/repo",
+    report: (telemetry) => { reports.push(telemetry); },
+    now: () => now,
+  });
+  observer.start();
+  try {
+    assert.equal(reports[0].deadlineAt, "2026-08-12T00:01:00.000Z");
+    remaining = 10_000;
+    now += 5_000;
+    session.emit({ type: "turn_start" });
+    await waitFor(() => reports.some((entry) => entry.deadlineAt === "2026-08-12T00:00:15.000Z"));
+  } finally {
+    await observer.stop();
+  }
+});
+
 test("tool start writes one incomplete process row", async () => {
   await observe(async ({ session, wait }) => {
     session.emit({

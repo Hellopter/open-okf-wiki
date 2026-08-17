@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { WikiRejectedError, listed } from "../wiki-reject.js";
+import { isWikiSourceSegment } from "./path.js";
 
 const TOPOLOGY_VERSION = 2 as const;
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -35,13 +36,13 @@ export function wikiSpecPageType(pagePath: string): WikiSpecPageType | undefined
   if (relative === "overview.md") return "overview";
   if (relative === "architecture.md") return "architecture";
   const segments = relative.split("/");
-  if (segments.length === 2 && segments[1] === "source.md" && SLUG.test(segments[0])) return "source";
-  if (segments.length === 3 && segments[2] === "domain.md" && SLUG.test(segments[0]) && SLUG.test(segments[1])) return "domain";
+  if (segments.length === 2 && segments[1] === "source.md" && isWikiSourceSegment(segments[0])) return "source";
+  if (segments.length === 3 && segments[2] === "domain.md" && isWikiSourceSegment(segments[0]) && SLUG.test(segments[1])) return "domain";
   if (segments.length < 4) return undefined;
 
   const [source, domain, concept] = segments;
   const tail = segments.slice(3).join("/");
-  if (!SLUG.test(source) || !SLUG.test(domain) || !PAGE_SLUG.test(`${concept}.md`) || TYPE_BUCKETS.has(concept)) return undefined;
+  if (!isWikiSourceSegment(source) || !SLUG.test(domain) || !PAGE_SLUG.test(`${concept}.md`) || TYPE_BUCKETS.has(concept)) return undefined;
   if (CLUSTER_FILES[tail]) return CLUSTER_FILES[tail];
   if (tail.startsWith("models/") && PAGE_SLUG.test(tail.slice("models/".length))) return "data";
   return undefined;

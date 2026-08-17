@@ -29,9 +29,10 @@ wiki/
 
 Legal authored paths are exactly `overview.md`, optional `architecture.md`,
 `<source>/source.md`, `<source>/<domain>/domain.md`, and the supported concept
-pages shown above. Source, domain, and concept directory names are lowercase
-ASCII slugs. A domain slug may occur under more than one source: those are
-distinct clusters and must retain their source-qualified paths.
+pages shown above. Source directory names are the original Workspace directory
+names, not lowercase ASCII slugs. Domain and concept directory names stay
+lowercase ASCII slugs. A domain slug may occur under more than one source:
+those are distinct clusters and must retain their source-qualified paths.
 
 The implicit single-source workspace uses the same source tier. Its folder is
 `source`. Keep every taxonomy `sourceScopeId` equal to that folder name.

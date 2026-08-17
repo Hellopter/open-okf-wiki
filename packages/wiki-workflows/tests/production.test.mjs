@@ -18,7 +18,7 @@ async function fixture(t) {
 }
 
 const spec = () => ({ pages: ["overview.md", "source/source.md", "source/runtime/domain.md"] });
-const markdown = (type, title) => ["---", `type: ${type}`, `title: ${title}`, "description: Runtime", "sources:", "  - id: runtime", "    resource: repo:src/index.ts#L1-L1", "---", "", "Runtime.[^runtime]", "", "[^runtime]: [Source](repo:src/index.ts#L1-L1)", ""].join("\n");
+const markdown = (type, title) => ["---", `type: ${type}`, `title: ${title}`, "description: Runtime", "sources:", "  - id: runtime", "    resource: repo:source/src/index.ts#L1-L1", "---", "", "Runtime.[^runtime]", "", "[^runtime]: [Source](repo:source/src/index.ts#L1-L1)", ""].join("\n");
 
 function leadFence(request) {
   return {

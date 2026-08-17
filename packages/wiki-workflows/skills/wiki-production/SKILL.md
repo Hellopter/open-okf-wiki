@@ -17,8 +17,8 @@ to its durable Source, Task Receipt, and Candidate state.
    direction in place only when the generated direction needs refinement, then
    call `wiki_delegate_start` with no arguments. The host binds slots to pinned
    Sources and queues the complete ready wave.
-3. After `wiki_delegate_start`, continue useful Lead work. The host follows up
-   when the wave settles; re-read the board then. Use `wiki_delegate_collect`
+3. After `wiki_delegate_start`, continue useful Lead work, then call
+   `wiki_delegate_collect` and re-read the board. Use `wiki_delegate_collect`
    only for a non-blocking snapshot (`timeoutSeconds: 0`) or one long wait
    (`until: "all"`). Do not poll with short timeouts. When evidence prose is
    needed, use Pi `read` on the read-only artifact or resource paths shown on

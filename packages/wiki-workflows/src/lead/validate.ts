@@ -5,7 +5,8 @@ import { inside, readText } from "../files.js";
 import { okfSources, parsePage, stringifyPage } from "../frontmatter.js";
 import type { WikiValidation, WikiValidationIssue } from "../types.js";
 import { isRecord } from "../util.js";
-import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
+import { wikiSourceSlug } from "../inspect.js";
+import { isReservedWikiPagePath, isSafeWikiPagePath, isWikiSourceSegment } from "./path.js";
 import { wikiSpecPagePaths, wikiSpecPages, wikiSpecPageType, type WikiSpec, type WikiSpecPage } from "./spec.js";
 import { loadWikiWorkspace, type ResolvedWikiSource } from "../workspace.js";
 import { validateWikiIndexes } from "./indexes.js";
@@ -28,6 +29,7 @@ interface MermaidFence {
 interface SourceRange {
   end: number;
   path: string;
+  scopeId: string;
   start: number;
 }
 
@@ -56,6 +58,7 @@ type WikiValidationMode = "candidate" | "global";
 
 export interface ResolvedWikiRoots {
   language: "zh" | "en";
+  /** Sources keyed by scopeId (original directory name, or `source` when implicit). */
   sources: Map<string, Pick<ResolvedWikiSource, "path" | "absolutePath" | "realPath" | "repositoryRoot">>;
   wiki: string;
   workspace: string;
@@ -231,7 +234,7 @@ export async function resolveWikiRoots(root: string, wikiDirectory = "wiki", exc
       workspace,
       wiki,
       language: configured.language,
-      sources: new Map(configured.sources.map((source) => [source.path, source])),
+      sources: new Map(configured.sources.map((source) => [wikiSourceSlug(source.path), source])),
       excludedPaths: excludedPaths ?? configured.wiki.exclude,
     };
   } catch (error) {
@@ -262,7 +265,7 @@ export async function resolvePinnedWikiRoots(
       workspace,
       wiki,
       language,
-      sources: new Map(plan.sources.map((source) => [source.logicalPath, {
+      sources: new Map(plan.sources.map((source) => [source.scopeId, {
         path: source.logicalPath,
         absolutePath: source.absolutePath,
         realPath: source.realPath,
@@ -647,7 +650,7 @@ async function validateSourceReference(
 ): Promise<void> {
   const parsed = parseSourceReference(reference);
   if (!parsed) {
-    issue(issues, "source-reference", `${label} must be repo:<workspace-relative-path>#Lx-Ly: ${reference}`, page);
+    issue(issues, "source-reference", `${label} must be repo:<scope>/<path>#Lx-Ly: ${reference}`, page);
     return;
   }
   if (parsed.end < parsed.start) {
@@ -655,24 +658,23 @@ async function validateSourceReference(
     return;
   }
 
-  if (roots.excludedPaths.some((pattern) => matchesPathGlob(parsed.path, pattern))) {
+  const declaredPath = `${parsed.scopeId}/${parsed.path}`;
+  if (roots.excludedPaths.some((pattern) => matchesPathGlob(parsed.path, pattern) || matchesPathGlob(declaredPath, pattern))) {
     issue(issues, "source-reference", `${label} targets a path excluded by workspace policy: ${reference}`, page);
     return;
   }
 
-  const source = roots.sources.get(".") ?? [...roots.sources.values()]
-    .filter((candidate) => parsed.path === candidate.path || parsed.path.startsWith(`${candidate.path}/`))
-    .sort((left, right) => right.path.length - left.path.length)[0];
+  const source = roots.sources.get(parsed.scopeId);
   if (!source) {
-    issue(issues, "source-reference", `${label} must start with a declared source directory: ${reference}`, page);
+    issue(issues, "source-reference", `${label} must start with a declared source scope: ${reference}`, page);
     return;
   }
 
   let sourceFile: string;
   try {
-    sourceFile = inside(roots.workspace, path.resolve(roots.workspace, parsed.path));
+    sourceFile = inside(source.realPath, path.resolve(source.realPath, ...parsed.path.split("/")));
   } catch {
-    issue(issues, "source-reference", `${label} escapes the workspace: ${reference}`, page);
+    issue(issues, "source-reference", `${label} escapes the source tree: ${reference}`, page);
     return;
   }
 
@@ -715,9 +717,14 @@ function parseSourceReference(value: string): SourceRange | undefined {
   const match = SOURCE_REFERENCE.exec(repository[1]);
   if (!match) return undefined;
   const resourcePath = match[1];
-  const segments = resourcePath.split("/");
+  const slash = resourcePath.indexOf("/");
+  if (slash < 1) return undefined;
+  const scopeId = resourcePath.slice(0, slash);
+  const remainder = resourcePath.slice(slash + 1);
+  if (!isWikiSourceSegment(scopeId)) return undefined;
+  const segments = remainder.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return undefined;
-  return { path: resourcePath, start: Number(match[2]), end: Number(match[3] ?? match[2]) };
+  return { scopeId, path: remainder, start: Number(match[2]), end: Number(match[3] ?? match[2]) };
 }
 
 function validateInternalMarkdownLink(

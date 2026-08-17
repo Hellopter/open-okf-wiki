@@ -204,14 +204,20 @@ export class WikiTaskRuntime {
 
   async collect(
     batchId: number,
-    options: { until: "any" | "all"; timeoutSeconds: number },
+    options: { until: "any" | "all"; timeoutSeconds?: number },
     signal?: AbortSignal,
   ): Promise<WikiDelegateBatchSnapshot> {
     const batch = this.requireBatch(batchId);
     this.assertStateHealthy();
     validateCollectOptions(options);
-    if (!this.collectSatisfied(batch, options.until) && options.timeoutSeconds > 0) {
-      await waitWithTimeout(this.waitForCollect(batch, options.until), options.timeoutSeconds * 1_000, signal);
+    const shouldWait = !this.collectSatisfied(batch, options.until)
+      && (options.timeoutSeconds === undefined || options.timeoutSeconds > 0);
+    if (shouldWait) {
+      await waitWithTimeout(
+        this.waitForCollect(batch, options.until),
+        options.timeoutSeconds === undefined ? undefined : options.timeoutSeconds * 1_000,
+        signal,
+      );
     }
     this.assertStateHealthy();
     const result = this.snapshot(batch);
@@ -769,25 +775,31 @@ function validateLimit(value: number, name: string): void {
   if (value !== Number.POSITIVE_INFINITY && (!Number.isInteger(value) || value < 1)) throw new Error(`${name} must be a positive integer`);
 }
 
-function validateCollectOptions(options: { until: "any" | "all"; timeoutSeconds: number }): void {
+function validateCollectOptions(options: { until: "any" | "all"; timeoutSeconds?: number }): void {
   if (options.until !== "any" && options.until !== "all") throw new Error("collect until must be any or all");
-  if (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds < 0 || options.timeoutSeconds > 1_200) {
-    throw new Error("collect timeoutSeconds must be between 0 and 1200");
+  if (options.timeoutSeconds === undefined) return;
+  if (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds < 0) {
+    throw new Error("collect timeoutSeconds must be a non-negative number");
   }
 }
 
-async function waitWithTimeout(completion: Promise<void>, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+async function waitWithTimeout(completion: Promise<void>, timeoutMs?: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new WikiTaskExecutionError("Collect cancelled", "cancelled");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let removeAbort: (() => void) | undefined;
-  const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); });
+  const timeout = timeoutMs === undefined
+    ? undefined
+    : new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); });
   const aborted = signal && new Promise<void>((_resolve, reject) => {
     const onAbort = () => reject(new WikiTaskExecutionError("Collect cancelled", "cancelled"));
     signal.addEventListener("abort", onAbort, { once: true });
     removeAbort = () => signal.removeEventListener("abort", onAbort);
   });
   try {
-    await Promise.race(aborted ? [completion, timeout, aborted] : [completion, timeout]);
+    const racers: Array<Promise<void>> = [completion];
+    if (timeout) racers.push(timeout);
+    if (aborted) racers.push(aborted);
+    await Promise.race(racers);
   } finally {
     if (timer) clearTimeout(timer);
     removeAbort?.();

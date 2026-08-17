@@ -27,6 +27,7 @@ export interface PiSessionObserverOptions {
   target: WikiAgentTarget;
   attempt: number;
   timeoutMs: number;
+  remainingTimeoutMs?: () => number;
   workspaceRoot: string;
   report: (telemetry: WikiAgentTelemetry) => void | Promise<void>;
   onHealth?: (input: { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string }) => void | Promise<void>;
@@ -255,7 +256,9 @@ export class PiSessionObserver {
       activeTools: [...this.activeTools.values()],
       lastActivityAt: this.lastActivityAt,
       lastHeartbeatAt: this.lastHeartbeatAt,
-      deadlineAt: this.deadlineAt,
+      deadlineAt: this.options.remainingTimeoutMs
+        ? this.iso(this.now() + this.options.remainingTimeoutMs())
+        : this.deadlineAt,
       ...(includeProcess ? { process: this.process.map((entry) => ({ ...entry })) } : {}),
       ...(includeUsage ? { usage: readSessionUsage(this.session) } : {}),
       ...(this.session.sessionFile ? { sessionFile: this.session.sessionFile } : {}),
@@ -487,7 +490,7 @@ function isDelegateTool(name: string): boolean {
 function wikiControlSummary(name: string, args: Record<string, unknown>): string | undefined {
   if (name === "wiki_delegate_collect") {
     const until = args.until === "any" || args.until === "all" ? args.until : undefined;
-    const timeout = Number.isInteger(args.timeoutSeconds) && (args.timeoutSeconds as number) >= 0 && (args.timeoutSeconds as number) <= 1_200
+    const timeout = Number.isInteger(args.timeoutSeconds) && (args.timeoutSeconds as number) >= 0
       ? `${args.timeoutSeconds}s`
       : undefined;
     return joinSummary("collect", until, timeout);

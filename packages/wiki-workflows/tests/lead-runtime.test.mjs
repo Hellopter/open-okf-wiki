@@ -382,7 +382,7 @@ test("Lead rejects invalid retry configuration", () => {
   assert.throws(() => new PiWikiLeafAgent({ sessionTimeoutMs: 999, createSession: async () => { throw new Error("unused"); } }), /integer from 1000/);
 });
 
-test("Lead applies the configured wall-clock session deadline", async (t) => {
+test("Lead applies the configured thinking-time session deadline", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   let aborted = false;
   const runtime = createPiLeadRuntime({
@@ -392,6 +392,43 @@ test("Lead applies the configured wall-clock session deadline", async (t) => {
   });
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /timed out after 1000ms/);
   assert.equal(aborted, true);
+});
+
+test("Lead session timeout excludes collect wait", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let aborted = false;
+  let collecting = false;
+  const hold = deferred();
+  const runtime = createPiLeadRuntime({
+    sessionTimeoutMs: 1_000,
+    transientRetries: 0,
+    createSession: async (options) => {
+      const names = new Set(options.customTools.map((tool) => tool.name));
+      if (names.has("wiki_research_finish")) {
+        await hold.promise;
+        return sessionFactory(async () => {
+          await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
+          await execute(options.customTools, "wiki_research_finish", { status: "complete" });
+        })(options);
+      }
+      return {
+        session: fakeSession(async () => {
+          await execute(options.customTools, "wiki_delegate_start", {});
+          collecting = true;
+          const collected = await execute(options.customTools, "wiki_delegate_collect", { until: "all" });
+          assert.equal(collected.details.status, "complete");
+        }, { aborted() { aborted = true; } }),
+      };
+    },
+  });
+  const done = runtime.run(request(root, candidateWikiRoot));
+  const started = Date.now();
+  while (!collecting && Date.now() - started < 5_000) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(collecting, true);
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  hold.resolve();
+  await assert.rejects(done, /without wiki_finish/);
+  assert.equal(aborted, false);
 });
 
 test("Lead 5xx retry cap uses host retries and disables Pi session retries", async (t) => {

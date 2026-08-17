@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isSafeWikiPagePath,
   parseWikiSpec,
   sameWikiCluster,
   wikiSpecClusterId,
@@ -72,12 +73,30 @@ test("rejects legacy paths, illegal paths, and type-bucket concept names", () =>
     "api/billing/invoice/unknown.md",
     "api/billing/invoice/models/line/item.md",
     "wiki/overview.md",
-    "API/source.md",
+    "MyRepo/Billing/domain.md",
+    "MyRepo/Core/domain.md",
   ];
   for (const path of illegal) {
     assert.throws(() => parseWikiSpec({ pages: ["overview.md", "api/source.md", "api/billing/domain.md", path] }));
   }
   assert.throws(() => parseWikiSpec({ pages: ["overview.md", "api/source.md", "api/billing/domain.md", "overview.md"] }));
+});
+
+test("first path segment keeps original source directory names", () => {
+  assert.equal(isSafeWikiPagePath("overview.md"), true);
+  assert.equal(isSafeWikiPagePath("architecture.md"), true);
+  assert.equal(isSafeWikiPagePath("MyRepo/source.md"), true);
+  assert.equal(isSafeWikiPagePath("MyRepo/billing/domain.md"), true);
+  assert.equal(isSafeWikiPagePath("MyRepo/billing/invoice/concept.md"), true);
+  assert.equal(isSafeWikiPagePath("API/source.md"), true);
+  assert.equal(wikiSpecPageType("MyRepo/source.md"), "source");
+  assert.equal(wikiSpecPageType("MyRepo/core/domain.md"), "domain");
+  assert.equal(wikiSpecPageType("MyRepo/billing/invoice/concept.md"), "concept");
+  assert.equal(wikiSpecPageType("API/source.md"), "source");
+  const spec = parseWikiSpec({
+    pages: ["overview.md", "MyRepo/source.md", "MyRepo/core/domain.md", "API/source.md", "API/billing/domain.md"],
+  });
+  assert.deepEqual(wikiSpecSourceIds(spec), ["MyRepo", "API"]);
 });
 
 test("requires source and domain descriptor pages", () => {

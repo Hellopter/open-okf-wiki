@@ -74,7 +74,7 @@ All execution limit values are integers:
 | `maxConcurrentAgents` | `3` | `2..64` sessions | Total concurrent model sessions, including the Lead and delegated Agents. |
 | `transientRetries` | `1` | `0..10` retries | Fresh-session retries for each transient Lead or delegated Agent failure; `0` disables them. |
 | `baseRetryDelayMs` | `1000` | `0..300000` ms | Full-jitter exponential backoff base when the provider supplies no `Retry-After`; `0` removes the local delay. |
-| `sessionTimeoutSeconds` | `1200` | `1..2147483` seconds | Wall-clock deadline applied separately to every Lead and delegated Agent session. |
+| `sessionTimeoutSeconds` | `1200` | `1..2147483` seconds | Delegated sessions: wall-clock deadline. Lead: thinking time only; `wiki_delegate_collect` wait does not count. |
 | `maxDelegatedTasks` | `24` | `1..10000` tasks | Maximum delegated tasks started across the complete run, including resumed work but excluding retries. |
 | `maxDelegateBatches` | `8` | `1..1000` batches | Maximum asynchronous delegation batches started across the complete run. |
 | `maxTurnsPerSession` | `60` | `1..100000` turns | Hard limit for model turns in each delegated Pi session. |

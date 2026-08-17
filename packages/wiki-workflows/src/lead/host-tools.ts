@@ -62,22 +62,25 @@ export function createWikiDelegateStartTool(start: () => Promise<unknown>): Tool
 }
 
 export function createWikiDelegateCollectTool(
-  collect: (options: { until: "any" | "all"; timeoutSeconds: number }) => Promise<unknown>,
+  collect: (options: { until: "any" | "all"; timeoutSeconds?: number }) => Promise<unknown>,
 ): ToolDefinition<any, any, any> {
   return {
     name: "wiki_delegate_collect",
     label: "Collect Wiki tasks",
     description: "Collect completed receipts from an asynchronous Wiki task batch, optionally waiting for any or all pending tasks.",
     promptSnippet: "Collect receipts from a started Wiki task batch",
-    promptGuidelines: ["Use timeoutSeconds 0 for a non-blocking status check."],
+    promptGuidelines: [
+      "Use timeoutSeconds 0 for a non-blocking status check.",
+      "Omit timeoutSeconds to wait until until is satisfied.",
+    ],
     parameters: Type.Object({
       until: StringEnum(["any", "all"]),
-      timeoutSeconds: Type.Integer({ minimum: 0, maximum: 1_200 }),
+      timeoutSeconds: Type.Optional(Type.Integer({ minimum: 0 })),
     }, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       try {
-        const input = params as { until: "any" | "all"; timeoutSeconds: number };
+        const input = params as { until: "any" | "all"; timeoutSeconds?: number };
         return toolResult(await collect({ until: input.until, timeoutSeconds: input.timeoutSeconds }));
       } catch (error) {
         rejectWikiTool("wiki_delegate_collect", error);

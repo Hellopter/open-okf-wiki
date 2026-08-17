@@ -72,7 +72,7 @@ export interface PiWikiLeadAgentOptions {
   thinkingLevel?: ThinkingLevel;
   language?: "zh" | "en";
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
-  /** Hard deadline for each Lead or delegated Pi session. Default 20 minutes. */
+  /** Thinking-time deadline for Lead; wall-clock deadline for each delegated Pi session. Default 20 minutes. */
   sessionTimeoutMs?: number;
   /** Materialized production skill root inside the workspace. */
   skillRoot?: string;
@@ -283,8 +283,10 @@ async function runLeadSession(
       };
       const presentBatch = async (snapshot: Awaited<ReturnType<WikiTaskRuntime["collect"]>>) =>
         projectWikiLeadSnapshot(await leadRun.presentSnapshot(snapshot));
-      const collectCurrent = async (collectOptions: { until: "any" | "all"; timeoutSeconds: number }) => {
+      const thinkingClock = createThinkingClock(sessionOptions.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS);
+      const collectCurrent = async (collectOptions: { until: "any" | "all"; timeoutSeconds?: number }) => {
         const active = await requireActiveWave("collect");
+        thinkingClock.pause();
         try {
           return await presentBatch(await tasks.collect(active.batchId, collectOptions, controller.signal));
         } catch (error) {
@@ -293,6 +295,8 @@ async function runLeadSession(
             controller.abort(error);
           }
           throw error;
+        } finally {
+          thinkingClock.resume();
         }
       };
       const cancelCurrent = async (reasonCode?: WikiDelegateCancelReasonCode) => {
@@ -378,7 +382,13 @@ async function runLeadSession(
             }, async (telemetry) => {
               if (telemetry.activity === "compacting") await leadRun.observeCompaction();
               await observe({ kind: "telemetry", target: telemetry.target, telemetry });
-            }, { target: { kind: "lead" }, attempt, now: options.now, onHealth: async (input) => await observe({ kind: "health", ...input }) },
+            }, {
+              target: { kind: "lead" },
+              attempt,
+              now: options.now,
+              onHealth: async (input) => await observe({ kind: "health", ...input }),
+              thinkingClock,
+            },
             (session) => { leadSession = session; });
             break;
           } catch (error) {
@@ -890,18 +900,58 @@ function taskActivity(activity: NonNullable<WikiAgentTelemetry["activity"]>): No
   return "responding";
 }
 
+type ThinkingClock = {
+  pause(): void;
+  resume(): void;
+  remainingMs(): number;
+};
+
+function createThinkingClock(timeoutMs: number): ThinkingClock {
+  return {
+    pause() {},
+    resume() {},
+    remainingMs: () => timeoutMs,
+  };
+}
+
 async function runSessionWithDeadline(
   session: AgentSession,
   prompt: string,
   signal: AbortSignal,
   timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
+  thinkingClock?: ThinkingClock,
 ): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
+  let remaining = timeoutMs;
+  let startedAt = Date.now();
+  let paused = false;
   const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
+    const fire = () => {
       void session.abort();
       reject(new WikiTaskExecutionError(`Wiki agent session timed out after ${timeoutMs}ms`, "timeout"));
-    }, timeoutMs);
+    };
+    const arm = () => {
+      timer = setTimeout(fire, remaining);
+    };
+    if (thinkingClock) {
+      thinkingClock.pause = () => {
+        if (paused || timer === undefined) return;
+        paused = true;
+        clearTimeout(timer);
+        timer = undefined;
+        remaining = Math.max(0, remaining - (Date.now() - startedAt));
+      };
+      thinkingClock.resume = () => {
+        if (!paused) return;
+        paused = false;
+        startedAt = Date.now();
+        arm();
+      };
+      thinkingClock.remainingMs = () => paused || timer === undefined
+        ? remaining
+        : Math.max(0, remaining - (Date.now() - startedAt));
+    }
+    arm();
   });
   try {
     if (signal.aborted) throw new WikiTaskExecutionError("Wiki agent session cancelled", "cancelled");
@@ -909,6 +959,12 @@ async function runSessionWithDeadline(
     await Promise.race([session.waitForIdle(), deadline]);
   } finally {
     if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (thinkingClock) {
+      thinkingClock.pause = () => {};
+      thinkingClock.resume = () => {};
+      thinkingClock.remainingMs = () => timeoutMs;
+    }
   }
 }
 
@@ -993,6 +1049,7 @@ async function runPiSession(
     ? new PiSessionObserver(session, {
       ...observer,
       timeoutMs: options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS,
+      remainingTimeoutMs: observer.thinkingClock ? () => observer.thinkingClock!.remainingMs() : undefined,
       workspaceRoot: cwd,
       report: onTelemetry,
       onHealth: observer.onHealth,
@@ -1023,7 +1080,7 @@ async function runPiSession(
   try {
     sessionObserver?.start();
     try {
-      await runSessionWithDeadline(session, prompt, signal, options.sessionTimeoutMs);
+      await runSessionWithDeadline(session, prompt, signal, options.sessionTimeoutMs, observer?.thinkingClock);
     } catch (error) {
       const failure = budgetError ?? (signal.aborted ? sessionAbortReason(signal) : error);
       await sessionObserver?.failed(failure);
@@ -1072,4 +1129,5 @@ type ObserverContext = {
   attempt: number;
   now?: () => number;
   onHealth?: PiSessionObserverOptions["onHealth"];
+  thinkingClock?: ThinkingClock;
 };

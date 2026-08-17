@@ -670,17 +670,39 @@ test("collect any returns partial progress while all waits for every task", asyn
 
 test("collect timeout is bounded and does not cancel background work", async () => {
   let finish;
+  const blocked = new Promise((resolve) => { finish = resolve; });
   const r = runtime({ async run() {
-    await new Promise((resolve) => { finish = resolve; });
+    await blocked;
     return { summary: "ok", markdown: "ok" };
   } });
   const { batchId } = await startBatch(r, [task("slow")], new AbortController().signal);
   const timedOut = await r.collect(batchId, { until: "any", timeoutSeconds: 0.01 });
   assert.equal(timedOut.status, "running");
   assert.throws(() => r.assertFinishable(), /terminal tasks/);
-  await assert.rejects(r.collect(batchId, { until: "all", timeoutSeconds: 1201 }), /between 0 and 1200/);
+  const largeCap = r.collect(batchId, { until: "all", timeoutSeconds: 1201 });
   finish();
-  assert.equal((await r.collect(batchId, { until: "all", timeoutSeconds: 1 })).status, "complete");
+  assert.equal((await largeCap).status, "complete");
+});
+
+test("collect without timeoutSeconds waits until the batch is terminal", async () => {
+  let finish;
+  const blocked = new Promise((resolve) => { finish = resolve; });
+  const r = runtime({ async run() {
+    await blocked;
+    return { summary: "ok", markdown: "ok" };
+  } });
+  const { batchId } = await startBatch(r, [task("slow")], new AbortController().signal);
+  const waiting = r.collect(batchId, { until: "all" });
+  let settled = false;
+  const done = waiting.then((result) => {
+    settled = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal((await r.collect(batchId, { until: "any", timeoutSeconds: 0 })).status, "running");
+  finish();
+  assert.equal((await done).status, "complete");
 });
 
 test("cancel supports selected tasks and the remaining batch", async () => {
