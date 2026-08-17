@@ -28,6 +28,7 @@ import {
   type WikiDelegateContract,
   type WikiResearchSignal,
 } from "./delegate-contracts.js";
+import { validateEvidenceHandoff } from "./evidence-ledger.js";
 import { decodeUtf8Fatal, parseResearchHandoff, parseReviewHandoff, summarizeWikiMarkdown } from "./wiki-work-files.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
 import type { WikiLeadObservation, WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
@@ -432,6 +433,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
     let review: WikiReviewResult | undefined;
     let researchSignal: WikiResearchSignal | undefined;
+    let writeFinished = false;
     let markdownSnapshot: string | undefined;
     const roleBrief = await readRoleBrief(this.options.skillRoot, role);
     const taskFileSlots = createTaskFileSlots(policy.workspaceRoot, context, task, role);
@@ -449,17 +451,34 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       ...(role === "reviewer" ? [reviewFinishTool(async (verdict) => {
         if (review) throw new Error("wiki_review_finish may be accepted only once");
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+        const markdown = Buffer.from(bytes).toString("utf8");
         const result = parseReviewHandoff(bytes, verdict, task.reviewPaths ?? []);
-        markdownSnapshot = Buffer.from(bytes).toString("utf8");
+        validateEvidenceHandoff({ markdown, contract: task });
+        markdownSnapshot = markdown;
         review = result;
       })] : []),
       ...(role === "researcher" ? [researchFinishTool(async (status) => {
         if (researchSignal) throw new Error("wiki_research_finish may be accepted only once");
         if (task.role !== "research") throw new Error("Research completion requires a research contract");
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+        const markdown = Buffer.from(bytes).toString("utf8");
         const result = parseResearchHandoff(bytes, status, task.sourceScopeIds);
-        markdownSnapshot = Buffer.from(bytes).toString("utf8");
+        validateEvidenceHandoff({
+          markdown,
+          contract: task,
+          completedAssignmentIds: status === "complete" ? task.assignmentIds : [],
+          followups: result.followups,
+        });
+        markdownSnapshot = markdown;
         researchSignal = result;
+      })] : []),
+      ...(role === "writer" ? [writeFinishTool(async () => {
+        if (writeFinished) throw new Error("wiki_write_finish may be accepted only once");
+        const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+        const markdown = Buffer.from(bytes).toString("utf8");
+        validateEvidenceHandoff({ markdown, contract: task });
+        markdownSnapshot = markdown;
+        writeFinished = true;
       })] : []),
     ]);
     const taskSessionDir = this.options.sessionDir
@@ -482,14 +501,11 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         attempt: context.attempt,
         onHealth: context.reportObservability,
       });
-    if (role === "writer") {
-      const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
-      markdownSnapshot = Buffer.from(bytes).toString("utf8");
-    }
     const markdown = markdownSnapshot?.trim() ?? "";
     if (!markdown) throw new Error("Delegated agent produced empty output");
     if (role === "reviewer" && !review) throw new Error("Reviewer completed without wiki_review_finish");
     if (role === "researcher" && !researchSignal) throw new Error("Researcher completed without wiki_research_finish");
+    if (role === "writer" && !writeFinished) throw new Error("Writer completed without wiki_write_finish");
     return {
       summary: researchSignal?.summary ?? firstLine(markdown),
       markdown,
@@ -539,7 +555,33 @@ function researchFinishTool(finish: (status: "complete" | "incomplete") => void 
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       const input = exactLeafFinishInput(params, "status", ["complete", "incomplete"], "wiki_research_finish");
-      await finish(input as "complete" | "incomplete");
+      try {
+        await finish(input as "complete" | "incomplete");
+      } catch (error) {
+        rejectWikiTool("wiki_research_finish", error);
+      }
+      return toolResult({ accepted: true });
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+function writeFinishTool(finish: () => void | Promise<void>): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_write_finish",
+    label: "Finish Wiki write",
+    description: "Finish after writing the complete write handoff to .okf-wiki/task/handoff.md.",
+    promptSnippet: "Finish the file-based write task",
+    parameters: Type.Object({}, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
+    async execute(_id, params) {
+      if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("wiki_write_finish requires an object");
+      const unknown = Object.keys(params as Record<string, unknown>);
+      if (unknown.length) throw new Error(`wiki_write_finish has unknown fields: ${unknown.join(", ")}`);
+      try {
+        await finish();
+      } catch (error) {
+        rejectWikiTool("wiki_write_finish", error);
+      }
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;
@@ -557,7 +599,11 @@ function reviewFinishTool(finish: (verdict: "pass" | "changes_requested") => voi
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       const input = exactLeafFinishInput(params, "verdict", ["pass", "changes_requested"], "wiki_review_finish");
-      await finish(input as "pass" | "changes_requested");
+      try {
+        await finish(input as "pass" | "changes_requested");
+      } catch (error) {
+        rejectWikiTool("wiki_review_finish", error);
+      }
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;
@@ -680,7 +726,7 @@ function taskFileBrief(
       ? "- completion: write `.okf-wiki/task/review.md`, then call wiki_review_finish with only the verdict"
       : task.role === "research"
         ? "- completion: write `.okf-wiki/task/handoff.md`, then call wiki_research_finish with only the status"
-        : "- completion: write `.okf-wiki/task/handoff.md` after updating every assigned page",
+        : "- completion: write `.okf-wiki/task/handoff.md`, then call wiki_write_finish with no arguments",
     "",
   ].filter((line) => line !== "").join("\n");
 }

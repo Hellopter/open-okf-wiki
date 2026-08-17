@@ -110,6 +110,7 @@ test("briefs point to the shared and assigned production references", async (t) 
   assert.match(researcher, /wiki_research_finish/);
   assert.match(writer, /references\/write\.md/);
   assert.match(writer, /references\/templates\/<pageType>\.md/);
+  assert.match(writer, /wiki_write_finish/);
   assert.match(reviewer, /references\/review\.md/);
   assert.match(reviewer, /wiki_review_finish/);
 });

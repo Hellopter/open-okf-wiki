@@ -41,12 +41,16 @@ export interface EvidenceLedgerInput {
   followups?: readonly WikiResearchFollowupDraft[];
 }
 
-/** Validate and index one immutable handoff. Prose never crosses this seam. */
-export function ingestEvidenceHandoff(input: EvidenceLedgerInput): EvidenceLedgerEntry {
+export interface EvidenceHandoffValidationInput {
+  markdown: string;
+  contract: WikiDelegateContract;
+  completedAssignmentIds?: readonly string[];
+  followups?: readonly WikiResearchFollowupDraft[];
+}
+
+/** Format checks a leaf can fail in-session. Identity metadata is host-owned. */
+export function validateEvidenceHandoff(input: EvidenceHandoffValidationInput): EvidenceLedgerIndexes {
   const role = input.contract.role;
-  const expectedKind = artifactKind(role);
-  if (input.artifact.kind !== expectedKind) throw new Error(`Evidence handoff kind ${input.artifact.kind} does not match ${role}`);
-  if (!input.artifact.runId || !input.artifact.nodeId || input.artifact.attempt < 1) throw new Error("Evidence handoff requires host-owned identity metadata");
   if (Buffer.byteLength(input.markdown, "utf8") > MAX_WIKI_RESEARCH_ARTIFACT_BYTES) throw new Error(`Evidence handoff exceeds the ${MAX_WIKI_RESEARCH_ARTIFACT_BYTES}-byte limit`);
   if (!input.markdown.trim()) throw new Error("Evidence handoff Markdown must not be empty");
   const body = input.markdown.startsWith("---\n") ? parsePage(input.markdown).body : input.markdown;
@@ -57,6 +61,16 @@ export function ingestEvidenceHandoff(input: EvidenceLedgerInput): EvidenceLedge
   }
   const indexes = parseIndexes(lines);
   validateRoleIndexes(role, input.contract, indexes, input.completedAssignmentIds, input.followups);
+  return indexes;
+}
+
+/** Validate and index one immutable handoff. Prose never crosses this seam. */
+export function ingestEvidenceHandoff(input: EvidenceLedgerInput): EvidenceLedgerEntry {
+  const role = input.contract.role;
+  const expectedKind = artifactKind(role);
+  if (input.artifact.kind !== expectedKind) throw new Error(`Evidence handoff kind ${input.artifact.kind} does not match ${role}`);
+  if (!input.artifact.runId || !input.artifact.nodeId || input.artifact.attempt < 1) throw new Error("Evidence handoff requires host-owned identity metadata");
+  const indexes = validateEvidenceHandoff(input);
   return {
     artifact: structuredClone(input.artifact),
     role,

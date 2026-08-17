@@ -24,7 +24,8 @@ they overflow to `sequences.md`.
 
 After every assigned Candidate page is updated, write `.okf-wiki/task/handoff.md`
 starting with `# Write Handoff` and a short note of what changed. Keep evidence
-on the Candidate pages.
+on the Candidate pages. Then call `wiki_write_finish` with no arguments. If
+the host rejects the file, fix the heading and finish again.
 
 The host owns indexes and publication. It validates and atomically promotes
 the candidate after the Lead finishes.

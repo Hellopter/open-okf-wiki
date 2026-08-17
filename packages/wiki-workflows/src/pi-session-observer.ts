@@ -492,6 +492,7 @@ function wikiControlSummary(name: string, args: Record<string, unknown>): string
     const verdict = args.verdict === "pass" ? "pass" : args.verdict === "changes_requested" ? "changes requested" : undefined;
     return joinSummary("finish review", verdict);
   }
+  if (name === "wiki_write_finish") return "finish write";
   return undefined;
 }
 

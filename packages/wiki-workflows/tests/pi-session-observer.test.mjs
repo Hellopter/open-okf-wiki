@@ -176,6 +176,7 @@ test("file-first Wiki tool summaries expose only fixed labels and closed control
       ["wiki_delegate_cancel", { batchId: 42, taskIds: ["task-secret"], reason: secret, reasonCode: "blocked" }, "cancel wave  blocked"],
       ["wiki_research_finish", { status: "incomplete", summary: secret, followups: [{ question: secret, sourceScopeIds: ["source-secret"] }] }, "finish research  incomplete"],
       ["wiki_review_finish", { verdict: "changes_requested", reviewedPaths: ["wiki/private/path.md"], findings: [{ id: "finding-secret", path: "wiki/private/path.md" }] }, "finish review  changes requested"],
+      ["wiki_write_finish", { summary: secret }, "finish write"],
     ];
     calls.forEach(([toolName, args], index) => session.emit({
       type: "tool_execution_start",

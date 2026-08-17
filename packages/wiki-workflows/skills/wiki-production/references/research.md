@@ -30,8 +30,10 @@ handoff.
 
 After the file is complete, call `wiki_research_finish` with only
 `status: complete` or `status: incomplete`. Use `incomplete` whenever the
-handoff records missing required coverage. The host reads the handoff, derives
-follow-up work, assigns durable identities, and persists the Task Receipt.
+handoff records missing required coverage. If the host rejects the file, fix
+the named headings and `repo:<scope>/<path>#Lx-Ly` citations, then finish
+again. The host reads the accepted handoff, derives follow-up work, assigns
+durable identities, and persists the Task Receipt.
 
 If context becomes tight, first preserve every verified finding and unresolved
 question in `handoff.md`, then finish incomplete. A supplement answers only the
