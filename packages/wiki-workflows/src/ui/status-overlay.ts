@@ -15,11 +15,14 @@ import {
   type WikiTextSpan,
 } from "./observability.js";
 import type {
+  WikiActivityEntry,
   WikiAgentInspection,
+  WikiAgentSnapshot,
   WikiAgentTarget,
   WikiRunHandle,
   WikiRunUpdate,
   WikiRunView,
+  WikiTaskSnapshot,
 } from "../producer-types.js";
 import { errorMessage } from "../util.js";
 
@@ -45,13 +48,8 @@ type WikiOverlayAction =
 type OverlayHandle = Pick<WikiRunHandle, "view" | "updates" | "inspectAgent">;
 type NavTarget = { kind: "agent"; target: WikiAgentTarget } | { kind: "batch"; batch: number };
 type NavRow = { spans: WikiTextSpan[]; target?: NavTarget };
-type CachedAgentInspection = {
-  inspection: WikiAgentInspection;
-  telemetry: string;
-  transcript: boolean;
-  handoff: boolean;
-};
-type LoadReason = "select" | "tab" | "update" | "refresh";
+type CachedOutput = { identity: string; inspection: WikiAgentInspection };
+type MarkdownCache = { source?: string; width?: number; lines?: string[] };
 
 const INSPECTOR_TOP = Number.MAX_SAFE_INTEGER;
 const PAGE = 10;
@@ -123,7 +121,6 @@ function createStatusOverlay(args: {
   onControl?: (action: "pause" | "resume" | "cancel") => Promise<void>;
 }) {
   let view = args.view;
-  let fingerprint = `${view.updatedAt}:${view.status}:${view.progress?.lead?.activity ?? ""}`;
   let state = initialWikiOverlayState({ runId: view.id, initialTarget: args.initialTarget, process: args.process });
   let inspection: WikiAgentInspection | undefined;
   let warning: string | undefined;
@@ -133,70 +130,48 @@ function createStatusOverlay(args: {
   let generation = 0;
   let refreshing = false;
   let now = Date.now();
+  let inflightOutput: { key: string; identity: string; token: number } | undefined;
   const controller = new AbortController();
-  const inspectionCache = new Map<string, CachedAgentInspection>();
+  const outputCache = new Map<string, CachedOutput>();
+  const markdownCache: MarkdownCache = {};
   const invalidate = () => { cached = undefined; };
   const nav = () => navigationRows(view, state).flatMap((row) => row.target ? [row.target] : []);
   const selected = () => state.target ? { kind: "agent" as const, target: state.target } : nav()[state.cursor];
 
-  const loadAgent = async (reason: LoadReason = "select"): Promise<void> => {
+  const cachedOutput = (target: WikiAgentTarget): WikiAgentInspection | undefined => {
+    const key = selectedKey({ kind: "agent", target });
+    const hit = outputCache.get(key);
+    if (!hit || hit.identity !== outputIdentity(view, target)) return undefined;
+    return hit.inspection;
+  };
+
+  const loadOutput = async (): Promise<void> => {
+    if (state.kind !== "agent" || state.tab !== "output") return;
     const item = selected();
-    if (item?.kind !== "agent") {
-      generation += 1;
-      inspection = undefined;
-      return;
-    }
+    if (item?.kind !== "agent") return;
     const key = selectedKey(item);
-    const cachedInspection = inspectionCache.get(key);
-    const wantTranscript = state.tab === "output";
-    const wantHandoff = state.tab === "output";
-    const telemetry = telemetryFingerprint(view, item.target, cachedInspection?.inspection);
-    const reusable = Boolean(
-      cachedInspection
-      && cachedInspection.telemetry === telemetry
-      && (!wantTranscript || cachedInspection.transcript)
-      && (!wantHandoff || cachedInspection.handoff),
-    );
-    if (reusable && reason === "update" && cachedInspection) {
-      inspection = cachedInspection.inspection;
+    const identity = outputIdentity(view, item.target);
+    const hit = outputCache.get(key);
+    if (hit && hit.identity === identity) {
+      inspection = hit.inspection;
       return;
     }
-    if (reason === "select" && cachedInspection) inspection = cachedInspection.inspection;
+    if (inflightOutput && inflightOutput.key === key && inflightOutput.identity === identity) return;
     const token = ++generation;
+    inflightOutput = { key, identity, token };
     try {
-      const next = await args.handle.inspectAgent(item.target, { transcript: wantTranscript, handoff: wantHandoff });
+      const next = await args.handle.inspectAgent(item.target, { transcript: true, handoff: true });
       if (closed || token !== generation) return;
-      const merged = mergeInspection(cachedInspection?.inspection, next);
-      if (merged) {
-        inspectionCache.set(key, {
-          inspection: merged,
-          telemetry: telemetryFingerprint(view, item.target, merged),
-          transcript: Boolean(wantTranscript || cachedInspection?.transcript || merged.messages),
-          handoff: Boolean(wantHandoff || cachedInspection?.handoff || merged.handoff !== undefined),
-        });
-      }
-      inspection = merged;
+      if (next) outputCache.set(key, { identity, inspection: next });
+      inspection = next;
       warning = undefined;
     } catch (error) {
       if (token === generation) warning = errorMessage(error);
+    } finally {
+      if (inflightOutput?.token === token) inflightOutput = undefined;
     }
     invalidate(); args.tui.requestRender();
   };
-
-  const shouldInspectOnUpdate = (): boolean => {
-    if (state.kind !== "agent") return false;
-    const item = selected();
-    if (item?.kind !== "agent") return false;
-    if (state.tab !== "process" && state.tab !== "output") return false;
-    const cachedInspection = inspectionCache.get(selectedKey(item));
-    const telemetry = telemetryFingerprint(view, item.target, cachedInspection?.inspection);
-    if (!cachedInspection) return true;
-    if (cachedInspection.telemetry !== telemetry) return true;
-    if (state.tab === "output" && (!cachedInspection.handoff || !cachedInspection.transcript)) return true;
-    return false;
-  };
-
-  void loadAgent("select");
 
   const refresh = async (): Promise<void> => {
     if (closed || refreshing) return;
@@ -205,27 +180,25 @@ function createStatusOverlay(args: {
       view = await args.handle.view();
       state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
       now = Date.now();
-      await loadAgent("refresh");
+      if (state.kind === "agent" && state.tab === "output") await loadOutput();
     } catch (error) { warning = errorMessage(error); }
     finally { refreshing = false; invalidate(); args.tui.requestRender(); }
   };
 
   subscribeUpdates(args.handle, controller.signal, (update) => {
-    const nextFingerprint = `${update.view.updatedAt}:${update.view.status}:${update.view.progress?.lead?.activity ?? ""}`;
-    if (nextFingerprint === fingerprint && update.view.status === view.status) return;
-    fingerprint = nextFingerprint;
     view = update.view;
     state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, nav().length - 1)) };
     now = Date.now();
-    if (shouldInspectOnUpdate()) void loadAgent("update");
+    if (state.kind === "agent" && state.tab === "output") void loadOutput();
     invalidate(); args.tui.requestRender();
   });
   const tick = setInterval(() => {
-    if (!closed && (view.status === "running" || warning)) {
-      now = Date.now(); invalidate(); args.tui.requestRender();
-      if (warning) void refresh();
-    }
-  }, 1000);
+    if (closed) return;
+    now = Date.now();
+    invalidate();
+    args.tui.requestRender();
+  }, 2000);
+  tick.unref?.();
   const cleanup = () => { if (!closed) { closed = true; generation += 1; clearInterval(tick); controller.abort(); } };
   const finish = () => { cleanup(); args.done(); };
 
@@ -240,12 +213,12 @@ function createStatusOverlay(args: {
       state = reduceWikiOverlay(state, action, nav().length);
     }
     const after = selectedKey(selected());
+    const item = selected();
     if (before !== after) {
-      const item = selected();
-      inspection = item?.kind === "agent" ? inspectionCache.get(after)?.inspection : undefined;
-      void loadAgent("select");
-    } else if (state.kind === "agent" && state.tab !== beforeTab && (state.tab === "process" || state.tab === "output")) {
-      void loadAgent("tab");
+      inspection = item?.kind === "agent" && state.tab === "output" ? cachedOutput(item.target) : undefined;
+    }
+    if (state.kind === "agent" && state.tab === "output" && (before !== after || beforeTab !== "output")) {
+      void loadOutput();
     }
     invalidate(); args.tui.requestRender();
   };
@@ -283,11 +256,11 @@ function createStatusOverlay(args: {
       if (cached?.width === width && cached.viewport === viewport) return cached.lines;
       const language = view.progress?.language ?? "en";
       const current = selected();
-      const matched = matchingInspection(current, inspection);
+      const matched = state.tab === "output" ? matchingInspection(current, inspection) : undefined;
       const bodyRows = Math.max(FIXED_BODY_ROWS + 1, viewport - FRAME_CHROME_ROWS);
-      const body = renderBody(state, view, current, matched, width, bodyRows, args.theme, now, warning, busy);
+      const body = renderBody(state, view, current, matched, width, bodyRows, args.theme, now, warning, busy, markdownCache);
       const footer = overlayFooter(state, view.status, language);
-      const stats = contextLine(current, matched, language, args.theme);
+      const stats = contextLine(current, view, language, args.theme);
       const framed = frameWikiOverlay({ width, title: styledTitle(view, args.theme), body, stats, footer, theme: args.theme, viewport, fromBottom: state.fromBottom, fixedTop: FIXED_BODY_ROWS });
       if (state.fromBottom > framed.maxScroll) state = { ...state, fromBottom: framed.maxScroll };
       cached = { width, viewport, lines: framed.lines };
@@ -331,10 +304,22 @@ function taskIdentity(task: { id: string }): string {
   return wikiTaskIdentity(task);
 }
 
-function renderBody(state: WikiOverlayState, view: WikiRunView, selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, width: number, bodyRows: number, theme: unknown, now: number, warning?: string, busy?: string): string[] {
+function renderBody(
+  state: WikiOverlayState,
+  view: WikiRunView,
+  selected: NavTarget | undefined,
+  inspection: WikiAgentInspection | undefined,
+  width: number,
+  bodyRows: number,
+  theme: unknown,
+  now: number,
+  warning?: string,
+  busy?: string,
+  markdownCache?: MarkdownCache,
+): string[] {
   const elapsed = runElapsed(view, now);
   const header = `${stageRail(view, theme)}${elapsed ? paint(theme, "dim", `  [${elapsed}]`) : ""}`;
-  const health = selected?.kind === "agent" && selectedAgent(view, selected.target, inspection)?.health === "degraded"
+  const health = selected?.kind === "agent" && agentFromView(view, selected.target)?.health === "degraded"
     ? view.progress?.language === "zh" ? "warning  观测降级" : "warning  observability degraded"
     : undefined;
   const operation = busy ? paint(theme, "accent", busy) : warning ? paint(theme, "warning", `warning  ${warning}`) : "";
@@ -345,10 +330,10 @@ function renderBody(state: WikiOverlayState, view: WikiRunView, selected: NavTar
   const navigation = navigationWindow(navigationLines(view, state, theme), contentRows);
   if (state.kind === "run" && width >= 100) {
     const rightWidth = Math.max(1, contentWidth - NAV_WIDTH - visibleWidth(COLUMN_SEPARATOR));
-    return [...fixed, ...columns(navigation, inspectorLines(selected, inspection, state, view, now, theme, rightWidth), contentWidth, contentRows, theme)];
+    return [...fixed, ...columns(navigation, inspectorLines(selected, inspection, state, view, now, theme, rightWidth, markdownCache), contentWidth, contentRows, theme)];
   }
   if (state.kind === "run") return [...fixed, ...navigation.map((line) => renderNavRow(line, contentWidth, theme))];
-  return [...fixed, ...inspectorLines(selected, inspection, state, view, now, theme, contentWidth)];
+  return [...fixed, ...inspectorLines(selected, inspection, state, view, now, theme, contentWidth, markdownCache)];
 }
 
 type NavigationLine = { text: string; selected: boolean };
@@ -377,24 +362,46 @@ function inspectorLines(
   now: number,
   theme: unknown,
   width: number,
+  markdownCache?: MarkdownCache,
 ): string[] {
   if (selected?.kind === "batch") {
     return wrapLines(batchInspectorLines(view, selected.batch, theme), width);
   }
-  if (!inspection) return wrapLines([
-    selected?.kind === "agent" && selected.target.kind === "lead"
-      ? paint(theme, "muted", "Leader starting. Agent details are not available.")
-      : paint(theme, "muted", "Agent details are not available."),
-  ], width);
+  const agent = selected?.kind === "agent" ? agentFromView(view, selected.target) : undefined;
+  const unavailable = selected?.kind === "agent" && selected.target.kind === "lead"
+    ? paint(theme, "muted", "Leader starting. Agent details are not available.")
+    : paint(theme, "muted", "Agent details are not available.");
+  if (!agent && state.kind === "run") return wrapLines([unavailable], width);
+
   const tabs = (["overview", "process", "output"] as const).map((tab) => state.tab === tab
     ? strong(theme, `[${tab[0]!.toUpperCase()}${tab.slice(1)}]`, "accent")
     : paint(theme, "dim", `[${tab}]`)).join("  ");
-  const heading = [tabs, liveAgentLine(inspection, now, theme)];
-  if (state.tab === "output") {
-    const output = inspection.handoff ?? inspection.agent.summary;
-    return [...wrapLines(heading, width), ...renderOutput(output, width, theme)];
+  const heading = agent ? [tabs, liveAgentLine(agent, now, theme)] : [tabs];
+
+  if (state.tab === "process") {
+    const process = selected?.kind === "agent" ? processFromView(view, selected.target) : [];
+    const empty = view.progress?.language === "zh" ? "暂无过程尾迹" : "no process tail";
+    if (process.length === 0 || !agent) {
+      return wrapLines([...heading, paint(theme, "muted", empty)], width);
+    }
+    return wrapLines([
+      ...heading,
+      ...projectWikiAgentLines({ runId: view.id, agent, process }, "process").map((line) => styleAgentLine(line, theme)),
+    ], width);
   }
-  return wrapLines([...heading, ...projectWikiAgentLines(inspection, state.tab).map((line) => styleAgentLine(line, theme))], width);
+
+  if (!agent) return wrapLines([...heading, unavailable], width);
+
+  if (state.tab === "output") {
+    const matched = matchingInspection(selected, inspection);
+    const output = matched?.handoff ?? matched?.agent.summary ?? agent.summary;
+    return [...wrapLines(heading, width), ...renderOutput(output, width, theme, markdownCache)];
+  }
+
+  return wrapLines([
+    ...heading,
+    ...projectWikiAgentLines({ runId: view.id, agent, process: [] }, "overview").map((line) => styleAgentLine(line, theme)),
+  ], width);
 }
 
 function batchInspectorLines(view: WikiRunView, batchId: number, theme: unknown): string[] {
@@ -416,10 +423,17 @@ function batchInspectorLines(view: WikiRunView, batchId: number, theme: unknown)
   return lines;
 }
 
-function renderOutput(output: string | undefined, width: number, theme: unknown): string[] {
+function renderOutput(output: string | undefined, width: number, theme: unknown, cache?: MarkdownCache): string[] {
   if (!output) return [paint(theme, "muted", "No output yet.")];
+  if (cache?.source === output && cache.width === width && cache.lines) return cache.lines;
   try {
-    return new Markdown(output, 0, 0, overlayMarkdownTheme(theme)).render(Math.max(1, width));
+    const lines = new Markdown(output, 0, 0, overlayMarkdownTheme(theme)).render(Math.max(1, width));
+    if (cache) {
+      cache.source = output;
+      cache.width = width;
+      cache.lines = lines;
+    }
+    return lines;
   } catch {
     return wrapLines(output.split("\n"), width);
   }
@@ -469,49 +483,44 @@ function toggleBatch(state: WikiOverlayState, view: WikiRunView, batch: number):
   return { ...state, openBatches: [...open], fromBottom: INSPECTOR_TOP };
 }
 
-function selectedAgent(view: WikiRunView, target: WikiAgentTarget, inspection: WikiAgentInspection | undefined) {
-  if (inspection && sameTarget(inspection.agent.target, target)) return inspection.agent;
-  return target.kind === "lead" ? view.progress?.lead : undefined;
-}
-
 function matchingInspection(selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined): WikiAgentInspection | undefined {
   return selected?.kind === "agent" && inspection && sameTarget(inspection.agent.target, selected.target) ? inspection : undefined;
 }
 
-function mergeInspection(previous: WikiAgentInspection | undefined, next: WikiAgentInspection | undefined): WikiAgentInspection | undefined {
-  if (!next) return undefined;
-  if (!previous || !sameTarget(previous.agent.target, next.agent.target)) return next;
+function agentFromView(view: WikiRunView, target: WikiAgentTarget): WikiAgentSnapshot | undefined {
+  if (target.kind === "lead") return view.progress?.lead;
+  const batches = view.progress?.batches ?? (view.progress?.currentBatch ? [view.progress.currentBatch] : []);
+  const task = batches.find((batch) => batch.batch === target.batch)?.tasks.find((entry) => entry.id === target.taskId);
+  return task ? taskSnapshotToAgent(target, task) : undefined;
+}
+
+function taskSnapshotToAgent(target: Extract<WikiAgentTarget, { kind: "task" }>, task: WikiTaskSnapshot): WikiAgentSnapshot {
+  const settled = task.status === "complete" || task.status === "incomplete" || task.status === "failed";
   return {
-    ...previous,
-    ...next,
-    messages: next.messages ?? previous.messages,
-    handoff: next.handoff ?? previous.handoff,
-    handoffPath: next.handoffPath ?? previous.handoffPath,
-    outcome: next.outcome ?? previous.outcome,
+    target,
+    role: task.role,
+    status: task.status,
+    attempt: task.attempt ?? task.attempts ?? 1,
+    activity: task.activity ?? (settled ? "settled" : "starting"),
+    activeTools: task.activeTool ? [task.activeTool] : [],
+    health: task.health ?? "healthy",
+    ...(task.startedAt ? { startedAt: task.startedAt } : {}),
+    ...(task.updatedAt ? { updatedAt: task.updatedAt } : {}),
+    ...(task.usage ? { usage: task.usage } : {}),
+    ...(task.summary ? { summary: task.summary } : {}),
   };
 }
 
-function viewAgent(view: WikiRunView, target: WikiAgentTarget) {
-  if (target.kind === "lead") return view.progress?.lead;
-  const batches = view.progress?.batches ?? (view.progress?.currentBatch ? [view.progress.currentBatch] : []);
-  return batches.find((batch) => batch.batch === target.batch)?.tasks.find((task) => task.id === target.taskId);
+function processFromView(view: WikiRunView, target: WikiAgentTarget): WikiActivityEntry[] {
+  return (view.progress?.recentActivity ?? []).filter((entry) => (
+    entry.target ? sameTarget(entry.target, target) : target.kind === "lead"
+  ));
 }
 
-function processSequence(view: WikiRunView, target: WikiAgentTarget, inspection: WikiAgentInspection | undefined): number {
-  let maxSeq = -1;
-  for (const entry of inspection?.process ?? []) maxSeq = Math.max(maxSeq, entry.sequence);
-  for (const entry of view.progress?.recentActivity ?? []) {
-    if (entry.target && sameTarget(entry.target, target)) maxSeq = Math.max(maxSeq, entry.sequence);
-  }
-  return maxSeq;
-}
-
-function telemetryFingerprint(view: WikiRunView, target: WikiAgentTarget, inspection: WikiAgentInspection | undefined): string {
-  const agent = viewAgent(view, target);
-  const updatedAt = agent && "updatedAt" in agent ? agent.updatedAt ?? "" : "";
-  const lastActivityAt = agent && "lastActivityAt" in agent ? agent.lastActivityAt ?? "" : "";
-  const health = agent?.health ?? "";
-  return `${updatedAt}\0${lastActivityAt}\0${health}\0${processSequence(view, target, inspection)}`;
+function outputIdentity(view: WikiRunView, target: WikiAgentTarget): string {
+  const agent = agentFromView(view, target);
+  const key = target.kind === "lead" ? "lead" : `${target.batch}:${target.taskId}`;
+  return `${key}\0${agent?.attempt ?? ""}\0${agent?.status ?? ""}\0${agent?.updatedAt ?? ""}\0${agent?.summary ?? ""}`;
 }
 
 function sameTarget(left: WikiAgentTarget, right: WikiAgentTarget): boolean {
@@ -529,8 +538,7 @@ function stageRail(view: WikiRunView, theme: unknown): string {
   }).join(paint(theme, "borderMuted", " ━ "));
 }
 
-function liveAgentLine(inspection: WikiAgentInspection, now: number, theme: unknown): string {
-  const agent = inspection.agent;
+function liveAgentLine(agent: WikiAgentSnapshot, now: number, theme: unknown): string {
   const presentation = agentStatusSemantics(agent.status);
   const parts = [agent.activeTools[0]?.name ? `tool ${agent.activeTools[0].name}` : agent.activity.replaceAll("_", " ")];
   const heartbeat = formatAge(agent.lastHeartbeatAt, now);
@@ -602,11 +610,11 @@ function textRoleColor(role: WikiTextRole): ThemeColor {
   }
 }
 
-function contextLine(selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, language: "zh" | "en", theme: unknown): string {
+function contextLine(selected: NavTarget | undefined, view: WikiRunView, language: "zh" | "en", theme: unknown): string {
   if (selected?.kind === "batch") return paint(theme, "muted", "context  —");
-  const stats = formatWikiContext(inspection?.agent.usage);
+  const stats = formatWikiContext(selected?.kind === "agent" ? agentFromView(view, selected.target)?.usage : undefined);
   if (!stats) return paint(theme, "muted", language === "zh" ? "context  等待遥测" : "context  waiting for telemetry");
-  const tone = wikiContextPressureTone(inspection?.agent.usage?.contextPercent);
+  const tone = wikiContextPressureTone(selected?.kind === "agent" ? agentFromView(view, selected.target)?.usage?.contextPercent : undefined);
   const color: ThemeColor = tone ? textRoleColor(tone) : "text";
   return `${paint(theme, "muted", "context  ")}${paint(theme, color, stats)}`;
 }

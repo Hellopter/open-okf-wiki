@@ -9,6 +9,7 @@ import type {
   WikiRunPause,
   WikiTaskSnapshot,
 } from "./producer-types.js";
+import type { WikiLeadFacts } from "./run-record.js";
 import type { WikiGenerationProfile, WikiRoleModelConfig } from "./workspace.js";
 
 export const WIKI_MANUAL_PAUSE = Symbol.for("okf-wiki.manual-pause");
@@ -107,12 +108,14 @@ export type WikiLeadObservation =
   | { kind: "progress"; message: string }
   | { kind: "batch"; phase: "queued" | "started" | "updated" | "completed"; batch: number; tasks: WikiTaskSnapshot[]; taskId?: string }
   | { kind: "telemetry"; target: WikiAgentTarget; telemetry: WikiAgentTelemetry }
-  | { kind: "task_settled"; batch: number; taskId: string; state: WikiTaskRuntimeTaskState; telemetry?: WikiAgentTelemetry }
   | { kind: "health"; target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
 
 export interface WikiLeadExecutionRequest extends WikiRunAdapterContext, WikiProductionPlan {
   attempt: number;
   executionToken: string;
+  assertActive(): Promise<void>;
+  commitLead(facts: WikiLeadFacts): Promise<void>;
+  readLead(): Promise<WikiLeadFacts | undefined>;
   record(observation: WikiLeadObservation): void | Promise<void>;
 }
 

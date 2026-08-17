@@ -6,7 +6,7 @@ import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPiLeadRuntime, PiWikiLeafAgent } from "../dist/lead-runtime.js";
 import { materializeProductionSkill } from "../dist/skill-store.js";
-import { createWikiRunLedger } from "../dist/run-ledger.js";
+import { createWikiRunRecord } from "../dist/run-record.js";
 
 const OWNER_TOKEN = "owner-token-000001";
 const EXECUTION_TOKEN = "execution-token-01";
@@ -31,15 +31,17 @@ async function workspace(t) {
   ].join("\n"));
   const candidateWikiRoot = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
   await mkdir(candidateWikiRoot, { recursive: true });
-  const ledger = createWikiRunLedger(path.join(root, ".okf-wiki"));
+  const record = createWikiRunRecord(path.join(root, ".okf-wiki"));
   const at = new Date().toISOString();
-  await ledger.create({ id: "run-1", cwd: root, at });
-  await ledger.transition("run-1", {
+  const authority = { attempt: 1, executionToken: EXECUTION_TOKEN };
+  await record.create({ id: "run-1", cwd: root, at });
+  await record.drive("run-1", { kind: "started", at });
+  await record.drive("run-1", {
     kind: "attempt_started", at, executionToken: EXECUTION_TOKEN,
     owner: { pid: process.pid },
   });
   const skillRoot = await materializeProductionSkill(root, "run-1");
-  return { root, candidateWikiRoot, skillRoot };
+  return { root, candidateWikiRoot, skillRoot, record, authority };
 }
 
 function pinnedPlan(root) {
@@ -58,10 +60,15 @@ function deferred() {
 }
 
 function request(root, candidateWikiRoot, skillRoot = path.join(root, ".okf-wiki", "runs", "run-1", "skill")) {
+  const record = createWikiRunRecord(path.join(root, ".okf-wiki"));
+  const authority = { attempt: 1, executionToken: EXECUTION_TOKEN };
   return {
     runId: "run-1", cwd: root, preparation: "fresh", sourcePlan: pinnedPlan(root), sourceFingerprint: "a".repeat(64),
     candidateWikiRoot, skillRoot, sourceScopeIds: ["source"], prompt: "Build the Wiki", attempt: 1,
     executionToken: EXECUTION_TOKEN, signal: new AbortController().signal, generation, language: "en",
+    assertActive: () => record.assertActive("run-1", authority),
+    commitLead: (facts) => record.commitLead("run-1", facts, authority),
+    readLead: async () => (await record.read("run-1"))?.lead,
     record: async () => {},
   };
 }

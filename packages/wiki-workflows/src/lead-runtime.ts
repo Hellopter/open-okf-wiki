@@ -62,7 +62,6 @@ import type { WikiAgentRole, WikiGenerationProfile } from "./workspace.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
 import { decideWikiAgentAttempt } from "./agent-attempt-policy.js";
 import { pinnedWorkspaceToolPolicy } from "./path-policy.js";
-import { createWikiRunLedger } from "./run-ledger.js";
 
 const PI_SESSION_REQUEST_RETRIES = 0;
 const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
@@ -138,7 +137,6 @@ async function runLeadSession(
 ): Promise<Awaited<ReturnType<WikiLeadRuntime["run"]>>> {
       const transientRetries = options.transientRetries ?? 1;
       const baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
-      const ledger = createWikiRunLedger(path.join(request.sourcePlan.workspaceRoot, ".okf-wiki"));
       const leadRun = await WikiLeadRun.open({
         workspace: request.sourcePlan.workspaceRoot,
         runId: request.runId,
@@ -147,8 +145,10 @@ async function runLeadSession(
         requiredSections: request.generation.templates.requiredSections,
         sourcePlan: request.sourcePlan,
         language: request.language,
-        assertActive: () => ledger.assertActive(request.runId, { attempt: request.attempt, executionToken: request.executionToken }),
+        assertActive: request.assertActive,
         executionToken: request.executionToken,
+        commitLead: request.commitLead,
+        readLead: request.readLead,
         maxDelegatedTasks: (request.budgets ?? options.budgets)?.maxDelegatedTasks,
       });
       let specRecord = leadRun.specRecord;
@@ -215,20 +215,6 @@ async function runLeadSession(
           if (settled.length > 0 && settled.every((task) => ["complete", "incomplete", "failed"].includes(task.status))) {
             await leadSession?.followUp(`Wave ${event.batchId} settled. Re-read .okf-wiki/current/board.md before the next transition.`);
           }
-          await observe({
-            kind: "task_settled",
-            batch: event.batchId,
-            taskId,
-            state: {
-              task: event.task,
-              phase: "terminal",
-              attempt: event.receipt.attempts,
-              collected: false,
-              receipt: event.receipt,
-              ...(event.telemetry?.sessionFile ? { sessionFile: event.telemetry.sessionFile } : {}),
-            },
-            ...(event.telemetry ? { telemetry: event.telemetry } : {}),
-          });
         }
         await observe({ kind: "batch", phase: "completed", batch: event.batchId, tasks: [...projection.values()], taskId });
       };

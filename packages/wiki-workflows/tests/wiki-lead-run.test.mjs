@@ -23,6 +23,16 @@ function sourcePlan(root) {
   };
 }
 
+function memoryLead() {
+  let facts;
+  return {
+    commitLead: async (next) => { facts = structuredClone(next); },
+    readLead: async () => facts,
+    snapshot: () => facts,
+    replace(next) { facts = next; },
+  };
+}
+
 async function fixture(t, fault, finalizeFault, planned = true) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-lead-run-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
@@ -35,13 +45,14 @@ async function fixture(t, fault, finalizeFault, planned = true) {
   ].join("\n"));
   const candidate = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
   const fence = createFence("execution-1");
-  const run = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, fault, finalizeFault, allowedSourceScopeIds: ["source"], ...fence });
-  if (!planned) return { root, candidate, run, fence };
+  const persist = memoryLead();
+  const run = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, fault, finalizeFault, allowedSourceScopeIds: ["source"], ...fence, ...persist });
+  if (!planned) return { root, candidate, run, fence, persist };
   const discovery = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Survey the pinned Source" }]);
   await settleResearchWave(run, discovery);
   await run.saveTaxonomy({ revision: 1, decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }], conflictIds: [] });
   await run.saveSpec(spec);
-  return { root, candidate, run, fence };
+  return { root, candidate, run, fence, persist };
 }
 
 async function settleResearchWave(run, wave) {
@@ -133,14 +144,13 @@ test("candidate rejects a symlink page and globally invalidates accepted review 
 });
 
 test("a second WikiLeadRun instance sees the latest Candidate Revision after the first writes", async (t) => {
-  const { root, candidate, run: first, fence } = await fixture(t);
+  const { root, candidate, run: first, fence, persist } = await fixture(t);
   await first.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
-  const second = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
+  const second = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence, ...persist });
   await second.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
   assert.match(await readFile(path.join(candidate, "overview.md"), "utf8"), /Runtime behavior/);
   assert.match(await readFile(path.join(candidate, "source", "core", "domain.md"), "utf8"), /Runtime behavior/);
-  const state = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json"), "utf8"));
-  assert.equal(state.candidateRevision, 3);
+  assert.equal((await persist.readLead()).candidateRevision, 3);
 });
 
 test("each review contract persists an exact independent path basis", async (t) => {
@@ -234,17 +244,16 @@ test("durable research followups must stay within contract source scopes", async
 });
 
 test("persisted delegate history cannot delete queued tasks or forge a phase rollback", async (t) => {
-  const { root, candidate, run, fence } = await fixture(t, undefined, undefined, false);
+  const { root, candidate, run, fence, persist } = await fixture(t, undefined, undefined, false);
   const { contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
   await run.taskTransitions.taskStarted(1, contract.id, { attempt: 1 });
-  const stateFile = path.join(root, ".okf-wiki", "runs", "run-1", "lead-state.json");
-  const state = JSON.parse(await readFile(stateFile, "utf8"));
-  state.delegates.batches[0].tasks[0].phase = "queued";
-  await writeFile(stateFile, JSON.stringify(state));
-  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence }), /integrity check/);
-  state.delegates.batches[0].tasks = [];
-  await writeFile(stateFile, JSON.stringify(state));
-  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence }), /integrity check/);
+  const forged = structuredClone(await persist.readLead());
+  forged.delegates.batches[0].tasks[0].phase = "queued";
+  persist.replace(forged);
+  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence, ...persist }), /Invalid Wiki delegate task/);
+  forged.delegates.batches[0].tasks = [];
+  persist.replace(forged);
+  await assert.rejects(WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence, ...persist }), /Invalid Wiki delegate/);
 });
 
 test("publication seal fails closed after file, dotfile, or empty-directory drift", async (t) => {
@@ -263,11 +272,11 @@ test("publication seal fails closed after file, dotfile, or empty-directory drif
 });
 
 test("durable execution token fence blocks stale write, settle, and seal after same-attempt resume", async (t) => {
-  const { root, candidate } = await fixture(t);
+  const { root, candidate, persist } = await fixture(t);
   const staleFence = createFence("execution-old");
   const stale = await WikiLeadRun.open({
     workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy,
-    ...staleFence,
+    ...staleFence, ...persist,
   });
   await stale.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   const { contracts: [contract] } = await stale.startNextReadyWave();
@@ -282,7 +291,7 @@ test("durable execution token fence blocks stale write, settle, and seal after s
   await assert.rejects(stale.sealForPublication(sealInput()), /no longer active/);
   const current = await WikiLeadRun.open({
     workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy,
-    ...createFence("execution-new"),
+    ...createFence("execution-new"), ...persist,
   });
   await current.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
 });
@@ -295,17 +304,17 @@ test("a fenced open performs no candidate or run-directory writes", async (t) =>
   stale.retire("execution-new");
   await assert.rejects(WikiLeadRun.open({
     workspace: root, runId: "run-2", candidateWikiRoot: candidate, policy,
-    ...stale,
+    ...stale, ...memoryLead(),
   }), /no longer active/);
   await assert.rejects(readFile(candidate), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(root, ".okf-wiki", "runs", "run-2")), { code: "ENOENT" });
 });
 
 test("pinned validation and finalization ignore workspace configuration changes during a run", async (t) => {
-  const { root, candidate, fence } = await fixture(t);
+  const { root, candidate, fence, persist } = await fixture(t);
   const run = await WikiLeadRun.open({
     workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy,
-    sourcePlan: sourcePlan(root), language: "en", ...fence,
+    sourcePlan: sourcePlan(root), language: "en", ...fence, ...persist,
   });
   await writeFile(path.join(root, "workspace.yaml"), "this is no longer a valid workspace config\n");
   await completeAndApprove(run);
@@ -321,10 +330,10 @@ test("saveSpec writes host-owned board.md for the run", async (t) => {
 });
 
 test("reopening a run regenerates a missing host-owned board from durable state", async (t) => {
-  const { root, candidate, fence } = await fixture(t);
+  const { root, candidate, fence, persist } = await fixture(t);
   const boardPath = path.join(root, ".okf-wiki", "runs", "run-1", "board.md");
   await rm(boardPath);
-  await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
+  await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence, ...persist });
   assert.match(await readFile(boardPath, "utf8"), /# Wiki board/);
   assert.match(await readFile(boardPath, "utf8"), /digest:/);
 });
@@ -381,11 +390,11 @@ test("changes_requested and a later spec revision block finish", async (t) => {
 for (const point of ["afterFinalizeJournal", "afterValidation", "afterObsoleteRemoval", "afterStamp", "afterIndexes", "afterCleanup", "afterFinalize", "afterSeal"]) {
   test(`publication finalization recovers after ${point}`, async (t) => {
     let armed = true;
-    const { root, candidate, run, fence } = await fixture(t, undefined, (value) => { if (armed && value === point) throw new Error(`fault:${point}`); });
+    const { root, candidate, run, fence, persist } = await fixture(t, undefined, (value) => { if (armed && value === point) throw new Error(`fault:${point}`); });
     await completeAndApprove(run);
     await assert.rejects(run.sealForPublication(sealInput({ publicationAt: "2026-01-01T00:00:00.000Z" })), new RegExp(`fault:${point}`));
     armed = false;
-    const reopened = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence });
+    const reopened = await WikiLeadRun.open({ workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy, ...fence, ...persist });
     const seal = await reopened.sealForPublication(sealInput({ publicationAt: "2026-01-01T00:00:00.000Z" }));
     await verifyWikiPublicationSeal(seal);
   });

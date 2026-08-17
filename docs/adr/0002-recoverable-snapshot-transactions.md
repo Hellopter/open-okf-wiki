@@ -1,6 +1,6 @@
 # Recoverable snapshot transactions
 
-Run lifecycle is committed as a versioned snapshot in `run.json`. There is no write-ahead event journal. Recovery reads the current snapshot, agent files, and `lead-state.json`. A dead `pid` on a still-running snapshot is treated as paused.
+Run lifecycle is committed as a versioned snapshot in `run.json`. There is no write-ahead event journal. Recovery reads the run snapshot (and tails for inspect), not lead-state + progress. A dead `pid` on a still-running snapshot is treated as paused.
 
 The current Run view is `run.json`. The pinned production plan is written once to `plan.json`. Agent process tails are replaceable files under `agents/`. There is no retained event log and no telemetry WAL. `updates()` is a live view stream.
 

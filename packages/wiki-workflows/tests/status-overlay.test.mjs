@@ -95,7 +95,7 @@ test("up arrow leaves the bottom after overscrolling or tailing", async () => {
     completed: true,
   }));
   const { component } = await componentFor(handle({
-    async inspectAgent(target) { return { ...inspection(target), process }; },
+    async view() { return { ...view, progress: { ...view.progress, recentActivity: process } }; },
   }), 16, { kind: "lead" }, { fg: (_color, text) => text }, { process: true });
   await new Promise((resolve) => setImmediate(resolve));
   component.render(80);
@@ -327,7 +327,8 @@ test("small viewports keep the selected target visible and Enter opens that targ
     assert.match(navigationColumn(component.render(width), width), /> .*\btask-13\b/);
     component.handleInput("CONFIRM");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(inspected.at(-1), { kind: "task", batch: 4, taskId: "task-13" });
+    assert.equal(inspected.length, 0);
+    assert.match(plain(component.render(width).join("\n")), /\[Overview\]/);
     component.handleInput("\u001b[D");
     component.handleInput("PAGE_DOWN");
     await new Promise((resolve) => setImmediate(resolve));
@@ -374,14 +375,18 @@ test("control keys only act on the run page and for legal run states", async () 
 test("process tab shows running tools without assistant text and output wraps markdown instead of truncating", async () => {
   const long = `alpha-${"word".repeat(80)}`;
   const markdown = `# Coverage\n\n- auth flow\n- token refresh\n\n\`${long}\``;
+  const inspected = [];
+  const process = [
+    { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: false },
+    { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "grep", summary: "TODO  src", completed: true },
+  ];
   const { component } = await componentFor(handle({
-    async inspectAgent(target) {
+    async view() { return { ...view, progress: { ...view.progress, recentActivity: process } }; },
+    async inspectAgent(target, options) {
+      inspected.push({ target, options });
       return {
         ...inspection(target),
-        process: [
-          { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: false },
-          { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "grep", summary: "TODO  src", completed: true },
-        ],
+        process,
         messages: [
           { at: "2026-08-12T00:00:01.000Z", text: "I will inspect the source first." },
         ],
@@ -392,11 +397,14 @@ test("process tab shows running tools without assistant text and output wraps ma
   await new Promise((resolve) => setImmediate(resolve));
   component.handleInput("\u001b[C");
   const processPage = plain(component.render(80).join("\n"));
+  assert.equal(inspected.length, 0);
   assert.match(processPage, /◆ read/);
   assert.match(processPage, /✓ grep/);
   assert.doesNotMatch(processPage, /◆ model/);
   assert.doesNotMatch(processPage, /I will inspect the source first/);
   component.handleInput("\u001b[C");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(inspected, [{ target: { kind: "lead" }, options: { transcript: true, handoff: true } }]);
   const outputPage = component.render(48);
   const outputText = plain(outputPage.join("\n"));
   assert.match(outputText, /Coverage/);
@@ -542,13 +550,23 @@ test("stale agent inspection cannot replace the selected agent", async () => {
   const deferred = (target) => new Promise((resolve) => pending.set(JSON.stringify(target), resolve));
   const subject = handle({ async inspectAgent(target) { return await deferred(target); } });
   const { component } = await componentFor(subject);
+  component.handleInput("CONFIRM");
+  component.handleInput("\u001b[C");
+  component.handleInput("\u001b[C");
+  await flush();
+  component.handleInput("\u001b[D");
+  component.handleInput("\u001b[D");
+  component.handleInput("\u001b[D");
   component.handleInput("j");
   component.handleInput("j");
   component.handleInput("CONFIRM");
+  component.handleInput("\u001b[C");
+  component.handleInput("\u001b[C");
+  await flush();
   pending.get(JSON.stringify({ kind: "task", batch: 2, taskId: "write-auth" }))(inspection({ kind: "task", batch: 2, taskId: "write-auth" }, "new"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   pending.get(JSON.stringify({ kind: "lead" }))(inspection({ kind: "lead" }, "stale"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   assert.match(component.render(80).join("\n"), /new/);
   assert.doesNotMatch(component.render(80).join("\n"), /stale/);
   component.dispose();
@@ -560,26 +578,29 @@ test("switching targets clears old inspection while the new request is pending",
     async inspectAgent(target) { return await new Promise((resolve) => pending.set(JSON.stringify(target), resolve)); },
   });
   const { component } = await componentFor(subject);
+  component.handleInput("CONFIRM");
+  component.handleInput("\u001b[C");
+  component.handleInput("\u001b[C");
+  await flush();
   const oldLeader = inspection({ kind: "lead" }, "old leader summary");
-  oldLeader.agent.health = "degraded";
   pending.get(JSON.stringify({ kind: "lead" }))(oldLeader);
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   const oldRendered = component.render(120).join("\n");
   assert.match(oldRendered, /old leader summary/);
-  assert.match(oldRendered, /observability degraded/);
 
+  component.handleInput("\u001b[D");
+  component.handleInput("\u001b[D");
+  component.handleInput("\u001b[D");
   component.handleInput("j");
   component.handleInput("j");
-  await new Promise((resolve) => setImmediate(resolve));
+  component.handleInput("CONFIRM");
+  component.handleInput("\u001b[C");
+  component.handleInput("\u001b[C");
+  await flush();
   const pendingWide = component.render(120).join("\n");
   assert.doesNotMatch(pendingWide, /old leader summary/);
-  assert.doesNotMatch(pendingWide, /observability degraded/);
-  assert.match(pendingWide, /Agent details are not available/);
-
-  component.handleInput("CONFIRM");
   const pendingNarrow = component.render(80).join("\n");
   assert.doesNotMatch(pendingNarrow, /old leader summary/);
-  assert.match(pendingNarrow, /Agent details are not available/);
   component.dispose();
 });
 
@@ -632,7 +653,7 @@ test("completed batches stay collapsed until expanded and then inspect their tas
     const inspected = [];
     const subject = handle({
       async view() { return withHistory; },
-      async inspectAgent(target) { inspected.push(target); return inspection(target); },
+      async inspectAgent(target, options) { inspected.push({ target, options }); return inspection(target); },
     });
     const { component } = await componentFor(subject);
     await new Promise((resolve) => setImmediate(resolve));
@@ -652,7 +673,11 @@ test("completed batches stay collapsed until expanded and then inspect their tas
     component.handleInput("j");
     component.handleInput("CONFIRM");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(inspected.at(-1), { kind: "task", batch: 1, taskId: "old" });
+    assert.equal(inspected.length, 0);
+    component.handleInput("\u001b[C");
+    component.handleInput("\u001b[C");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(inspected.at(-1), { target: { kind: "task", batch: 1, taskId: "old" }, options: { transcript: true, handoff: true } });
     component.dispose();
   }
 });
@@ -742,7 +767,7 @@ async function flush() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-test("run-list and overview updates refresh the navigator without re-inspecting an unchanged agent", async () => {
+test("opening, navigation, and overview updates never inspect", async () => {
   const inspected = [];
   const stream = pushableUpdates();
   const subject = handle({
@@ -754,74 +779,80 @@ test("run-list and overview updates refresh the navigator without re-inspecting 
   });
   const { component } = await componentFor(subject);
   await flush();
-  assert.deepEqual(inspected, [{ target: { kind: "lead" }, options: { transcript: false, handoff: false } }]);
+  assert.deepEqual(inspected, []);
+
+  component.handleInput("j");
+  component.handleInput("j");
+  await flush();
+  assert.equal(inspected.length, 0);
+
+  component.handleInput("k");
+  component.handleInput("k");
+  component.handleInput("CONFIRM");
+  await flush();
+  assert.equal(inspected.length, 0);
+  assert.match(plain(component.render(80).join("\n")), /\[Overview\]/);
+
+  component.handleInput("\u001b[C");
+  await flush();
+  assert.equal(inspected.length, 0);
+  assert.match(plain(component.render(80).join("\n")), /\[Process\]/);
+  assert.match(plain(component.render(80).join("\n")), /no process tail/);
 
   stream.push({
     ...view,
     updatedAt: "2026-08-12T00:00:04Z",
-    progress: { ...view.progress, lead: { ...lead, activity: "streaming" } },
+    progress: { ...view.progress, lead: { ...lead, activity: "streaming", activeTools: [] } },
   });
   await flush();
-  assert.equal(inspected.length, 1);
+  assert.equal(inspected.length, 0);
   assert.match(plain(component.render(80).join("\n")), /streaming/);
-
-  component.handleInput("CONFIRM");
-  await flush();
-  assert.equal(inspected.length, 1);
-  assert.match(plain(component.render(80).join("\n")), /\[Overview\]/);
-
-  stream.push({
-    ...view,
-    updatedAt: "2026-08-12T00:00:05Z",
-    progress: { ...view.progress, lead: { ...lead, activity: "synthesizing", lastActivityAt: "2026-08-12T00:00:05Z" } },
-  });
-  await flush();
-  assert.equal(inspected.length, 1);
   component.dispose();
 });
 
-test("process and output tabs inspect lazily and only re-inspect selected telemetry changes", async () => {
+test("output tab inspects with transcript and reloads only when output identity changes", async () => {
   const inspected = [];
   const stream = pushableUpdates();
   const subject = handle({
     async inspectAgent(target, options) {
       inspected.push({ target, options });
-      return inspection(target);
+      return inspection(target, `output-${inspected.length}`);
     },
     updates: stream.subscribe,
   });
   const { component } = await componentFor(subject, 24, { kind: "lead" });
   await flush();
-  assert.deepEqual(inspected, [{ target: { kind: "lead" }, options: { transcript: false, handoff: false } }]);
+  assert.deepEqual(inspected, []);
 
   component.handleInput("\u001b[C");
   await flush();
-  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: false, handoff: false } });
-  assert.notEqual(inspected.at(-1).options.transcript, true);
-  const afterProcessTab = inspected.length;
+  assert.equal(inspected.length, 0);
+  assert.match(plain(component.render(80).join("\n")), /\[Process\]/);
 
-  stream.push({ ...view, updatedAt: "2026-08-12T00:00:04Z" });
+  component.handleInput("\u001b[C");
   await flush();
-  assert.equal(inspected.length, afterProcessTab);
+  assert.deepEqual(inspected, [{ target: { kind: "lead" }, options: { transcript: true, handoff: true } }]);
+  assert.match(plain(component.render(80).join("\n")), /output-1/);
+
+  stream.push({
+    ...view,
+    updatedAt: "2026-08-12T00:00:04Z",
+    progress: { ...view.progress, lead: { ...lead, activity: "streaming", activeTools: [] } },
+  });
+  await flush();
+  assert.equal(inspected.length, 1);
+  assert.match(plain(component.render(80).join("\n")), /streaming/);
 
   stream.push({
     ...view,
     updatedAt: "2026-08-12T00:00:05Z",
     progress: {
       ...view.progress,
-      lead: { ...lead, lastActivityAt: "2026-08-12T00:00:09Z", health: "degraded" },
-      currentBatch: { ...view.progress.currentBatch, tasks: [{ id: "write-auth", role: "write", status: "running", updatedAt: "2026-08-12T00:00:09Z" }] },
-      recentActivity: [
-        { sequence: 12, at: "2026-08-12T00:00:09Z", kind: "tool", severity: "info", target: { kind: "lead" }, message: "", toolName: "read", completed: false },
-      ],
+      lead: { ...lead, activity: "streaming", updatedAt: "2026-08-12T00:00:05Z", summary: "fresh handoff" },
     },
   });
   await flush();
-  assert.equal(inspected.length, afterProcessTab + 1);
-  assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: false, handoff: false } });
-
-  component.handleInput("\u001b[C");
-  await flush();
+  assert.equal(inspected.length, 2);
   assert.deepEqual(inspected.at(-1), { target: { kind: "lead" }, options: { transcript: true, handoff: true } });
   component.dispose();
 });

@@ -13,27 +13,28 @@ import { WikiLeadRun } from "./lead.js";
 import { createPiLeadRuntime, type PiWikiRoleModels } from "./lead-runtime.js";
 import { createWikiPublicationStore } from "./publication-store.js";
 import {
-  createWikiRunLedger,
-  projectActivity,
-  projectAgent,
-  projectObservation,
-  projectQueuedAgent,
-  resultFromState,
   type WikiProductionTransition,
   type WikiExecutionAuthority,
-  type WikiRunLedger,
-  type WikiRunState,
 } from "./run-ledger.js";
+import {
+  createWikiRunRecord,
+  projectRunView,
+  type WikiRunFacts,
+  type WikiRunRecord,
+} from "./run-record.js";
 import {
   WikiRunResultError,
   type WikiAgentInspection,
+  type WikiAgentSnapshot,
   type WikiAgentTarget,
   type WikiInspectOptions,
   type WikiProducerRequest,
   type WikiProducer,
+  type WikiProducerResult,
   type WikiRunControl,
   type WikiRunEvent,
   type WikiRunHandle,
+  type WikiRunStage,
   type WikiRunUpdate,
   type WikiRunView,
 } from "./producer-types.js";
@@ -44,6 +45,7 @@ import {
   type WikiLeadObservation,
   type WikiLeadRuntime,
   type WikiProductionPlan,
+  type WikiTaskRuntimeTaskState,
 } from "./runtime-types.js";
 import { readWikiSessionTranscript } from "./session-transcript.js";
 import { pin, reopen, skillWorkspacePath } from "./skill-store.js";
@@ -76,7 +78,7 @@ interface ActiveAttempt {
 /** Workspace/run registry. Lifecycle knowledge remains inside each WikiProductionRun. */
 export class WikiProductionRuns implements WikiProducer {
   private readonly createId: () => string;
-  private readonly ledgers = new Map<string, WikiRunLedger>();
+  private readonly records = new Map<string, WikiRunRecord>();
   private readonly runs = new Map<string, WikiProductionRun>();
 
   constructor(private readonly options: ProductionRuntimeOptions = {}) {
@@ -85,11 +87,11 @@ export class WikiProductionRuns implements WikiProducer {
 
   async start(request: WikiProducerRequest): Promise<WikiRunHandle> {
     const workspace = await loadWikiWorkspace(request.cwd);
-    const ledger = this.ledger(workspace.root);
+    const record = this.record(workspace.root);
     const id = this.createId();
     const at = this.timestamp();
-    await ledger.create({ id, cwd: workspace.root, ...(normalizedFocus(request.focus) ? { focus: normalizedFocus(request.focus) } : {}), at });
-    const run = this.run(workspace.root, id, ledger);
+    await record.create({ id, cwd: workspace.root, ...(normalizedFocus(request.focus) ? { focus: normalizedFocus(request.focus) } : {}), at });
+    const run = this.run(workspace.root, id, record);
     await run.start();
     return run.handle();
   }
@@ -97,9 +99,9 @@ export class WikiProductionRuns implements WikiProducer {
   async open(runId: string, cwd: string): Promise<WikiRunHandle | undefined> {
     const workspace = await resolveWikiWorkspace(cwd);
     if (!workspace) return undefined;
-    const ledger = this.ledger(workspace.root);
-    if (!(await ledger.read(runId))) return undefined;
-    const run = this.run(workspace.root, runId, ledger);
+    const record = this.record(workspace.root);
+    if (!(await record.read(runId))) return undefined;
+    const run = this.run(workspace.root, runId, record);
     await run.recover();
     return run.handle();
   }
@@ -107,24 +109,24 @@ export class WikiProductionRuns implements WikiProducer {
   async list(cwd: string): Promise<WikiRunView[]> {
     const workspace = await resolveWikiWorkspace(cwd);
     if (!workspace) return [];
-    return (await this.ledger(workspace.root).list()).map(toView);
+    return (await this.record(workspace.root).list()).map((facts) => projectRunView(facts));
   }
 
-  private run(workspaceRoot: string, runId: string, ledger: WikiRunLedger): WikiProductionRun {
+  private run(workspaceRoot: string, runId: string, record: WikiRunRecord): WikiProductionRun {
     const key = runKey(workspaceRoot, runId);
     let run = this.runs.get(key);
     if (!run) {
-      run = new WikiProductionRun(path.resolve(workspaceRoot), runId, ledger, this.options);
+      run = new WikiProductionRun(path.resolve(workspaceRoot), runId, record, this.options);
       this.runs.set(key, run);
     }
     return run;
   }
 
-  private ledger(workspaceRoot: string): WikiRunLedger {
+  private record(workspaceRoot: string): WikiRunRecord {
     const root = path.join(path.resolve(workspaceRoot), ".okf-wiki");
-    let ledger = this.ledgers.get(root);
-    if (!ledger) { ledger = createWikiRunLedger(root); this.ledgers.set(root, ledger); }
-    return ledger;
+    let record = this.records.get(root);
+    if (!record) { record = createWikiRunRecord(root); this.records.set(root, record); }
+    return record;
   }
 
   private timestamp(): string { return (this.options.now?.() ?? new Date()).toISOString(); }
@@ -142,13 +144,14 @@ class WikiProductionRun {
   private publicationCritical = false;
   private readonly hub = new EventEmitter();
   private readonly agents = new Map<string, WikiAgentRecord>();
-  private liveState?: WikiRunState;
+  private liveFacts?: WikiRunFacts;
+  private lastMessage?: string;
   private lastEvent?: WikiRunEvent;
 
   constructor(
     private readonly workspaceRoot: string,
     private readonly runId: string,
-    private readonly ledger: WikiRunLedger,
+    private readonly record: WikiRunRecord,
     private readonly options: ProductionRuntimeOptions,
   ) { this.hub.setMaxListeners(0); }
 
@@ -185,7 +188,7 @@ class WikiProductionRun {
       }
     }
     if (state.status === "running" && !this.active) {
-      const ownership = await this.ledger.executionOwner(this.runId);
+      const ownership = await this.record.executionOwner(this.runId);
       if (ownership !== "live") await this.commit({ kind: "interrupted", at: this.timestamp() }, currentAuthority(state));
     }
   }
@@ -193,7 +196,7 @@ class WikiProductionRun {
   handle(): WikiRunHandle {
     return {
       id: this.runId,
-      view: async () => this.currentView() ?? toView(await this.state()),
+      view: async () => this.currentView() ?? this.viewFrom(await this.state()),
       updates: (signal?: AbortSignal) => this.updateStream(signal),
       result: async () => await this.waitForResult(),
       control: async (action) => await this.control(action),
@@ -214,7 +217,7 @@ class WikiProductionRun {
       if (this.deferredResume) {
         const deferred = this.deferredResume;
         this.deferredResume = undefined;
-        const current = await this.ledger.read(this.runId).catch(() => undefined);
+        const current = await this.record.read(this.runId).catch(() => undefined);
         if (current?.status === "running" && current.attempt === deferred.attempt && current.executionToken === deferred.executionToken) this.launch(deferred);
       }
     };
@@ -236,12 +239,15 @@ class WikiProductionRun {
       await this.assertCurrent(authority, controller.signal);
       state = await this.state();
       plan = state.productionPlan!;
-      const leadRecord = await this.ledger.readAgent(this.runId, { kind: "lead" });
-      if (leadRecord?.sessionFile) plan = { ...plan, leadSessionFile: leadRecord.sessionFile, leadSessionAttempt: leadRecord.agent.attempt };
+      const leadTail = await this.record.readTail(this.runId, { kind: "lead" });
+      if (leadTail?.sessionFile) plan = { ...plan, leadSessionFile: leadTail.sessionFile, leadSessionAttempt: leadTail.agent.attempt };
       await this.commitForAttempt(authority, controller.signal, { kind: "stage_entered", at: this.timestamp(), stage: "lead", budgets: plan.budgets });
       const lead = createProductionLead(plan, this.options, await leadSessionLimits(plan.sourcePlan.workspaceRoot));
       const request: WikiLeadExecutionRequest = {
         runId: this.runId, cwd: state.cwd, focus: state.focus, signal: controller.signal, preparation, attempt, executionToken, ...plan,
+        assertActive: () => this.record.assertActive(this.runId, authority),
+        commitLead: async (facts) => { await this.record.commitLead(this.runId, facts, authority); },
+        readLead: async () => (await this.record.read(this.runId))?.lead,
         record: async (observation) => {
           await this.applyLeadObservations([observation], authority, controller.signal);
         },
@@ -277,7 +283,7 @@ class WikiProductionRun {
     } catch (error) {
       if (error instanceof WikiProductionCrashFault) return;
       if (controller.signal.aborted) return;
-      const current = await this.ledger.read(this.runId);
+      const current = await this.record.read(this.runId);
       if (!current || current.status !== "running" || current.attempt !== attempt || current.executionToken !== executionToken) return;
       const message = error instanceof Error ? error.message : String(error);
       await this.commit({ kind: "failed", at: this.timestamp(), error: message }, authority);
@@ -293,8 +299,10 @@ class WikiProductionRun {
       sourcePlan: plan.sourcePlan,
       language: plan.language,
       requiredSections: plan.generation.templates.requiredSections,
-      assertActive: () => this.ledger.assertActive(this.runId, authority),
+      assertActive: () => this.record.assertActive(this.runId, authority),
       executionToken: authority.executionToken,
+      commitLead: async (facts) => { await this.record.commitLead(this.runId, facts, authority); },
+      readLead: async () => (await this.record.read(this.runId))?.lead,
     });
     return await run.sealForPublication({
       requiredProfileCoverage: plan.generation.review.mustCover,
@@ -349,7 +357,7 @@ class WikiProductionRun {
       await settleBounded(this.active?.settled);
       await this.commit({ kind: "cancelled", at: this.timestamp() }, state.status === "running" ? currentAuthority(state) : undefined);
     }
-    return toView(await this.state());
+    return this.viewFrom(await this.state());
   }
 
   private async applyLeadObservations(
@@ -359,27 +367,49 @@ class WikiProductionRun {
   ): Promise<void> {
     for (const observation of observations) {
       await this.assertCurrent(authority, signal);
-      const event = await this.ledger.recordObservation(this.runId, observation, authority);
-      if (event) await this.publishCommitted(event);
-      else if (await this.refreshLiveIfFenced(authority)) this.applyLiveObservation(observation);
+      if (observation.kind === "telemetry") {
+        await this.record.noteLive(this.runId, {
+          kind: "telemetry", target: observation.target, telemetry: observation.telemetry,
+        }, authority);
+        if (await this.refreshLiveIfFenced(authority)) await this.applyLiveTail(observation.target);
+        continue;
+      }
+      if (observation.kind === "health") {
+        await this.record.noteLive(this.runId, {
+          kind: "health", target: observation.target, status: observation.status, at: observation.at,
+          ...(observation.message ? { message: observation.message } : {}),
+        }, authority);
+        if (await this.refreshLiveIfFenced(authority)) await this.applyLiveTail(observation.target);
+        continue;
+      }
+      if (observation.kind === "progress") {
+        if (await this.refreshLiveIfFenced(authority)) {
+          this.lastMessage = observation.message;
+          this.emitLive(this.lastEvent ?? syntheticProgress(this.liveFacts!, this.lastMessage));
+        }
+        continue;
+      }
+      if (observation.kind === "batch") {
+        if (!(await this.refreshLiveIfFenced(authority))) continue;
+        const facts = await this.record.read(this.runId);
+        if (facts) await this.replaceLive(facts);
+        if (observation.phase === "queued" || observation.phase === "completed") {
+          this.emitLive(delegateEvent(this.runId, observation, this.liveFacts ?? facts));
+        } else {
+          this.emitLive(this.lastEvent ?? syntheticProgress(this.liveFacts!, this.lastMessage));
+        }
+      }
     }
   }
 
-  private applyLiveObservation(observation: WikiLeadObservation): void {
-    if (!this.liveState) return;
-    const target = observationTarget(observation);
-    const existing = target ? this.agents.get(agentKey(target)) : undefined;
-    const projected = projectObservation(this.liveState, existing, observation);
-    if (!projected) return;
-    this.liveState = projected.state;
-    if (projected.record && projected.target) this.agents.set(agentKey(projected.target), projected.record);
-    const event = projected.event ?? this.lastEvent ?? syntheticProgress(this.liveState);
-    this.lastEvent = event;
-    this.emitLive(event);
+  private async applyLiveTail(target: WikiAgentTarget): Promise<void> {
+    const tail = await this.record.readTail(this.runId, target);
+    if (tail) this.agents.set(agentKey(target), tail);
+    if (this.liveFacts) this.emitLive(this.lastEvent ?? syntheticProgress(this.liveFacts, this.lastMessage));
   }
 
   private async refreshLiveIfFenced(authority: WikiExecutionAuthority): Promise<boolean> {
-    const current = await this.ledger.read(this.runId).catch(() => undefined);
+    const current = await this.record.read(this.runId).catch(() => undefined);
     if (!current || current.status !== "running" || current.attempt !== authority.attempt
       || current.executionToken !== authority.executionToken) {
       if (current) await this.replaceLive(current);
@@ -401,8 +431,8 @@ class WikiProductionRun {
   }
 
   private async commit(transition: WikiProductionTransition, authority?: WikiExecutionAuthority): Promise<void> {
-    const event = await this.ledger.transition(this.runId, transition, authority);
-    await this.publishCommitted(event);
+    const facts = await this.record.drive(this.runId, transition, authority);
+    await this.publishCommitted(eventFromTransition(this.runId, transition, facts), facts);
   }
 
   private async beginAttempt(kind: "attempt_started" | "resumed"): Promise<WikiExecutionAuthority> {
@@ -413,11 +443,8 @@ class WikiProductionRun {
     return { attempt: state.attempt, executionToken };
   }
 
-  private async publishCommitted(event: WikiRunEvent): Promise<void> {
-    const state = await this.state();
-    this.liveState = structuredClone(state);
-    await this.seedAgents(state);
-    this.overlayLiveAgents();
+  private async publishCommitted(event: WikiRunEvent, facts?: WikiRunFacts): Promise<void> {
+    await this.replaceLive(facts ?? await this.state());
     this.lastEvent = event;
     this.emitLive(event);
   }
@@ -430,7 +457,7 @@ class WikiProductionRun {
     this.hub.on("update", enqueue);
     try {
       await this.ensureLive();
-      if (this.liveState && this.lastEvent) yield { event: this.lastEvent, view: toView(this.liveState) };
+      if (this.liveFacts && this.lastEvent) yield { event: this.lastEvent, view: this.viewFrom(this.liveFacts) };
       if (this.lastEvent && isTerminalEvent(this.lastEvent)) return;
       while (!combined.aborted) {
         const next = pending.shift();
@@ -451,14 +478,14 @@ class WikiProductionRun {
     const controller = new AbortController();
     try {
       while (true) {
-        const live = this.liveState;
+        const live = this.liveFacts;
         if (live && TERMINAL.has(live.status)) return await this.settleResult(live);
-        const arrived = await waitForUpdate(this.hub, controller.signal, () => Boolean(this.liveState && TERMINAL.has(this.liveState.status)));
-        if (this.liveState && TERMINAL.has(this.liveState.status)) continue;
+        const arrived = await waitForUpdate(this.hub, controller.signal, () => Boolean(this.liveFacts && TERMINAL.has(this.liveFacts.status)));
+        if (this.liveFacts && TERMINAL.has(this.liveFacts.status)) continue;
         if (!arrived) {
           const disk = await this.state();
           if (TERMINAL.has(disk.status)) {
-            this.liveState = structuredClone(disk);
+            this.liveFacts = structuredClone(disk);
             return await this.settleResult(disk);
           }
         }
@@ -468,11 +495,11 @@ class WikiProductionRun {
     }
   }
 
-  private async settleResult(state: WikiRunState) {
+  private async settleResult(state: WikiRunFacts) {
     const execution = this.active?.settled;
     if (execution) await execution;
-    const settled = this.liveState && TERMINAL.has(this.liveState.status) ? this.liveState : state;
-    if (settled.status === "succeeded") return resultFromState(settled);
+    const settled = this.liveFacts && TERMINAL.has(this.liveFacts.status) ? this.liveFacts : state;
+    if (settled.status === "succeeded") return resultFromFacts(settled);
     if (settled.status === "failed" || settled.status === "cancelled") {
       throw new WikiRunResultError(this.runId, settled.status, settled.error ?? `Wiki run ${settled.status}`);
     }
@@ -480,75 +507,77 @@ class WikiProductionRun {
   }
 
   private async inspectAgent(target: WikiAgentTarget, options?: WikiInspectOptions): Promise<WikiAgentInspection | undefined> {
-    const state = this.liveState ?? await this.state();
-    const record = this.agents.get(agentKey(target))
-      ?? (this.liveState ? projectQueuedAgent(this.liveState, target) : await this.ledger.readAgent(this.runId, target));
-    const agent = record?.agent ?? (target.kind === "lead" ? state.progress?.lead : undefined);
+    const facts = this.liveFacts ?? await this.state();
+    const task = taskState(facts, target);
+    const record = this.agents.get(agentKey(target)) ?? await this.record.readTail(this.runId, target).catch(() => undefined);
+    const agent = record?.agent ?? (target.kind === "lead" ? this.viewFrom(facts).progress?.lead : task ? agentFromTask(task, target) : undefined);
     if (!agent) return undefined;
     const includeHandoff = options?.handoff === true;
     const includeTranscript = options?.transcript === true;
-    const ref = record?.receipt?.outputs?.at(-1);
+    const receipt = task?.receipt;
+    const sessionFile = record?.sessionFile ?? task?.sessionFile;
+    const ref = receipt?.outputs?.at(-1);
     let handoff: string | undefined;
-    if (includeHandoff && ref) { try { handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref); } catch { handoff = undefined; } }
+    if (includeHandoff && ref) { try { handoff = await createWikiArtifactStore({ workspace: facts.cwd }).read(ref); } catch { handoff = undefined; } }
     return {
       runId: this.runId,
       agent,
       process: record?.process ?? [],
-      ...(includeTranscript && record?.sessionFile ? { messages: await readWikiSessionTranscript(record.sessionFile) } : {}),
-      ...(record?.receipt ? { outcome: projectWikiAgentOutcome(record.receipt) } : {}),
+      ...(includeTranscript && sessionFile ? { messages: await readWikiSessionTranscript(sessionFile) } : {}),
+      ...(receipt ? { outcome: projectWikiAgentOutcome(receipt) } : {}),
       ...(handoff !== undefined ? { handoff } : {}),
       ...(includeHandoff && ref?.relativePath ? { handoffPath: ref.relativePath } : {}),
     };
   }
 
   private currentView(): WikiRunView | undefined {
-    return this.liveState ? toView(this.liveState) : undefined;
+    return this.liveFacts ? this.viewFrom(this.liveFacts) : undefined;
+  }
+
+  private viewFrom(facts: WikiRunFacts): WikiRunView {
+    const view = projectRunView(facts, [...this.agents.values()]);
+    if (!this.lastMessage || !view.progress) return view;
+    return { ...view, progress: { ...view.progress, lastMessage: this.lastMessage } };
   }
 
   private emitLive(event: WikiRunEvent): void {
-    if (!this.liveState) return;
-    this.hub.emit("update", { event, view: toView(this.liveState) } satisfies WikiRunUpdate);
+    if (!this.liveFacts) return;
+    this.hub.emit("update", { event, view: this.viewFrom(this.liveFacts) } satisfies WikiRunUpdate);
   }
 
   private async ensureLive(): Promise<void> {
-    if (this.liveState) return;
+    if (this.liveFacts) return;
     await this.replaceLive(await this.state());
   }
 
-  private async replaceLive(state: WikiRunState): Promise<void> {
-    this.liveState = structuredClone(state);
-    await this.seedAgents(state);
-    this.overlayLiveAgents();
+  private async replaceLive(facts: WikiRunFacts): Promise<void> {
+    this.liveFacts = structuredClone(facts);
+    await this.loadTails(facts);
   }
 
-  private overlayLiveAgents(): void {
-    if (!this.liveState) return;
-    for (const record of this.agents.values()) {
-      this.liveState = projectAgent(this.liveState, record.agent);
-      this.liveState = projectActivity(this.liveState, record.process);
-    }
-  }
-
-  private async seedAgents(state: WikiRunState): Promise<void> {
-    this.agents.clear();
-    const lead = await this.ledger.readAgent(this.runId, { kind: "lead" }).catch(() => undefined);
-    if (lead) this.agents.set(agentKey({ kind: "lead" }), lead);
-    const batches = [...(state.progress?.batches ?? [])];
-    const current = state.progress?.currentBatch;
-    if (current && !batches.some((batch) => batch.batch === current.batch)) batches.push(current);
-    for (const batch of batches) {
+  private async loadTails(facts: WikiRunFacts): Promise<void> {
+    const next = new Map<string, WikiAgentRecord>();
+    const lead = await this.record.readTail(this.runId, { kind: "lead" }).catch(() => undefined);
+    if (lead) next.set(agentKey({ kind: "lead" }), lead);
+    for (const batch of facts.lead.delegates.batches) {
       for (const task of batch.tasks) {
-        const target = { kind: "task" as const, batch: batch.batch, taskId: task.id };
-        const record = await this.ledger.readAgent(this.runId, target).catch(() => undefined);
-        if (record) this.agents.set(agentKey(target), record);
+        const target = { kind: "task" as const, batch: batch.batchId, taskId: task.task.id };
+        const tail = await this.record.readTail(this.runId, target).catch(() => undefined);
+        if (tail) next.set(agentKey(target), tail);
       }
     }
+    for (const [key, live] of this.agents) {
+      const loaded = next.get(key);
+      next.set(key, loaded ? { ...loaded, ...live, agent: { ...loaded.agent, ...live.agent } } : live);
+    }
+    this.agents.clear();
+    for (const [key, record] of next) this.agents.set(key, record);
   }
 
-  private async state(): Promise<WikiRunState> {
-    const state = await this.ledger.read(this.runId);
-    if (!state) throw new Error(`Unknown Wiki run: ${this.runId}`);
-    return state;
+  private async state(): Promise<WikiRunFacts> {
+    const facts = await this.record.read(this.runId);
+    if (!facts) throw new Error(`Unknown Wiki run: ${this.runId}`);
+    return facts;
   }
 
   private timestamp(): string { return (this.options.now?.() ?? new Date()).toISOString(); }
@@ -671,12 +700,106 @@ function resolveRoleModels(config: WikiRoleModelConfig, options: ProductionRunti
   return { lead: resolve("lead"), research: resolve("research"), write: resolve("write"), review: resolve("review") };
 }
 
-function toView(state: WikiRunState): WikiRunView {
+function resultFromFacts(facts: WikiRunFacts): WikiProducerResult {
+  if (facts.status !== "succeeded") throw new Error(`Wiki run ${facts.id} has no successful result`);
+  const publication = facts.publication;
+  if (!publication || facts.leadSummary === undefined) {
+    throw new Error(`Wiki run ${facts.id} has an invalid successful result`);
+  }
   return {
-    id: state.id, cwd: state.cwd, ...(state.focus ? { focus: state.focus } : {}), status: state.status,
-    createdAt: state.createdAt, updatedAt: state.updatedAt, ...(state.completedAt ? { completedAt: state.completedAt } : {}),
-    ...(state.error ? { error: state.error } : {}),
-    ...(state.pause ? { pause: state.pause } : {}), ...(state.warnings?.length ? { warnings: state.warnings } : {}), ...(state.progress ? { progress: state.progress } : {}),
+    runId: facts.id,
+    status: "succeeded",
+    pages: publication.pages,
+    sourceFingerprint: publication.sourceFingerprint,
+    summary: facts.leadSummary,
+  };
+}
+
+function eventFromTransition(runId: string, transition: WikiProductionTransition, facts: WikiRunFacts): WikiRunEvent {
+  const base = { version: 1 as const, runId, at: transition.at };
+  switch (transition.kind) {
+    case "started":
+      return { ...base, type: "started", message: "Started Wiki production" };
+    case "attempt_started":
+      return { ...base, type: "stage", stage: "prepare", message: "Preparing candidate Wiki" };
+    case "plan_pinned":
+      return { ...base, type: "stage", stage: facts.stage ?? "prepare", message: "Pinned Wiki production plan" };
+    case "stage_entered":
+      return { ...base, type: "stage", stage: transition.stage, message: stageMessage(transition.stage), ...(transition.budgets ? { budgets: transition.budgets } : {}) };
+    case "lead_completed":
+      return { ...base, type: "stage", stage: facts.stage ?? "lead", message: "Wiki Lead finished" };
+    case "paused":
+      return {
+        ...base, type: "paused", message: transition.pause.summary, reason: transition.pause.reason,
+        ...(transition.pause.retryAt ? { retryAt: transition.pause.retryAt } : {}),
+      };
+    case "interrupted":
+      return { ...base, type: "paused", message: "Recovered interrupted Wiki run" };
+    case "manual_paused":
+      return { ...base, type: "paused", message: "Wiki run paused" };
+    case "resumed":
+      return { ...base, type: "resumed", message: "Wiki run resumed" };
+    case "cancelled":
+      return { ...base, type: "cancelled", message: "Wiki run cancelled" };
+    case "failed":
+      return { ...base, type: "failed", message: transition.error };
+    case "warning":
+      return { ...base, type: "warning", message: transition.warning.message, code: transition.warning.code, detail: transition.warning.message };
+    case "published":
+      return { ...base, type: "completed", message: "Wiki published" };
+  }
+}
+
+function stageMessage(stage: WikiRunStage): string {
+  switch (stage) {
+    case "prepare": return "Preparing candidate Wiki";
+    case "lead": return "Running Wiki Lead";
+    case "validate": return "Validating candidate Wiki";
+    case "publish": return "Publishing candidate Wiki";
+  }
+}
+
+function delegateEvent(
+  runId: string,
+  observation: Extract<WikiLeadObservation, { kind: "batch" }>,
+  facts: WikiRunFacts | undefined,
+): WikiRunEvent {
+  const completed = observation.tasks.filter((task) => ["complete", "incomplete", "failed"].includes(task.status)).length;
+  return {
+    version: 1,
+    runId,
+    at: facts?.updatedAt ?? new Date().toISOString(),
+    type: "delegate",
+    message: `Wiki delegate batch ${observation.batch} ${observation.phase}`,
+    phase: observation.phase === "queued" ? "queued" : "settled",
+    batch: observation.batch,
+    tasks: [...observation.tasks],
+    completed,
+    total: observation.tasks.length,
+    ...(observation.taskId ? { taskId: observation.taskId } : {}),
+  };
+}
+
+function taskState(facts: WikiRunFacts, target: WikiAgentTarget): WikiTaskRuntimeTaskState | undefined {
+  if (target.kind !== "task") return undefined;
+  return facts.lead.delegates.batches.find((batch) => batch.batchId === target.batch)
+    ?.tasks.find((task) => task.task.id === target.taskId);
+}
+
+function agentFromTask(task: WikiTaskRuntimeTaskState, target: Extract<WikiAgentTarget, { kind: "task" }>): WikiAgentSnapshot {
+  const status = task.phase === "queued" ? "queued"
+    : task.phase === "running" || task.phase === "paused" ? "running"
+      : task.receipt!.status;
+  return {
+    target,
+    role: task.task.role,
+    status,
+    attempt: task.attempt,
+    activity: task.phase === "queued" ? "starting" : task.phase === "running" ? "waiting_model" : "settled",
+    activeTools: [],
+    health: "healthy",
+    updatedAt: "",
+    ...(task.receipt?.summary ? { summary: task.receipt.summary } : {}),
   };
 }
 
@@ -699,18 +822,13 @@ function runKey(workspaceRoot: string, runId: string): string { return `${path.r
 function agentKey(target: WikiAgentTarget): string {
   return target.kind === "lead" ? "lead" : `task:${target.batch}:${target.taskId}`;
 }
-function observationTarget(observation: WikiLeadObservation): WikiAgentTarget | undefined {
-  if (observation.kind === "telemetry" || observation.kind === "health") return observation.target;
-  if (observation.kind === "task_settled") return { kind: "task", batch: observation.batch, taskId: observation.taskId };
-  return undefined;
-}
-function syntheticProgress(state: WikiRunState): WikiRunEvent {
+function syntheticProgress(facts: WikiRunFacts, lastMessage?: string): WikiRunEvent {
   return {
-    version: 1, runId: state.id, at: state.updatedAt,
-    type: "stage", stage: state.progress?.stage ?? "lead", message: state.progress?.lastMessage ?? "",
+    version: 1, runId: facts.id, at: facts.updatedAt,
+    type: "stage", stage: facts.stage ?? "lead", message: lastMessage ?? "",
   };
 }
-function currentAuthority(state: WikiRunState): WikiExecutionAuthority {
+function currentAuthority(state: WikiRunFacts): WikiExecutionAuthority {
   if (state.status !== "running" || !state.executionToken) throw new Error("Wiki run has no active execution authority");
   return { attempt: state.attempt, executionToken: state.executionToken };
 }

@@ -12,6 +12,14 @@ import {
 import { projectWikiRunEvent } from "./ui/observability.js";
 import { createConfiguredWikiProducer } from "./production-run.js";
 import type { WikiAgentTarget, WikiProducer, WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
+import {
+  claimProducerSlot,
+  handoffProducerSlot,
+  sessionFileCwd,
+  WIKI_PRODUCER_HANDOFF_VERSION,
+  type WikiProducerHandoff,
+  type WikiProducerHost,
+} from "./run-handoff.js";
 import { formatLocalDateTime } from "./ui/time-format.js";
 import {
   themeWikiLiveText,
@@ -29,30 +37,73 @@ export interface WikiExtensionOptions {
 
 export function createWikiExtension(options: WikiExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
+    const initial = claimProducerSlot();
+    let host: WikiProducerHost = initial.compatible?.host ?? initial.versionMismatch?.host ?? {};
     let context: ExtensionContext | undefined;
-    let producer: WikiProducer | undefined;
+    let producer: WikiProducer | undefined = initial.compatible?.producer;
+    let producerWorkspace: string | undefined = nonempty(initial.compatible?.workspaceRoot);
+    let mismatched: WikiProducerHandoff | undefined = initial.versionMismatch;
     const streams = new Map<string, AbortController>();
     const widget = createWikiLiveWidget();
     const refresh = (active: ExtensionCommandContext, view: WikiRunView) => widget.refresh(active, view);
 
-    const currentProducer = (active: ExtensionContext): WikiProducer => {
+    const adoptHost = (active: ExtensionContext) => {
       context = active;
-      producer ??= options.createProducer?.(active) ?? createConfiguredWikiProducer({
-        getModel: () => context?.model,
-        getThinkingLevel: () => context?.thinkingLevel,
-        getModelRegistry: () => context?.modelRegistry,
+      host.context = active;
+    };
+
+    const createEngine = (active: ExtensionContext): WikiProducer =>
+      options.createProducer?.(active) ?? createConfiguredWikiProducer({
+        getModel: () => (host.context as ExtensionContext | undefined)?.model,
+        getThinkingLevel: () => (host.context as ExtensionContext | undefined)?.thinkingLevel,
+        getModelRegistry: () => (host.context as ExtensionContext | undefined)?.modelRegistry,
       });
+
+    const currentProducer = (active: ExtensionContext, root?: string): WikiProducer => {
+      adoptHost(active);
+      producer ??= createEngine(active);
+      if (root) producerWorkspace ??= root;
       return producer;
     };
 
     pi.on("session_start", async (_event, active) => {
-      context = active;
-      const engine = currentProducer(active);
+      adoptHost(active);
+      const incoming = claimProducerSlot();
+      if (incoming.versionMismatch) mismatched = incoming.versionMismatch;
+      if (incoming.compatible) {
+        if (!producer) {
+          producer = incoming.compatible.producer;
+          producerWorkspace = nonempty(incoming.compatible.workspaceRoot);
+        } else if (incoming.compatible.producer !== producer) {
+          await pauseRunning(incoming.compatible.producer, incoming.compatible.workspaceRoot);
+        }
+        if (incoming.compatible.host) host = incoming.compatible.host;
+        host.context = active;
+      }
+      if (mismatched) {
+        await pauseRunning(mismatched.producer, mismatched.workspaceRoot);
+        if (producer === mismatched.producer) {
+          producer = undefined;
+          producerWorkspace = undefined;
+        }
+        mismatched = undefined;
+      }
+
+      const root = await tryWorkspaceRoot(active.cwd);
+      if (producer && producerWorkspace && producerWorkspace !== root) {
+        await pauseRunning(producer, producerWorkspace);
+        producer = undefined;
+        producerWorkspace = undefined;
+      }
+
+      if (!producer) producer = createEngine(active);
+      if (root) producerWorkspace = root;
+
       try {
-        const cwd = await workspaceRoot(active.cwd);
-        const running = (await engine.list(cwd)).find((run) => run.status === "running");
+        if (!root || !producer) return;
+        const running = (await producer.list(root)).find((run) => run.status === "running");
         if (!running) return;
-        const handle = await engine.open(running.id, cwd);
+        const handle = await producer.open(running.id, root);
         if (!handle) return;
         const view = await handle.view();
         refresh(active as ExtensionCommandContext, view);
@@ -64,7 +115,10 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
     pi.on("session_shutdown", async (event) => {
       const reason = event && typeof event === "object" && "reason" in event ? String(event.reason) : "";
-      const keepLive = reason === "reload" || reason === "new" || reason === "fork";
+      const targetSessionFile = event && typeof event === "object" && "targetSessionFile" in event
+        && typeof event.targetSessionFile === "string"
+        ? event.targetSessionFile
+        : undefined;
       for (const controller of streams.values()) controller.abort();
       streams.clear();
       widget.reset();
@@ -72,16 +126,38 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         context.ui.setStatus("wiki", undefined);
         context.ui.setWidget("wiki", undefined);
       }
-      if (!keepLive && producer && context) {
-        try {
-          const cwd = await workspaceRoot(context.cwd);
-          const active = (await producer.list(cwd)).find((run) => run.status === "running");
-          if (active) await (await producer.open(active.id, cwd))?.control("pause");
-        } catch {
-          // The durable ledger recovers an interrupted running process as paused.
+
+      const payload = producer
+        ? {
+          producer,
+          workspaceRoot: producerWorkspace ?? "",
+          version: WIKI_PRODUCER_HANDOFF_VERSION,
+          host,
         }
+        : undefined;
+      const expire = (handed: WikiProducerHandoff) => {
+        void pauseRunning(handed.producer, handed.workspaceRoot);
+      };
+
+      if (reason === "reload" || reason === "new") {
+        if (payload) handoffProducerSlot(payload, expire);
+      } else if (reason === "resume" || reason === "fork") {
+        const targetCwd = sessionFileCwd(targetSessionFile);
+        const targetRoot = targetCwd ? await tryWorkspaceRoot(targetCwd) : undefined;
+        if (!payload || !targetRoot || !payload.workspaceRoot || targetRoot !== payload.workspaceRoot) {
+          await pauseRunning(producer, producerWorkspace);
+        } else {
+          handoffProducerSlot(payload, expire);
+        }
+      } else {
+        const leftover = claimProducerSlot();
+        const engine = producer ?? leftover.compatible?.producer ?? leftover.versionMismatch?.producer;
+        const cwd = producerWorkspace ?? leftover.compatible?.workspaceRoot ?? leftover.versionMismatch?.workspaceRoot;
+        await pauseRunning(engine, cwd);
       }
-      if (!keepLive) producer = undefined;
+
+      producer = undefined;
+      producerWorkspace = undefined;
       context = undefined;
     });
 
@@ -102,7 +178,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
             return;
           }
           const cwd = await workspaceRoot(active.cwd);
-          const engine = currentProducer(active);
+          const engine = currentProducer(active, cwd);
           await dispatch(pi, active, engine, cwd, command, refresh, (handle) => {
             attachStream(pi, active, handle, refresh, streams);
           });
@@ -400,6 +476,28 @@ function refreshStringSurface(context: ExtensionCommandContext, view: WikiRunVie
 
 async function workspaceRoot(cwd: string): Promise<string> {
   return (await loadWikiWorkspace(cwd)).root;
+}
+
+async function tryWorkspaceRoot(cwd: string): Promise<string | undefined> {
+  try {
+    return await workspaceRoot(cwd);
+  } catch {
+    return undefined;
+  }
+}
+
+async function pauseRunning(engine: WikiProducer | undefined, cwd: string | undefined): Promise<void> {
+  if (!engine || !cwd) return;
+  try {
+    const active = (await engine.list(cwd)).find((run) => run.status === "running");
+    if (active) await (await engine.open(active.id, cwd))?.control("pause");
+  } catch {
+    // The durable ledger recovers an interrupted running process as paused.
+  }
+}
+
+function nonempty(value: string | undefined): string | undefined {
+  return value ? value : undefined;
 }
 
 function output(pi: ExtensionAPI, context: ExtensionCommandContext, content: string, level: "info" | "warning" | "error" = "info"): void {

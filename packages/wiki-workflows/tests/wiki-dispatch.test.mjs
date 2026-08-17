@@ -27,6 +27,7 @@ async function lead(t, sourceScopeIds = ["source"], maxDelegatedTasks) {
     await writeFile(path.join(source, "a.ts"), "export const a = true;\n");
     execFileSync("git", ["init", "--quiet"], { cwd: source });
   }
+  let facts;
   return await WikiLeadRun.open({
     workspace: root,
     runId: "run-1",
@@ -34,6 +35,8 @@ async function lead(t, sourceScopeIds = ["source"], maxDelegatedTasks) {
     policy,
     assertActive: async () => {},
     executionToken: "execution-1",
+    commitLead: async (next) => { facts = structuredClone(next); },
+    readLead: async () => facts,
     allowedSourceScopeIds: sourceScopeIds,
     ...(maxDelegatedTasks === undefined ? {} : { maxDelegatedTasks }),
   });

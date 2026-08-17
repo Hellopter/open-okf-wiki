@@ -63,9 +63,9 @@ Indexes are deterministic projections. Final governance issues an opaque Publica
 
 ## Durable Run state
 
-Lifecycle facts live in `run.json`. The pinned plan is `plan.json`. Agent process tails live in `agents/*.json` and are replaced in place. There is no event log and no sidecar journal. Live `updates()` is an in-memory hub of the current view. Publication still uses `publish.json` because installing `wiki/` has a different filesystem lifetime.
+Lifecycle and Lead facts live in `run.json` format 2. Progress is a projection of those facts plus live tails. The pinned plan is `plan.json`. Files under `agents/` are tails only. There is no lead-state and no event log. Live `updates()` is an in-memory hub of the current view. Publication still uses `publish.json` because installing `wiki/` has a different filesystem lifetime.
 
-The current format is 1; anything else fails closed. Opening another format reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable. The Published Wiki is independent.
+The current Run format is 2; anything else fails closed. Opening another format reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable. The Published Wiki is independent.
 
 ## Observability
 

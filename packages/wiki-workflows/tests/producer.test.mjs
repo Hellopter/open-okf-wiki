@@ -6,7 +6,6 @@ import path from "node:path";
 import test from "node:test";
 import { WikiLeadRun } from "../dist/lead.js";
 import { createConfiguredWikiProducer } from "../dist/production-run.js";
-import { createWikiRunLedger } from "../dist/run-ledger.js";
 
 async function workspace(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-producer-v2-"));
@@ -26,10 +25,11 @@ function content(type, title) {
 }
 
 function leadFence(request) {
-  const ledger = createWikiRunLedger(path.join(request.cwd, ".okf-wiki"));
   return {
-    assertActive: () => ledger.assertActive(request.runId, { attempt: request.attempt, executionToken: request.executionToken }),
+    assertActive: request.assertActive,
     executionToken: request.executionToken,
+    commitLead: request.commitLead,
+    readLead: request.readLead,
   };
 }
 
@@ -160,6 +160,9 @@ test("record projects a running tool into view and inspectAgent immediately", as
   assert.equal(inspection?.process[0]?.toolCallId, "call-1");
   assert.equal(inspection?.process[0]?.completed, false);
   assert.equal(inspection?.agent.activeTools[0]?.name, "read");
+  const disk = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+  assert.equal(disk.progress, undefined);
+  assert.equal(disk.lead.delegates.batches.length, 0);
   release.resolve();
   while ((await handle.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
 });

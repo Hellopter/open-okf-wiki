@@ -55,12 +55,21 @@ async function fixture(t, afterStep) {
   return { workspace, store: createWikiPublicationStore({ workspace, afterStep }) };
 }
 
+function memoryLead() {
+  let facts;
+  return {
+    commitLead: async (next) => { facts = structuredClone(next); },
+    readLead: async () => facts,
+  };
+}
+
 async function sealCandidate(workspace, runId, candidate, extra = {}) {
   const run = await WikiLeadRun.open({
     workspace, runId, candidateWikiRoot: candidate, policy,
     allowedSourceScopeIds: ["source"],
     assertActive: async () => {},
     executionToken: `execution-${runId}`,
+    ...memoryLead(),
   });
   await acceptTaxonomy(run);
   await run.saveSpec(finalSpec);
@@ -154,6 +163,7 @@ test("published metadata carries a validated final WikiSpec and remains loadable
     workspace, runId: "invalid-spec", candidateWikiRoot: second, policy,
     allowedSourceScopeIds: ["source"],
     assertActive: async () => {}, executionToken: "execution-invalid-spec",
+    ...memoryLead(),
   });
   await acceptTaxonomy(invalidLead);
   await assert.rejects(invalidLead.saveSpec({ pages: ["overview.md", "api/source.md", "api/core/invoice/concept.md"] }), /domain\.md/);

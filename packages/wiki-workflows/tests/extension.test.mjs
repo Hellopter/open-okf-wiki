@@ -108,10 +108,20 @@ async function fixture(t, options = {}) {
       theme: options.theme ?? { fg: (_color, text) => text },
     },
   };
-  createWikiExtension({ createProducer: () => producer })(pi);
+  let created = 0;
+  const noteCreate = () => { created += 1; };
+  createWikiExtension({
+    createProducer: () => {
+      noteCreate();
+      return producer;
+    },
+  })(pi);
   await handlers.get("session_start")({}, context);
+  t.after(async () => {
+    await handlers.get("session_shutdown")({ reason: "quit" });
+  });
   const run = async (args) => await commands.get("wiki").handler(args, context);
-  return { cwd, calls, eventCalls, releaseEvents, messages, notices, statuses, widgets, customs, views, handlers, context, run };
+  return { cwd, calls, eventCalls, releaseEvents, messages, notices, statuses, widgets, customs, views, handlers, context, run, producer, created: () => created, noteCreate };
 }
 
 function flush() {
@@ -252,11 +262,55 @@ test("session_start after reload reattaches the live stream of a running run", a
   await subject.run("auth flows");
   await flush();
   assert.equal(subject.eventCalls.length, 1);
+  const created = subject.created();
   await subject.handlers.get("session_shutdown")({ reason: "reload" });
   assert.equal(subject.eventCalls[0][1].aborted, true);
-  await subject.handlers.get("session_start")({}, subject.context);
+  assert.ok(!subject.calls.some((call) => call[0] === "pause"));
+
+  const next = new Map();
+  createWikiExtension({
+    createProducer: () => {
+      subject.noteCreate();
+      return subject.producer;
+    },
+  })({
+    on(name, handler) { next.set(name, handler); },
+    registerCommand() {},
+    sendMessage() {},
+  });
+  t.after(async () => { await next.get("session_shutdown")({ reason: "quit" }); });
+  await next.get("session_start")({}, subject.context);
   assert.equal(subject.eventCalls.length, 2);
   assert.equal(subject.eventCalls[1][1].aborted, false);
+  assert.ok(!subject.calls.some((call) => call[0] === "pause"));
+  assert.equal(subject.created(), created);
+});
+
+test("session_start with a different cwd than the handed-off producer pauses the old running run", async (t) => {
+  const subject = await fixture(t, { hasUI: true, holdEvents: true });
+  await subject.run("auth flows");
+  await flush();
+  const other = await mkdtemp(path.join(os.tmpdir(), "wiki-extension-other-"));
+  t.after(async () => await rm(other, { recursive: true, force: true }));
+  await writeFile(path.join(other, "workspace.yaml"), [
+    "version: 1",
+    "language: en",
+    "defaultSourceIgnores: true",
+    "sources: []",
+    "",
+  ].join("\n"));
+  await subject.handlers.get("session_shutdown")({ reason: "reload" });
+  assert.ok(!subject.calls.some((call) => call[0] === "pause"));
+
+  const next = new Map();
+  createWikiExtension({ createProducer: () => subject.producer })({
+    on(name, handler) { next.set(name, handler); },
+    registerCommand() {},
+    sendMessage() {},
+  });
+  t.after(async () => { await next.get("session_shutdown")({ reason: "quit" }); });
+  await next.get("session_start")({}, { ...subject.context, cwd: other });
+  assert.ok(subject.calls.some((call) => call[0] === "pause" && call[1] === "run-1"));
 });
 
 test("status reuses one live stream and shutdown aborts it", async (t) => {

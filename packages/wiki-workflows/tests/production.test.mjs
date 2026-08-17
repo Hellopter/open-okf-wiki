@@ -7,7 +7,6 @@ import test from "node:test";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { WikiLeadRun } from "../dist/lead.js";
 import { createConfiguredWikiProducer } from "../dist/production-run.js";
-import { createWikiRunLedger } from "../dist/run-ledger.js";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-production-v2-"));
@@ -22,10 +21,11 @@ const spec = () => ({ pages: ["overview.md", "source/source.md", "source/runtime
 const markdown = (type, title) => ["---", `type: ${type}`, `title: ${title}`, "description: Runtime", "sources:", "  - id: runtime", "    resource: repo:src/index.ts#L1-L1", "---", "", "Runtime.[^runtime]", "", "[^runtime]: [Source](repo:src/index.ts#L1-L1)", ""].join("\n");
 
 function leadFence(request) {
-  const ledger = createWikiRunLedger(path.join(request.cwd, ".okf-wiki"));
   return {
-    assertActive: () => ledger.assertActive(request.runId, { attempt: request.attempt, executionToken: request.executionToken }),
+    assertActive: request.assertActive,
     executionToken: request.executionToken,
+    commitLead: request.commitLead,
+    readLead: request.readLead,
   };
 }
 
@@ -211,7 +211,7 @@ test("successful publication keeps provenance and run history while removing tra
   await assert.rejects(readFile(path.join(runRoot, "publication-finalization.json"), "utf8"), { code: "ENOENT" });
   await assert.rejects(readdir(path.join(runRoot, "publication-preimage")), { code: "ENOENT" });
   assert.equal(JSON.parse(await readFile(path.join(runRoot, "manifest.json"), "utf8")).artifacts.length, 1);
-  assert.equal(JSON.parse(await readFile(path.join(runRoot, "lead-state.json"), "utf8")).delegates.batches.length, 3);
+  assert.equal(JSON.parse(await readFile(path.join(runRoot, "run.json"), "utf8")).lead.delegates.batches.length, 3);
   assert.match(await readFile(path.join(root, artifact.relativePath), "utf8"), /handoff/);
   await assert.rejects(readdir(path.join(runRoot, "events")), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(runRoot, "activity.jsonl"), "utf8"), { code: "ENOENT" });

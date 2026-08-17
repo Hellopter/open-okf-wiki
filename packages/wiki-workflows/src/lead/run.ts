@@ -16,6 +16,7 @@ import {
   type WikiDelegateReceipt,
   type WikiReviewBasis,
 } from "../delegate-contracts.js";
+import type { WikiLeadFacts } from "../run-record.js";
 import type { WikiPinnedSourcePlan, WikiTaskRuntimeState } from "../runtime-types.js";
 import type { WikiDelegateBatchSnapshot } from "../delegate-contracts.js";
 import { finalizeWiki, materializeValidatedWikiIndexes, type WikiFinalizeFaultPoint } from "./finalize.js";
@@ -91,6 +92,10 @@ export interface WikiLeadRunOptions {
   /** Authoritative lifecycle execution checked under the Lead lease before every operation. */
   assertActive: () => Promise<void>;
   executionToken: string;
+  /** Persist the full Lead fact snapshot. The Run record is the only authority. */
+  commitLead: (facts: WikiLeadFacts) => Promise<void>;
+  /** Restore Lead facts from the Run record when present. */
+  readLead?: () => Promise<WikiLeadFacts | undefined>;
   sourcePlan?: WikiPinnedSourcePlan;
   /** Host-owned source scope IDs used when a pinned source plan is unavailable. */
   allowedSourceScopeIds?: readonly string[];
@@ -147,13 +152,14 @@ export class WikiLeadRun {
     private readonly workspace: string,
     readonly runId: string,
     readonly candidateWikiRoot: string,
-    private readonly stateFile: string,
-
+    private readonly runRoot: string,
     private readonly requiredSections: readonly string[],
     private readonly fault: WikiLeadRunOptions["fault"],
     private readonly finalizeFault: WikiLeadRunOptions["finalizeFault"],
     private readonly assertActive: WikiLeadRunOptions["assertActive"],
     private readonly executionToken: string,
+    private readonly commitLeadPersist: WikiLeadRunOptions["commitLead"],
+    private readonly readLead: WikiLeadRunOptions["readLead"],
     private readonly pinnedRoots: ResolvedWikiRoots | undefined,
     private readonly maxDelegatedTasks: number | undefined,
     private state: WikiLeadRunState,
@@ -168,19 +174,23 @@ export class WikiLeadRun {
     await assertContainedAbsolutePath(workspace, candidate, false, "Wiki workspace");
     const runRoot = path.join(workspace, ".okf-wiki", "runs", options.runId);
     await mkdir(runRoot, { recursive: true });
-    const stateFile = path.join(runRoot, "lead-state.json");
     const policyDigest = hash(stableStringify(options.policy));
     const configuredSourceScopeIds = unique(options.sourcePlan?.sources.map((source) => source.scopeId) ?? options.allowedSourceScopeIds ?? []);
-    let state = await readState(stateFile, options.runId);
-    if (state && configuredSourceScopeIds.length && !sameStringSet(state.sourceScopeIds, configuredSourceScopeIds)) {
+    const saved = options.readLead ? await options.readLead() : undefined;
+    const hydrated = saved !== undefined && isInitializedLead(saved);
+    let state = hydrated ? stateFromLeadFacts(saved, options.runId) : emptyState(options.runId, policyDigest, configuredSourceScopeIds);
+    if (hydrated && configuredSourceScopeIds.length && !sameStringSet(state.sourceScopeIds, configuredSourceScopeIds)) {
       throw new Error("Pinned source scope IDs do not match the durable Wiki Lead run");
     }
-    state ??= emptyState(options.runId, policyDigest, configuredSourceScopeIds);
     if (!state.sourceScopeIds.length && configuredSourceScopeIds.length) state = { ...state, sourceScopeIds: configuredSourceScopeIds };
     const pinnedRoots = options.sourcePlan
       ? await resolvePinnedWikiRoots(options.sourcePlan, options.language ?? "en", candidateDirectory(workspace, candidate))
       : undefined;
-    const subject = new WikiLeadRun(workspace, options.runId, candidate, stateFile, options.requiredSections ?? [], options.fault, options.finalizeFault, options.assertActive, options.executionToken, pinnedRoots, options.maxDelegatedTasks, state);
+    const subject = new WikiLeadRun(
+      workspace, options.runId, candidate, runRoot, options.requiredSections ?? [],
+      options.fault, options.finalizeFault, options.assertActive, options.executionToken,
+      options.commitLead, options.readLead, pinnedRoots, options.maxDelegatedTasks, state,
+    );
     await subject.serial(async () => {
       await subject.recover();
       if (subject.state.policyDigest !== policyDigest) {
@@ -575,7 +585,7 @@ export class WikiLeadRun {
     requiredProfileCoverage: readonly string[];
     publicationAt?: string;
   }): Promise<PublicationFinalizationTransaction> {
-    const runRoot = path.dirname(this.stateFile);
+    const runRoot = this.runRoot;
     const transactionFile = path.join(runRoot, "publication-finalization.json");
     const requiredPaths = input.requiredPaths ?? wikiSpecPagePaths(this.requireSpec()).map((page) => `wiki/${page}`);
     const saved = await readPublicationTransaction(transactionFile, this.runId);
@@ -614,7 +624,9 @@ export class WikiLeadRun {
   }
 
   private async recover(): Promise<void> {
-    this.state = await readState(this.stateFile, this.runId) ?? this.state;
+    if (!this.readLead) return;
+    const saved = await this.readLead();
+    if (saved && isInitializedLead(saved)) this.state = stateFromLeadFacts(saved, this.runId);
   }
 
   private async tryIndexes(): Promise<void> {
@@ -628,14 +640,14 @@ export class WikiLeadRun {
   }
 
   private async commitState(next: WikiLeadRunState): Promise<void> {
-    const parsed = parseState(JSON.parse(serializeState(next)), this.runId);
+    const parsed = stateFromLeadFacts(toLeadFacts(next), this.runId);
     await this.writeState(parsed);
     this.state = parsed;
   }
 
   private async writeState(state: WikiLeadRunState): Promise<void> {
-    await writeText(this.stateFile, serializeState(state));
-    await writeText(path.join(path.dirname(this.stateFile), "board.md"), renderWikiBoard(projectWikiBoard(boardInput(state))));
+    await this.commitLeadPersist(toLeadFacts(state));
+    await writeText(path.join(this.runRoot, "board.md"), renderWikiBoard(projectWikiBoard(boardInput(state))));
   }
 
   private async serial<T>(operation: () => Promise<T>): Promise<T> {
@@ -675,34 +687,56 @@ function emptyState(runId: string, policyDigest: string, sourceScopeIds: readonl
   return { version: WIKI_FORMAT, runId, candidateRevision: 0, specRevision: 0, policyDigest, compactionObserved: false, sourceScopeIds: [...sourceScopeIds], reviews: [], delegates: { batches: [] } };
 }
 
-async function readState(location: string, runId: string): Promise<WikiLeadRunState | undefined> {
-  try { return parseState(JSON.parse(await readFile(location, "utf8")), runId); }
-  catch (error) { if (isMissing(error)) return undefined; throw error; }
+const EMPTY_POLICY_DIGEST = "0".repeat(64);
+
+function isInitializedLead(facts: WikiLeadFacts): boolean {
+  return facts.policyDigest !== EMPTY_POLICY_DIGEST
+    || facts.sourceScopeIds.length > 0
+    || facts.specRevision > 0
+    || facts.candidateRevision > 0
+    || facts.delegates.batches.length > 0
+    || facts.reviews.length > 0
+    || facts.compactionObserved
+    || facts.spec !== undefined
+    || facts.taxonomy !== undefined;
 }
 
-function parseState(value: unknown, runId: string, requireDigest = true): WikiLeadRunState {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki Lead run state for ${runId}`);
-  const raw = value as unknown as Record<string, unknown>;
-  if (Object.keys(raw).some((key) => !["version", "runId", "candidateRevision", "specRevision", "policyDigest", "compactionObserved", "sourceScopeIds", "spec", "taxonomy", "reviews", "delegates", "stateDigest"].includes(key))) throw new Error(`Invalid Wiki Lead run state for ${runId}`);
-  const { stateDigest, ...body } = raw;
-  if (requireDigest && (typeof stateDigest !== "string" || stateDigest !== hash(stableStringify(body)))) throw new Error(`Wiki Lead run state integrity check failed for ${runId}`);
-  if (raw.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/lead-state.json`, raw.version);
-  if (raw.runId !== runId || !Number.isSafeInteger(raw.candidateRevision) || (raw.candidateRevision as number) < 0
-    || !Number.isSafeInteger(raw.specRevision) || (raw.specRevision as number) < 0 || typeof raw.policyDigest !== "string" || !/^[a-f0-9]{64}$/.test(raw.policyDigest)
-    || typeof raw.compactionObserved !== "boolean" || raw.sourceScopeIds !== undefined && (!Array.isArray(raw.sourceScopeIds) || raw.sourceScopeIds.some((id) => typeof id !== "string" || !id) || new Set(raw.sourceScopeIds).size !== raw.sourceScopeIds.length) || !Array.isArray(raw.reviews) || !raw.delegates
-    || (raw.spec === undefined) !== (raw.specRevision === 0)) throw new Error(`Invalid Wiki Lead run state for ${runId}`);
+function toLeadFacts(state: WikiLeadRunState): WikiLeadFacts {
+  return {
+    candidateRevision: state.candidateRevision,
+    specRevision: state.specRevision,
+    policyDigest: state.policyDigest,
+    compactionObserved: state.compactionObserved,
+    sourceScopeIds: [...state.sourceScopeIds],
+    ...(state.spec ? { spec: state.spec } : {}),
+    ...(state.taxonomy ? { taxonomy: state.taxonomy } : {}),
+    reviews: state.reviews,
+    delegates: state.delegates,
+  };
+}
+
+function stateFromLeadFacts(facts: WikiLeadFacts, runId: string): WikiLeadRunState {
+  if (!Number.isSafeInteger(facts.candidateRevision) || facts.candidateRevision < 0
+    || !Number.isSafeInteger(facts.specRevision) || facts.specRevision < 0
+    || typeof facts.policyDigest !== "string" || !/^[a-f0-9]{64}$/.test(facts.policyDigest)
+    || typeof facts.compactionObserved !== "boolean"
+    || facts.sourceScopeIds.some((id) => typeof id !== "string" || !id)
+    || new Set(facts.sourceScopeIds).size !== facts.sourceScopeIds.length
+    || (facts.spec === undefined) !== (facts.specRevision === 0)) {
+    throw new Error(`Invalid Wiki Lead run state for ${runId}`);
+  }
   return {
     version: WIKI_FORMAT,
     runId,
-    candidateRevision: raw.candidateRevision as number,
-    specRevision: raw.specRevision as number,
-    policyDigest: raw.policyDigest as string,
-    compactionObserved: raw.compactionObserved,
-    sourceScopeIds: raw.sourceScopeIds === undefined ? [] : [...raw.sourceScopeIds] as string[],
-    ...(raw.spec ? { spec: parseWikiSpec(raw.spec) } : {}),
-    ...(raw.taxonomy ? { taxonomy: parseTaxonomyCheckpoint(raw.taxonomy) } : {}),
-    reviews: raw.reviews.map(parseAcceptedReview),
-    delegates: parseDelegateState(raw.delegates),
+    candidateRevision: facts.candidateRevision,
+    specRevision: facts.specRevision,
+    policyDigest: facts.policyDigest,
+    compactionObserved: facts.compactionObserved,
+    sourceScopeIds: [...facts.sourceScopeIds],
+    ...(facts.spec ? { spec: parseWikiSpec(facts.spec) } : {}),
+    ...(facts.taxonomy ? { taxonomy: parseTaxonomyCheckpoint(facts.taxonomy) } : {}),
+    reviews: facts.reviews.map(parseAcceptedReview),
+    delegates: parseDelegateState(facts.delegates),
   };
 }
 
@@ -1267,11 +1301,6 @@ function delegatedTaskCount(state: WikiLeadRunState): number {
 }
 function stripWikiPrefix(value: string): string { if (!value.startsWith("wiki/")) throw new Error(`Wiki path must start with wiki/: ${value}`); return value.slice(5); }
 function candidateDirectory(workspace: string, candidate: string): string { return path.relative(workspace, candidate).split(path.sep).join("/"); }
-function serializeState(state: WikiLeadRunState): string {
-  const body = JSON.parse(JSON.stringify(state)) as WikiLeadRunState & { stateDigest?: string };
-  delete body.stateDigest;
-  return `${JSON.stringify({ ...body, stateDigest: hash(stableStringify(body)) }, null, 2)}\n`;
-}
 function hash(value: string | Buffer): string { return createHash("sha256").update(value).digest("hex"); }
 function isMissing(error: unknown): error is NodeJS.ErrnoException { return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT"); }
 

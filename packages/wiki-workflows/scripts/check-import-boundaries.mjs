@@ -16,6 +16,7 @@ const PURE_MODULES = [
   "producer-types.ts",
   "delegate-contracts.ts",
   "run-ledger.ts",
+  "run-record.ts",
   "cli.ts",
   "ui/observability.ts",
   "failures.ts",
