@@ -1,10 +1,14 @@
+import { sameStringSet } from "../util.js";
 import {
   sameWikiCluster,
   wikiSpecClusterId,
+  wikiSpecClusterParent,
   wikiSpecClusterPaths,
   wikiSpecClusters,
+  wikiSpecClusterSourceId,
   wikiSpecPagePaths,
   wikiSpecRelativePath,
+  wikiSpecSourceIds,
   type WikiSpec,
 } from "./spec.js";
 
@@ -29,7 +33,7 @@ export interface WikiDispatchInput {
   tasks: readonly WikiDispatchTaskInput[];
   spec?: WikiSpec;
   pendingWritePaths?: readonly string[];
-  knownContextRefs?: readonly string[] | ReadonlySet<string>;
+  knownContextRefs?: readonly { nodeId: string; sourceScopeIds: readonly string[] }[];
   delegatedTasks?: number;
   delegateBatches?: number;
   maxDelegatedTasks?: number;
@@ -85,7 +89,7 @@ export function assertDispatchable(input: WikiDispatchInput): void {
   }
 
   const spec = input.spec;
-  const known = input.knownContextRefs instanceof Set ? input.knownContextRefs : new Set(input.knownContextRefs ?? []);
+  const known = new Map((input.knownContextRefs ?? []).map((artifact) => [artifact.nodeId, artifact]));
   const batchWritePaths = new Set<string>();
   const pending = new Set(pendingWritePaths);
   const priorResearch = input.existingResearchTasks ?? [];
@@ -135,9 +139,64 @@ export function assertDispatchable(input: WikiDispatchInput): void {
     }
 
     for (const ref of task.contextRefs ?? []) {
-      if (!known.has(ref)) throw new Error(`Delegate task ${task.id} requests unknown context artifact: ${ref}`);
+      const artifact = known.get(ref);
+      if (!artifact) throw new Error(`Delegate task ${task.id} requests unknown context artifact: ${ref}`);
+      const allowed = new Set(task.sourceScopeIds ?? []);
+      if (!artifact.sourceScopeIds.every((sourceId) => allowed.has(sourceId))) {
+        throw new Error(`Delegate task ${task.id} contextRefs violate source isolation: ${ref} is not source-local`);
+      }
     }
   }
+
+  for (const task of tasks) {
+    const sources = [...(task.sourceScopeIds ?? [])];
+    if (task.role === "research") {
+      if (sources.length !== 1) {
+        throw new Error(`Research task ${task.id} violates source isolation: sourceScopeIds must name exactly one source`);
+      }
+      continue;
+    }
+    if (task.role !== "write" && task.role !== "review") continue;
+    const cluster = dispatchCluster(task, spec!);
+    const expected = clusterSourceScopeIds(cluster, wikiSpecSourceIds(spec!));
+    if (!sameStringSet(sources, expected)) {
+      throw new Error(
+        `Delegate ${task.role} task ${task.id} sourceScopeIds must match cluster ${cluster} source isolation (expected ${expected.join(", ") || "(none)"})`,
+      );
+    }
+  }
+}
+
+export function selectReadyClusters<T extends { id: string; nextStep: string }>(
+  clusters: readonly T[],
+  step: "write" | "review",
+): T[] {
+  if (step === "review") return clusters.filter((cluster) => cluster.nextStep === "review");
+  return clusters.filter((cluster) => cluster.nextStep === "write" && writeFrontierReady(cluster, clusters));
+}
+
+export function clusterSourceScopeIds(clusterId: string, pinnedSourceIds: readonly string[]): string[] {
+  if (clusterId === "_root") return [...pinnedSourceIds];
+  const sourceId = wikiSpecClusterSourceId(clusterId);
+  if (!sourceId) throw new Error(`Unknown Wiki cluster source: ${clusterId}`);
+  return [sourceId];
+}
+
+export function contextRefsForSources(
+  sourceScopeIds: readonly string[],
+  artifacts: readonly { nodeId: string; sourceScopeIds: readonly string[] }[],
+): string[] {
+  const allowed = new Set(sourceScopeIds);
+  return artifacts
+    .filter((artifact) => artifact.sourceScopeIds.every((sourceId) => allowed.has(sourceId)))
+    .map((artifact) => artifact.nodeId);
+}
+
+function writeFrontierReady<T extends { id: string; nextStep: string }>(cluster: T, clusters: readonly T[]): boolean {
+  if (cluster.id === "_root") {
+    return clusters.every((other) => other.id === "_root" || other.nextStep !== "write");
+  }
+  return clusters.every((child) => wikiSpecClusterParent(child.id) !== cluster.id || child.nextStep !== "write");
 }
 
 export function wikiDispatchWave(task: Pick<WikiDispatchTaskInput, "role" | "mode">): WikiLogicalWave {

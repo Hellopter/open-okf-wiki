@@ -68,30 +68,30 @@ async function completeCandidate(request) {
   await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   await lead.replacePage({ path: "wiki/source/source.md", content: content("Source", "API"), actor: "lead" });
   await lead.replacePage({ path: "wiki/source/runtime/domain.md", content: content("Domain", "Runtime domain"), actor: "lead" });
-  await acceptReviews(lead, [
-    ["wiki/overview.md"],
-    ["wiki/source/source.md"],
-    ["wiki/source/runtime/domain.md"],
-  ]);
+  await acceptReviews(lead);
 }
 
-async function acceptReviews(lead, groups) {
-  assert.ok(groups.length > 0);
-  const writes = await lead.startNextReadyWave();
-  assert.equal(writes.wave, "write");
-  for (const contract of writes.contracts) {
-    await lead.taskTransitions.taskStarted(writes.batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(writes.batchId, contract.id, { attempt: 1, receipt: {
-      id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
-      contractId: contract.contractId, contractDigest: contract.contractDigest,
-    } });
+async function acceptReviews(lead) {
+  let reviews;
+  while (true) {
+    const wave = await lead.startNextReadyWave();
+    if (wave.wave === "review") {
+      reviews = wave;
+      break;
+    }
+    if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
+    for (const contract of wave.contracts) {
+      await lead.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await lead.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+        id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
+        contractId: contract.contractId, contractDigest: contract.contractDigest,
+      } });
+    }
+    await lead.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
-  await lead.taskTransitions.tasksCollected(writes.batchId, writes.contracts.map((contract) => contract.id));
-  const { batchId, contracts } = await lead.startNextReadyWave();
-  assert.equal(contracts[0]?.role, "review");
-  for (const contract of contracts) {
-    await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+  for (const contract of reviews.contracts) {
+    await lead.taskTransitions.taskStarted(reviews.batchId, contract.id, { attempt: 1 });
+    await lead.taskTransitions.taskSettled(reviews.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
       contractId: contract.contractId, contractDigest: contract.contractDigest,
       review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },

@@ -30,7 +30,7 @@ import {
 } from "../wiki-publication-seal.js";
 import { sameStringSet, stableStringify } from "../util.js";
 import { projectWikiBoard, renderWikiBoard, wikiLeadMayWrite, wikiOpenResearchBlockerIds, type WikiBoardProjectionInput, type WikiBoardTaxonomyCheckpoint, type WikiBoardTaxonomyDecision } from "./board.js";
-import { assertDispatchable, type WikiDispatchTaskInput } from "./dispatch.js";
+import { assertDispatchable, clusterSourceScopeIds, contextRefsForSources, selectReadyClusters, type WikiDispatchTaskInput } from "./dispatch.js";
 import { UnsupportedWikiRunVersionError, WIKI_FORMAT } from "../run-ledger.js";
 import { WikiRejectedError, allowedList, listed } from "../wiki-reject.js";
 
@@ -914,7 +914,7 @@ function deriveNextWave(
   discoveryPlan: readonly WikiDiscoveryPlanEntry[],
 ): { wave: WikiQueuedWave["wave"]; tasks: WikiDispatchTaskInput[] } {
   const research = state.delegates.batches.flatMap((batch) => batch.tasks).filter((task) => task.task.role === "research");
-  const contexts = knownContextRefs(state);
+  const artifacts = knownContextRefs(state);
   const board = projectWikiBoard(boardInput(state));
   if (board.nextAction === "discovery") {
     const entries = validateDiscoveryPlan(discoveryPlan, state.sourceScopeIds);
@@ -937,23 +937,34 @@ function deriveNextWave(
 
   const blockers = wikiOpenResearchBlockerIds(research.map(researchBlockerTask));
   if (board.nextAction === "supplement") {
-    const relevant = research.filter((task) => task.task.role === "research" && blockers.some((blocker) => blockerBelongsToTask(blocker, task)));
-    const sources = unique(relevant.flatMap((task) => task.task.sourceScopeIds));
-    const domains = unique(relevant.flatMap((task) => task.task.role === "research" ? task.task.domainScopeIds : []));
-    const lenses = unique(relevant.flatMap((task) => task.task.role === "research" ? task.task.lensScopeIds : []));
+    const grouped = new Map<string, { blockers: string[]; relevant: typeof research }>();
+    for (const blocker of blockers) {
+      const owner = research.find((task) => task.task.role === "research" && blockerBelongsToTask(blocker, task));
+      if (!owner || owner.task.role !== "research") continue;
+      const source = owner.task.sourceScopeIds[0];
+      if (!source) continue;
+      const entry = grouped.get(source) ?? { blockers: [], relevant: [] };
+      entry.blockers.push(blocker);
+      if (!entry.relevant.includes(owner)) entry.relevant.push(owner);
+      grouped.set(source, entry);
+    }
+    const sources = unique([...state.sourceScopeIds.filter((source) => grouped.has(source)), ...grouped.keys()]);
     return {
       wave: "supplement",
-      tasks: [{
-        id: `research-b${batchId}-t1`,
-        role: "research",
-        instruction: supplementInstruction(blockers, relevant),
-        sourceScopeIds: sources.length ? sources : [...state.sourceScopeIds],
-        contextRefs: contexts,
-        mode: "supplement",
-        domainScopeIds: domains,
-        lensScopeIds: lenses,
-        resolvesIds: blockers,
-      }],
+      tasks: sources.map((source, index) => {
+        const { blockers: sourceBlockers, relevant } = grouped.get(source)!;
+        return {
+          id: `research-b${batchId}-t${index + 1}`,
+          role: "research",
+          instruction: supplementInstruction(sourceBlockers, relevant),
+          sourceScopeIds: [source],
+          contextRefs: contextRefsForSources([source], artifacts),
+          mode: "supplement",
+          domainScopeIds: unique(relevant.flatMap((task) => task.task.role === "research" ? task.task.domainScopeIds : [])),
+          lensScopeIds: unique(relevant.flatMap((task) => task.task.role === "research" ? task.task.lensScopeIds : [])),
+          resolvesIds: sourceBlockers,
+        };
+      }),
     };
   }
   if (!researchReady(state)) throw new Error("The discovery research wave is not complete");
@@ -963,32 +974,24 @@ function deriveNextWave(
     const blocked = board.clusters.find((cluster) => cluster.nextStep === "blocked");
     throw new Error(`Wiki cluster is blocked after 3 write/review attempts: ${blocked?.id ?? "unknown"}`);
   }
-  if (board.nextAction === "write") {
-    const writeClusters = board.clusters.filter((cluster) => cluster.nextStep === "write");
+  if (board.nextAction === "write" || board.nextAction === "review") {
+    const wave = board.nextAction;
+    const ready = selectReadyClusters(board.clusters, wave);
     return {
-      wave: "write",
-      tasks: writeClusters.map((cluster, index) => ({
-        id: `write-b${batchId}-t${index + 1}`,
-        role: "write",
-        instruction: "Write every page in the assigned accepted WikiSpec cluster using grounded source evidence.",
-        cluster: cluster.id,
-        sourceScopeIds: [...state.sourceScopeIds],
-        contextRefs: contexts,
-      })),
-    };
-  }
-  if (board.nextAction === "review") {
-    const reviewClusters = board.clusters.filter((cluster) => cluster.nextStep === "review");
-    return {
-      wave: "review",
-      tasks: reviewClusters.map((cluster, index) => ({
-        id: `review-b${batchId}-t${index + 1}`,
-        role: "review",
-        instruction: "Independently review every assigned page against the accepted WikiSpec, source evidence, and generation policy.",
-        cluster: cluster.id,
-        sourceScopeIds: [...state.sourceScopeIds],
-        contextRefs: contexts,
-      })),
+      wave,
+      tasks: ready.map((cluster, index) => {
+        const sourceScopeIds = clusterSourceScopeIds(cluster.id, state.sourceScopeIds);
+        return {
+          id: `${wave}-b${batchId}-t${index + 1}`,
+          role: wave,
+          instruction: wave === "write"
+            ? "Write every page in the assigned accepted WikiSpec cluster using grounded source evidence."
+            : "Independently review every assigned page against the accepted WikiSpec, source evidence, and generation policy.",
+          cluster: cluster.id,
+          sourceScopeIds,
+          contextRefs: contextRefsForSources(sourceScopeIds, artifacts),
+        };
+      }),
     };
   }
   throw new Error("No Wiki delegate wave is ready; finish the accepted Run");
@@ -1292,8 +1295,10 @@ function pendingWritePaths(state: WikiLeadRunState): string[] {
     .filter((task) => task.task.role === "write" && task.phase !== "terminal")
     .flatMap((task) => task.task.writePaths ?? []));
 }
-function knownContextRefs(state: WikiLeadRunState): string[] {
-  return state.delegates.batches.flatMap((batch) => batch.tasks.flatMap((task) => (task.receipt?.outputs ?? []).map((output) => output.nodeId)));
+function knownContextRefs(state: WikiLeadRunState): { nodeId: string; sourceScopeIds: string[] }[] {
+  return state.delegates.batches.flatMap((batch) => batch.tasks.flatMap((task) =>
+    (task.receipt?.outputs ?? []).map((output) => ({ nodeId: output.nodeId, sourceScopeIds: [...task.task.sourceScopeIds] })),
+  ));
 }
 function delegatedTaskCount(state: WikiLeadRunState): number {
   return state.delegates.batches.reduce((sum, batch) => sum + batch.tasks.length, 0);

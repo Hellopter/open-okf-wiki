@@ -76,16 +76,24 @@ async function sealCandidate(workspace, runId, candidate, extra = {}) {
   await run.replacePage({ path: "wiki/overview.md", content: page("Overview", "Overview", extra.body ?? "new"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/source.md", content: page("Source", "API", extra.body ?? "new"), actor: "lead" });
   await run.replacePage({ path: "wiki/source/core/domain.md", content: page("Domain", "Core", extra.body ?? "new"), actor: "lead" });
-  const writes = await run.startNextReadyWave();
-  for (const contract of writes.contracts) {
-    await run.taskTransitions.taskStarted(writes.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(writes.batchId, contract.id, { attempt: 1, receipt: {
-      id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
-      contractId: contract.contractId, contractDigest: contract.contractDigest,
-    } });
+  let reviews;
+  while (true) {
+    const wave = await run.startNextReadyWave();
+    if (wave.wave === "review") {
+      reviews = wave;
+      break;
+    }
+    if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
+    for (const contract of wave.contracts) {
+      await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+        id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
+        contractId: contract.contractId, contractDigest: contract.contractDigest,
+      } });
+    }
+    await run.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
-  await run.taskTransitions.tasksCollected(writes.batchId, writes.contracts.map((contract) => contract.id));
-  const { contracts } = await run.startNextReadyWave();
+  const { contracts } = reviews;
   for (const contract of contracts) {
     await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
     await run.taskTransitions.taskSettled(contract.batchId, contract.id, {

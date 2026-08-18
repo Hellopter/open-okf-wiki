@@ -18,15 +18,25 @@ import {
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
 const spec = { pages: ["overview.md", "source/source.md", "source/core/domain.md"] };
 
+function content(type, title) {
+  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: source/a.ts#L1-L1", "---", "", "Runtime behavior.[^source-a]", "", "[^source-a]: [Source](source/a.ts#L1-L1)", ""].join("\n");
+}
+
 async function lead(t, sourceScopeIds = ["source"], maxDelegatedTasks) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-dispatch-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
+  const sourcesYaml = [];
   for (const scope of sourceScopeIds) {
     const source = path.join(root, scope);
     await mkdir(source, { recursive: true });
     await writeFile(path.join(source, "a.ts"), "export const a = true;\n");
     execFileSync("git", ["init", "--quiet"], { cwd: source });
+    sourcesYaml.push(`  - path: ${scope}`, "    origin:", "      type: link", `      localPath: ${JSON.stringify(source)}`);
   }
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1", "language: en", "defaultSourceIgnores: true", "wiki:", "  exclude: []",
+    "sources:", ...sourcesYaml, "",
+  ].join("\n"));
   let facts;
   return await WikiLeadRun.open({
     workspace: root,
@@ -57,6 +67,22 @@ async function settleResearch(run, contracts, extra = {}) {
 
 async function collect(run, contracts) {
   await run.taskTransitions.tasksCollected(contracts[0].batchId, contracts.map((contract) => contract.id));
+}
+
+async function settleWrite(run, wave) {
+  for (const contract of wave.contracts) {
+    await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+    await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+      id: contract.id, role: "write", status: "complete", summary: "written", outputs: [],
+      coverage: contract.writePaths, gaps: [], attempts: 1,
+      contractId: contract.contractId, contractDigest: contract.contractDigest,
+    } });
+  }
+  await collect(run, wave.contracts);
+}
+
+function contractForPath(contracts, page) {
+  return contracts.find((contract) => (contract.writePaths ?? contract.reviewPaths ?? []).includes(page));
 }
 
 test("workflow tool schemas expose no prose or opaque Run IDs", () => {
@@ -115,30 +141,137 @@ test("taxonomy cannot bypass discovery and must cover every pinned Source", asyn
   );
 });
 
-test("supplement inherits scopes and embeds the human question instead of blocker IDs", async (t) => {
-  const run = await lead(t);
-  const discovery = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Survey" }]);
-  await settleResearch(run, discovery.contracts, { status: "incomplete", followups: [{ id: "gap-discover", kind: "evidence_gap", question: "Which fallback is authoritative?", sourceScopeIds: ["source"] }] });
+test("supplement splits one task per Source and keeps questions source-local", async (t) => {
+  const run = await lead(t, ["source-a", "source-b"]);
+  const discovery = await run.startNextReadyWave([
+    { sourceScopeId: "source-a", instruction: "Survey A" },
+    { sourceScopeId: "source-b", instruction: "Survey B" },
+  ]);
+  await settleResearch(run, [discovery.contracts[0]], {
+    status: "incomplete",
+    followups: [{ id: "gap-a", kind: "evidence_gap", question: "Which fallback is authoritative?", sourceScopeIds: ["source-a"] }],
+  });
+  await settleResearch(run, [discovery.contracts[1]], {
+    status: "incomplete",
+    followups: [{ id: "gap-b", kind: "evidence_gap", question: "Who owns the widget schema?", sourceScopeIds: ["source-b"] }],
+  });
   await collect(run, discovery.contracts);
   const supplement = await run.startNextReadyWave();
   assert.equal(supplement.wave, "supplement");
+  assert.equal(supplement.contracts.length, 2);
+  assert.deepEqual(supplement.contracts.map((contract) => contract.sourceScopeIds), [["source-a"], ["source-b"]]);
+  assert.ok(supplement.contracts.every((contract) => contract.sourceScopeIds.length === 1));
   assert.deepEqual(supplement.contracts[0].domainScopeIds, []);
   assert.deepEqual(supplement.contracts[0].lensScopeIds, []);
   assert.match(supplement.contracts[0].instruction, /Which fallback is authoritative\?/);
-  assert.doesNotMatch(supplement.contracts[0].instruction, /gap-discover/);
+  assert.doesNotMatch(supplement.contracts[0].instruction, /Who owns the widget schema\?/);
+  assert.doesNotMatch(supplement.contracts[0].instruction, /gap-a/);
+  assert.match(supplement.contracts[1].instruction, /Who owns the widget schema\?/);
+  assert.doesNotMatch(supplement.contracts[1].instruction, /Which fallback is authoritative\?/);
+  assert.doesNotMatch(supplement.contracts[1].instruction, /gap-b/);
 });
 
-test("coordinator expands accepted spec into host-derived write tasks", async (t) => {
+test("coordinator expands accepted spec into source-local write waves then review", async (t) => {
   const run = await lead(t);
   const discovery = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Survey" }]);
   await settleResearch(run, discovery.contracts);
   await collect(run, discovery.contracts);
   await run.saveTaxonomy({ revision: 1, decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }], conflictIds: [] });
   await run.saveSpec(spec);
-  const writes = await run.startNextReadyWave();
-  assert.equal(writes.wave, "write");
-  assert.deepEqual(writes.contracts.map((contract) => contract.writePaths), [["wiki/overview.md"], ["wiki/source/source.md"], ["wiki/source/core/domain.md"]]);
-  assert.ok(writes.contracts.every((contract) => contract.sourceScopeIds.join() === "source"));
+  const domain = await run.startNextReadyWave();
+  assert.equal(domain.wave, "write");
+  assert.deepEqual(domain.contracts.map((contract) => contract.writePaths), [["wiki/source/core/domain.md"]]);
+  assert.deepEqual(domain.contracts[0].sourceScopeIds, ["source"]);
+  await assert.rejects(run.startNextReadyWave(), /Collect or cancel the current Wiki wave before starting another/);
+  await settleWrite(run, domain);
+
+  const sourcePage = await run.startNextReadyWave();
+  assert.equal(sourcePage.wave, "write");
+  assert.deepEqual(sourcePage.contracts.map((contract) => contract.writePaths), [["wiki/source/source.md"]]);
+  assert.deepEqual(sourcePage.contracts[0].sourceScopeIds, ["source"]);
+  await settleWrite(run, sourcePage);
+
+  const overview = await run.startNextReadyWave();
+  assert.equal(overview.wave, "write");
+  assert.deepEqual(overview.contracts.map((contract) => contract.writePaths), [["wiki/overview.md"]]);
+  assert.deepEqual(overview.contracts[0].sourceScopeIds, ["source"]);
+  await settleWrite(run, overview);
+  await run.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/source.md", content: content("Source", "Source"), actor: "lead" });
+  await run.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" });
+
+  const reviews = await run.startNextReadyWave();
+  assert.equal(reviews.wave, "review");
+  assert.equal(reviews.contracts.length, 3);
+  assert.deepEqual(contractForPath(reviews.contracts, "wiki/source/core/domain.md")?.reviewPaths, ["wiki/source/core/domain.md"]);
+  assert.deepEqual(contractForPath(reviews.contracts, "wiki/source/source.md")?.reviewPaths, ["wiki/source/source.md"]);
+  assert.deepEqual(contractForPath(reviews.contracts, "wiki/overview.md")?.reviewPaths, ["wiki/overview.md"]);
+  assert.ok(reviews.contracts.every((contract) => {
+    assert.deepEqual(contract.sourceScopeIds, ["source"]);
+    return true;
+  }));
+});
+
+test("coordinator writes a two-source spec bottom-up with single-source contracts", async (t) => {
+  const twoSourceSpec = {
+    pages: [
+      "overview.md",
+      "source-a/source.md", "source-a/core/domain.md", "source-a/core/widget/concept.md",
+      "source-b/source.md", "source-b/core/domain.md", "source-b/core/widget/concept.md",
+    ],
+  };
+  const run = await lead(t, ["source-a", "source-b"]);
+  const discovery = await run.startNextReadyWave([
+    { sourceScopeId: "source-a", instruction: "Survey A" },
+    { sourceScopeId: "source-b", instruction: "Survey B" },
+  ]);
+  await settleResearch(run, discovery.contracts);
+  await collect(run, discovery.contracts);
+  await run.saveTaxonomy({
+    revision: 1,
+    decisions: [
+      { sourceScopeId: "source-a", domainId: "core", conceptIds: ["widget"] },
+      { sourceScopeId: "source-b", domainId: "core", conceptIds: ["widget"] },
+    ],
+    conflictIds: [],
+  });
+  await run.saveSpec(twoSourceSpec);
+
+  const concepts = await run.startNextReadyWave();
+  assert.equal(concepts.wave, "write");
+  assert.deepEqual(
+    concepts.contracts.flatMap((contract) => contract.writePaths).sort(),
+    ["wiki/source-a/core/widget/concept.md", "wiki/source-b/core/widget/concept.md"],
+  );
+  assert.deepEqual(contractForPath(concepts.contracts, "wiki/source-a/core/widget/concept.md")?.sourceScopeIds, ["source-a"]);
+  assert.deepEqual(contractForPath(concepts.contracts, "wiki/source-b/core/widget/concept.md")?.sourceScopeIds, ["source-b"]);
+  assert.ok(concepts.contracts.every((contract) => contract.sourceScopeIds.length === 1));
+  await settleWrite(run, concepts);
+
+  const domains = await run.startNextReadyWave();
+  assert.equal(domains.wave, "write");
+  assert.deepEqual(
+    domains.contracts.flatMap((contract) => contract.writePaths).sort(),
+    ["wiki/source-a/core/domain.md", "wiki/source-b/core/domain.md"],
+  );
+  assert.deepEqual(contractForPath(domains.contracts, "wiki/source-a/core/domain.md")?.sourceScopeIds, ["source-a"]);
+  assert.deepEqual(contractForPath(domains.contracts, "wiki/source-b/core/domain.md")?.sourceScopeIds, ["source-b"]);
+  await settleWrite(run, domains);
+
+  const sources = await run.startNextReadyWave();
+  assert.equal(sources.wave, "write");
+  assert.deepEqual(
+    sources.contracts.flatMap((contract) => contract.writePaths).sort(),
+    ["wiki/source-a/source.md", "wiki/source-b/source.md"],
+  );
+  assert.deepEqual(contractForPath(sources.contracts, "wiki/source-a/source.md")?.sourceScopeIds, ["source-a"]);
+  assert.deepEqual(contractForPath(sources.contracts, "wiki/source-b/source.md")?.sourceScopeIds, ["source-b"]);
+  await settleWrite(run, sources);
+
+  const overview = await run.startNextReadyWave();
+  assert.equal(overview.wave, "write");
+  assert.deepEqual(overview.contracts.map((contract) => contract.writePaths), [["wiki/overview.md"]]);
+  assert.deepEqual(overview.contracts[0].sourceScopeIds, ["source-a", "source-b"]);
 });
 
 test("taxonomy sourceScopeId must match the Wiki source folder", async (t) => {

@@ -97,19 +97,19 @@ async function settleReviews(run) {
 }
 
 async function queueReviewWave(run) {
-  const writes = await run.startNextReadyWave();
-  assert.equal(writes.wave, "write");
-  for (const contract of writes.contracts) {
-    await run.taskTransitions.taskStarted(writes.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(writes.batchId, contract.id, { attempt: 1, receipt: {
-      id: contract.id, role: "write", status: "complete", summary: "wrote", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
-      contractId: contract.contractId, contractDigest: contract.contractDigest,
-    } });
+  while (true) {
+    const wave = await run.startNextReadyWave();
+    if (wave.wave === "review") return wave.contracts;
+    if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
+    for (const contract of wave.contracts) {
+      await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+        id: contract.id, role: "write", status: "complete", summary: "wrote", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
+        contractId: contract.contractId, contractDigest: contract.contractDigest,
+      } });
+    }
+    await run.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
-  await run.taskTransitions.tasksCollected(writes.batchId, writes.contracts.map((contract) => contract.id));
-  const reviews = await run.startNextReadyWave();
-  assert.equal(reviews.wave, "review");
-  return reviews.contracts;
 }
 
 async function completeAndApprove(run) {

@@ -3,8 +3,10 @@ export {
   sameWikiCluster,
   wikiPlanParameters,
   wikiSpecClusterId,
+  wikiSpecClusterParent,
   wikiSpecClusterPaths,
   wikiSpecClusters,
+  wikiSpecClusterSourceId,
   wikiSpecDomainIds,
   wikiSpecDomainId,
   wikiSpecDomainKey,
@@ -38,6 +40,9 @@ export {
 } from "./board.js";
 export {
   assertDispatchable,
+  clusterSourceScopeIds,
+  contextRefsForSources,
+  selectReadyClusters,
   wikiDispatchWave,
   type WikiDispatchInput,
   type WikiDispatchTaskInput,

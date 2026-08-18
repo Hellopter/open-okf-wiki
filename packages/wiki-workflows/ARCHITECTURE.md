@@ -32,7 +32,7 @@ claim Workspace -> pin settings and Sources -> create empty Candidate
   -> recoverable publication -> terminal cleanup
 ```
 
-Inspection, Candidate preparation, validation, publication, lifecycle persistence, and cleanup are fixed Wiki implementation, not adapters. `WikiLeadRuntime` is a real seam with a Pi adapter and deterministic test adapter. The Lead chooses research scope, fan-out, follow-up questions, and page grouping without exposing a workflow language.
+Inspection, Candidate preparation, validation, publication, lifecycle persistence, and cleanup are fixed Wiki implementation, not adapters. `WikiLeadRuntime` is a real seam with a Pi adapter and deterministic test adapter. The Lead chooses research scope, fan-out, and follow-up questions without exposing a workflow language. The host derives source-local write waves bottom-up (concept → domain → source page → root); root is the only cross-source assignment.
 
 Pages sit beside their concept. There are no type-bucket directories.
 

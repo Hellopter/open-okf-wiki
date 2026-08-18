@@ -5,8 +5,10 @@ import {
   parseWikiSpec,
   sameWikiCluster,
   wikiSpecClusterId,
+  wikiSpecClusterParent,
   wikiSpecClusterPaths,
   wikiSpecClusters,
+  wikiSpecClusterSourceId,
   wikiSpecDomainId,
   wikiSpecDomainIds,
   wikiSpecDomainKey,
@@ -150,4 +152,17 @@ test("source-aware helpers and clusters preserve same domain slugs", () => {
   assert.equal(sameWikiCluster(["api/billing/domain.md", "web/billing/domain.md"]), false);
   assert.equal(sameWikiCluster(["overview.md", "architecture.md"]), true);
   assert.equal(sameWikiCluster([]), false);
+});
+
+test("maps a cluster id to its source and parent", () => {
+  assert.equal(wikiSpecClusterSourceId("_root"), undefined);
+  assert.equal(wikiSpecClusterSourceId("api/_source"), "api");
+  assert.equal(wikiSpecClusterSourceId("api/billing"), "api");
+  assert.equal(wikiSpecClusterSourceId("api/billing/invoice"), "api");
+  assert.equal(wikiSpecClusterSourceId("web/billing"), "web");
+  assert.equal(wikiSpecClusterParent("_root"), undefined);
+  assert.equal(wikiSpecClusterParent("api/_source"), "_root");
+  assert.equal(wikiSpecClusterParent("api/billing"), "api/_source");
+  assert.equal(wikiSpecClusterParent("api/billing/invoice"), "api/billing");
+  assert.equal(wikiSpecClusterParent("web/billing"), "web/_source");
 });

@@ -103,6 +103,19 @@ export function wikiSpecDomainIds(spec: WikiSpec, sourceId?: string): string[] {
   return [...ids];
 }
 
+export function wikiSpecClusterSourceId(clusterId: string): string | undefined {
+  if (clusterId === "_root") return undefined;
+  return clusterId.split("/")[0];
+}
+
+export function wikiSpecClusterParent(clusterId: string): string | undefined {
+  if (clusterId === "_root") return undefined;
+  const segments = clusterId.split("/");
+  if (segments.length === 2 && segments[1] === "_source") return "_root";
+  if (segments.length === 2) return `${segments[0]}/_source`;
+  return segments.slice(0, -1).join("/");
+}
+
 export function wikiSpecClusterId(pagePath: string): string | undefined {
   const relative = wikiSpecRelativePath(pagePath);
   const pageType = wikiSpecPageType(relative);

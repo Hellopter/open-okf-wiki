@@ -60,19 +60,26 @@ async function writeComplete(request) {
 }
 
 async function acceptDerivedReviews(lead) {
-  const writes = await lead.startNextReadyWave();
-  for (const contract of writes.contracts) {
-    await lead.taskTransitions.taskStarted(writes.batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(writes.batchId, contract.id, { attempt: 1, receipt: {
-      id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
-      contractId: contract.contractId, contractDigest: contract.contractDigest,
-    } });
+  let reviews;
+  while (true) {
+    const wave = await lead.startNextReadyWave();
+    if (wave.wave === "review") {
+      reviews = wave;
+      break;
+    }
+    if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
+    for (const contract of wave.contracts) {
+      await lead.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await lead.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+        id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
+        contractId: contract.contractId, contractDigest: contract.contractDigest,
+      } });
+    }
+    await lead.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
-  await lead.taskTransitions.tasksCollected(writes.batchId, writes.contracts.map((contract) => contract.id));
-  const { batchId, contracts } = await lead.startNextReadyWave();
-  for (const contract of contracts) {
-    await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+  for (const contract of reviews.contracts) {
+    await lead.taskTransitions.taskStarted(reviews.batchId, contract.id, { attempt: 1 });
+    await lead.taskTransitions.taskSettled(reviews.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
       contractId: contract.contractId, contractDigest: contract.contractDigest,
       review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
@@ -211,7 +218,7 @@ test("successful publication keeps provenance and run history while removing tra
   await assert.rejects(readFile(path.join(runRoot, "publication-finalization.json"), "utf8"), { code: "ENOENT" });
   await assert.rejects(readdir(path.join(runRoot, "publication-preimage")), { code: "ENOENT" });
   assert.equal(JSON.parse(await readFile(path.join(runRoot, "manifest.json"), "utf8")).artifacts.length, 1);
-  assert.equal(JSON.parse(await readFile(path.join(runRoot, "run.json"), "utf8")).lead.delegates.batches.length, 3);
+  assert.equal(JSON.parse(await readFile(path.join(runRoot, "run.json"), "utf8")).lead.delegates.batches.length, 5);
   assert.match(await readFile(path.join(root, artifact.relativePath), "utf8"), /handoff/);
   await assert.rejects(readdir(path.join(runRoot, "events")), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(runRoot, "activity.jsonl"), "utf8"), { code: "ENOENT" });
