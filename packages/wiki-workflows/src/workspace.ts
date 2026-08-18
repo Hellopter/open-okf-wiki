@@ -1,7 +1,7 @@
-import { link, lstat, mkdir, open, readFile, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
-import { withExclusiveLock } from "./files.js";
+import { renamePath, withExclusiveLock, writeFileDurable } from "./files.js";
 import { git, repositoryRoot, type GitResult } from "./git.js";
 import { errorMessage } from "./failures.js";
 
@@ -238,7 +238,7 @@ export function createWikiWorkspaceManagement(
         await assertDestinationAvailable(location, name);
         let installed = false;
         try {
-          await rename(staging, location);
+          await renamePath(staging, location);
           installed = true;
           await persistAddedSource(workspace, { path: name, origin: { type: "clone", remoteUrl, ...(ref ? { ref } : {}) } }, writeConfig);
         } catch (error) {
@@ -557,8 +557,12 @@ async function writeWorkspaceConfig(configPath: string, workspace: WikiWorkspace
 }
 
 async function writeAtomic(target: string, content: string, exclusive: boolean): Promise<void> {
-  const temporary = `${target}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
   await mkdir(path.dirname(target), { recursive: true });
+  if (!exclusive) {
+    await writeFileDurable(target, content);
+    return;
+  }
+  const temporary = `${target}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
   const file = await open(temporary, "wx");
   try {
     await file.writeFile(content, "utf8");
@@ -567,17 +571,13 @@ async function writeAtomic(target: string, content: string, exclusive: boolean):
     await file.close();
   }
   try {
-    if (exclusive) {
-      try {
-        await link(temporary, target);
-      } catch (error) {
-        if (isAlreadyExists(error)) throw new Error(`Wiki workspace already exists: ${target}`);
-        throw error;
-      }
-      await rm(temporary, { force: true });
-    } else {
-      await rename(temporary, target);
+    try {
+      await link(temporary, target);
+    } catch (error) {
+      if (isAlreadyExists(error)) throw new Error(`Wiki workspace already exists: ${target}`);
+      throw error;
     }
+    await rm(temporary, { force: true });
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;

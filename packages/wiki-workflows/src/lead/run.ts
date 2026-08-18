@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { syncDirectory, writeText } from "../files.js";
+import { renamePath, syncDirectory, writeText } from "../files.js";
 import { assertContainedAbsolutePath } from "../path-policy.js";
 import {
   createWikiDelegateContract,
@@ -300,8 +300,7 @@ export class WikiLeadRun {
       await this.writeState(nextState);
       this.state = nextState;
       await this.fault?.("afterState");
-      await rename(staged, target);
-      await syncDirectory(path.dirname(target));
+      await renamePath(staged, target);
       await this.fault?.("afterRename");
       if (await fileDigest(target) !== newDigest) throw new WikiCandidateCorruptionError(`Candidate page digest mismatch after replacement: ${relative}`);
       await this.fault?.("afterVerify");

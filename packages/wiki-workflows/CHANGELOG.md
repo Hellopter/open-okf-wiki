@@ -59,6 +59,12 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Reliability
 
+- Durable file replace uses the platform `rename`, then retries `EPERM` /
+  `EACCES` / `EBUSY` with backoff, clears the Windows read-only attribute via
+  `chmod`, and serializes in-process writers to the same path. Candidate page
+  install and workspace config updates share that path. Exhausted replace
+  keeps the previous file and names the source, target, and attempt count.
+
 - Added `wiki.sessionTimeoutSeconds` so each Lead and delegated Agent session's
   wall-clock deadline is configurable; the default remains 1200 seconds.
 - Added durable run ledgers, workspace-scoped run discovery, pause/resume,

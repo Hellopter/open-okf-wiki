@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 export async function exists(location: string): Promise<boolean> {
@@ -59,6 +59,13 @@ export interface DurableFileOptions {
   fault?: (phase: DurableFilePhase) => void | Promise<void>;
   /** `file` skips the directory fsync. Use for replaceable live agent snapshots. */
   sync?: "all" | "file";
+  /** Test seam for the platform rename used by durable replace. */
+  rename?: (source: string, target: string) => Promise<void>;
+  /** Test seam for Windows read-only clearing via `chmod`. */
+  chmod?: (location: string, mode: number) => Promise<void>;
+  /** Test seam; production uses `process.platform`. */
+  platform?: NodeJS.Platform;
+  delay?: (ms: number) => Promise<void>;
 }
 
 export interface DurableRemoveOptions extends DurableFileOptions {
@@ -77,24 +84,26 @@ export async function writeFileDurable(
 ): Promise<void> {
   const directory = path.dirname(location);
   const temporary = path.join(directory, `.${path.basename(location)}.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    const file = await open(temporary, "wx");
+  await withDestinationLock(location, async () => {
     try {
-      await file.writeFile(content);
-      await file.sync();
-      await options.fault?.("file_synced");
+      const file = await open(temporary, "wx");
+      try {
+        await file.writeFile(content);
+        await file.sync();
+        await options.fault?.("file_synced");
+      } finally {
+        await file.close();
+      }
+      await replaceEntry(temporary, location, options);
+      await options.fault?.("renamed");
+      if (options.sync !== "file") {
+        await syncDirectory(directory);
+        await options.fault?.("directory_synced");
+      }
     } finally {
-      await file.close();
+      await rm(temporary, { force: true }).catch(() => {});
     }
-    await rename(temporary, location);
-    await options.fault?.("renamed");
-    if (options.sync !== "file") {
-      await syncDirectory(directory);
-      await options.fault?.("directory_synced");
-    }
-  } finally {
-    await rm(temporary, { force: true }).catch(() => {});
-  }
+  });
 }
 
 /** Append UTF-8 text and make both the bytes and directory entry durable. */
@@ -140,13 +149,15 @@ export async function removePath(location: string, options: DurableRemoveOptions
 
 /** Rename an entry and durably record both sides when crossing directories. */
 export async function renamePath(source: string, target: string, options: DurableFileOptions = {}): Promise<void> {
-  await rename(source, target);
-  await options.fault?.("renamed");
-  const sourceDirectory = path.dirname(source);
-  const targetDirectory = path.dirname(target);
-  await syncDirectory(sourceDirectory);
-  if (targetDirectory !== sourceDirectory) await syncDirectory(targetDirectory);
-  await options.fault?.("directory_synced");
+  await withDestinationLock(target, async () => {
+    await replaceEntry(source, target, options);
+    await options.fault?.("renamed");
+    const sourceDirectory = path.dirname(source);
+    const targetDirectory = path.dirname(target);
+    await syncDirectory(sourceDirectory);
+    if (targetDirectory !== sourceDirectory) await syncDirectory(targetDirectory);
+    await options.fault?.("directory_synced");
+  });
 }
 
 /** Create every missing directory component and durably record each parent entry. */
@@ -199,6 +210,63 @@ function isUnsupportedDirectorySync(error: unknown): boolean {
   return code === "EINVAL" || code === "ENOTSUP" || code === "EISDIR" || code === "EPERM";
 }
 
+const TRANSIENT_REPLACE_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const REPLACE_MAX_ATTEMPTS = 10;
+const REPLACE_BACKOFF_MS = 10;
+const REPLACE_BACKOFF_CAP_MS = 200;
+const replaceQueues = new Map<string, Promise<void>>();
+
+/** Native `rename` is the replace. Retry only the Windows lock window around MoveFileEx. */
+async function replaceEntry(source: string, target: string, options: DurableFileOptions): Promise<void> {
+  const renameFn = options.rename ?? rename;
+  let attempts = 0;
+  for (;;) {
+    attempts += 1;
+    try {
+      await renameFn(source, target);
+      return;
+    } catch (error) {
+      if (!isTransientReplaceError(error)) throw error;
+      if (attempts === 1) await clearWindowsReadOnly(target, options);
+      if (attempts >= REPLACE_MAX_ATTEMPTS) throw annotateReplaceError(error, source, target, attempts);
+      const cap = Math.min(REPLACE_BACKOFF_CAP_MS, REPLACE_BACKOFF_MS * (2 ** (attempts - 1)));
+      await (options.delay ?? delay)(cap + Math.floor(Math.random() * 20));
+    }
+  }
+}
+
+function isTransientReplaceError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && TRANSIENT_REPLACE_CODES.has((error as NodeJS.ErrnoException).code ?? ""));
+}
+
+async function clearWindowsReadOnly(target: string, options: DurableFileOptions): Promise<void> {
+  if ((options.platform ?? process.platform) !== "win32") return;
+  try {
+    const entry = await lstat(target);
+    if (!entry.isFile()) return;
+    await (options.chmod ?? chmod)(target, 0o666);
+  } catch {
+    // Destination may have vanished, or the platform chmod may itself be locked.
+  }
+}
+
+function annotateReplaceError(error: unknown, source: string, target: string, attempts: number): NodeJS.ErrnoException {
+  const original = error as NodeJS.ErrnoException;
+  const annotated = new Error(
+    `Durable replace failed after ${attempts} attempt(s): ${source} -> ${target}${original.message ? `: ${original.message}` : ""}`,
+  ) as NodeJS.ErrnoException;
+  annotated.code = original.code;
+  annotated.errno = original.errno;
+  annotated.syscall = original.syscall;
+  annotated.path = original.path;
+  annotated.cause = error;
+  return annotated;
+}
+
+async function withDestinationLock<T>(target: string, fn: () => Promise<T>): Promise<T> {
+  return await serializeByKey(replaceQueues, path.resolve(target), fn);
+}
+
 const LOCK_POLL_MS = 20;
 const LOCK_INITIALIZATION_GRACE_MS = 1_000;
 const lockQueues = new Map<string, Promise<void>>();
@@ -212,16 +280,19 @@ interface ExclusiveLockRecord {
 
 /** Process-local serialize plus a wx filesystem lease with pid/token ownership and stale reclaim. */
 export async function withExclusiveLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
-  const key = path.resolve(lockPath);
-  const previous = lockQueues.get(key) ?? Promise.resolve();
-  const task = previous.catch(() => undefined).then(async () => {
+  return await serializeByKey(lockQueues, path.resolve(lockPath), async () => {
     await ensureDirectory(path.dirname(lockPath));
     return await withFilesystemLease(lockPath, fn);
   });
+}
+
+async function serializeByKey<T>(queues: Map<string, Promise<void>>, key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const task = previous.catch(() => undefined).then(fn);
   const tail = task.then(() => undefined, () => undefined);
-  lockQueues.set(key, tail);
+  queues.set(key, tail);
   try { return await task; }
-  finally { if (lockQueues.get(key) === tail) lockQueues.delete(key); }
+  finally { if (queues.get(key) === tail) queues.delete(key); }
 }
 
 async function withFilesystemLease<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {

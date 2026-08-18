@@ -63,7 +63,7 @@ Indexes are deterministic projections. Final governance issues an opaque Publica
 
 ## Durable Run state
 
-Lifecycle and Lead facts live in `run.json` format 2. Progress is a projection of those facts plus live tails. The pinned plan is `plan.json`. Files under `agents/` are tails only. There is no lead-state and no event log. Live `updates()` is an in-memory hub of the current view. Publication still uses `publish.json` because installing `wiki/` has a different filesystem lifetime.
+Lifecycle and Lead facts live in `run.json` format 2. Progress is a projection of those facts plus live tails. The pinned plan is `plan.json`. Files under `agents/` are tails only. There is no lead-state and no event log. Live `updates()` is an in-memory hub of the current view. Publication still uses `publish.json` because installing `wiki/` has a different filesystem lifetime. Atomic file replace uses the platform `rename`; Windows `MoveFileEx` lock windows (`EPERM`/`EACCES`/`EBUSY`, read-only attribute) are absorbed inside the durable-files module so a successful `writeText`/`renamePath` remains durable.
 
 The current Run format is 2; anything else fails closed. Opening another format reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable. The Published Wiki is independent.
 
