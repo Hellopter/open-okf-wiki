@@ -1,4 +1,5 @@
 import { MAX_WIKI_RESEARCH_ARTIFACT_BYTES, type WikiArtifactKind, type WikiArtifactRef } from "./artifact-store.js";
+import { extractSourceCitations, type SourceCitation } from "./citations.js";
 import type {
   WikiDelegateContract,
   WikiDelegateRole,
@@ -7,12 +8,7 @@ import type {
 import { WikiRejectedError, allowedList, listed } from "./wiki-reject.js";
 import { splitWikiWorkFile } from "./wiki-work-files.js";
 
-export interface EvidenceLedgerCitation {
-  scope: string;
-  path: string;
-  startLine: number;
-  endLine: number;
-}
+export type EvidenceLedgerCitation = SourceCitation;
 
 export interface EvidenceLedgerFinding {
   id: string;
@@ -142,8 +138,6 @@ function collectIndexes(
   const assignments: string[] = [];
   const pages: string[] = [];
   const findings: EvidenceLedgerFinding[] = [];
-  const citations: EvidenceLedgerCitation[] = [];
-  const invalid: string[] = [];
   for (const line of lines) {
     for (const match of line.matchAll(/\bassignment:([A-Za-z0-9][A-Za-z0-9._-]{0,127})\b/g)) assignments.push(match[1]);
     for (const match of line.matchAll(/\bpage:([^\s,;)]+)\b/g)) pages.push(match[1]);
@@ -151,47 +145,16 @@ function collectIndexes(
       const path = /\bpath:([^\s,;)]+)/.exec(line)?.[1];
       findings.push({ id: match[1], ...(path ? { path } : {}) });
     }
-    const citationTokens = [...line.matchAll(/\brepo:[^\s,)]+/g)].map((match) => match[0]);
-    for (const token of citationTokens) {
-      const match = /^repo:([^/\s]+)\/([^#\s]+)#L(\d+)-L(\d+)$/.exec(token);
-      if (!match) {
-        invalid.push(`${token} need repo:scope/path#Lx-Ly`);
-        continue;
-      }
-      const citation: EvidenceLedgerCitation = {
-        scope: match[1],
-        path: match[2],
-        startLine: Number(match[3]),
-        endLine: Number(match[4]),
-      };
-      if (citation.endLine < citation.startLine) {
-        invalid.push(`${token} end<start`);
-        continue;
-      }
-      const file = fileLines?.(citation);
-      if (file === "missing") {
-        invalid.push(`${token} missing`);
-        continue;
-      }
-      if (typeof file === "number" && citation.endLine > file) {
-        invalid.push(`${token} ${citation.path.split("/").pop()}:${file} lines`);
-        continue;
-      }
-      citations.push(citation);
-    }
-    const remainder = line.replace(/\brepo:[^\s,)]+/g, "");
-    for (const match of remainder.matchAll(/[A-Za-z0-9._-]+\/[^#\s]+#L\d+-L\d+/g)) {
-      invalid.push(`${match[0]} need repo:scope/path#Lx-Ly`);
-    }
   }
+  const extracted = extractSourceCitations(lines.join("\n"), fileLines);
   return {
     indexes: {
       assignmentIds: unique(assignments),
       pageIds: unique(pages),
       findings: uniqueFindings(findings),
-      citations,
+      citations: extracted.citations,
     },
-    defects: invalid.length ? [`invalid citations: ${listed(invalid)}`] : [],
+    defects: extracted.invalid.length ? [`invalid citations: ${listed(extracted.invalid)}`] : [],
   };
 }
 

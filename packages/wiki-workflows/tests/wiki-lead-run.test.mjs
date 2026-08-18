@@ -12,7 +12,7 @@ const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } 
 const spec = { pages: ["overview.md", "source/source.md", "source/core/domain.md"] };
 
 function content(type, title, suffix = "") {
-  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: repo:source/a.ts#L1-L1", "---", "", `Runtime behavior${suffix}.[^source-a]`, "", "[^source-a]: [Source](repo:source/a.ts#L1-L1)", ""].join("\n");
+  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: source/a.ts#L1-L1", "---", "", `Runtime behavior${suffix}.[^source-a]`, "", "[^source-a]: [Source](source/a.ts#L1-L1)", ""].join("\n");
 }
 
 function sourcePlan(root) {

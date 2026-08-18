@@ -17,7 +17,7 @@ const finalSpec = {
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
 
 function page(type, title, body = "new") {
-  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: repo:source/a.ts#L1-L1", "---", "", `${body}.[^source-a]`, "", "[^source-a]: [Source](repo:source/a.ts#L1-L1)", ""].join("\n");
+  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: source/a.ts#L1-L1", "---", "", `${body}.[^source-a]`, "", "[^source-a]: [Source](source/a.ts#L1-L1)", ""].join("\n");
 }
 
 async function acceptTaxonomy(run) {

@@ -69,7 +69,7 @@ function testHandoff(contract, body) {
       : "";
   const section = contract.role === "research" ? `## Scope\n${ids}\n## Coverage\n${ids}\n## Conflicts and alternatives\nNone\n## Gaps and failed reads\nNone`
     : contract.role === "write" ? `## Pages\n${ids}` : "## Findings\n";
-  return `# ${role} Handoff\n${section}\n## Evidence\nrepo:api/test.ts#L1-L1\n\n${body}`;
+  return `# ${role} Handoff\n${section}\n## Evidence\napi/test.ts#L1-L1\n\n${body}`;
 }
 
 async function runBatch(subject, tasks, signal = new AbortController().signal) {

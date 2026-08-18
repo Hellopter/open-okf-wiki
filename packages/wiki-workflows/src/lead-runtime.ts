@@ -679,8 +679,9 @@ function writerFrontmatterPrompt(generation?: WikiGenerationProfile): string {
     "source: source-a",
     "sources:",
     "  - id: source-a",
-    "    resource: repo:source/path.ts#L1-L1",
+    "    resource: source/path.ts#L1",
     "---",
+    "Cite claims with [^source-a] and [^source-a]: [path.ts](source/path.ts#L1).",
     "Frontmatter type must match the WikiSpec pageType (Overview/Source/Domain/Architecture/Module/Flow/Concept/State/Data).",
     required.length ? `Required sections: ${required.join(", ")}.` : "",
   ].filter((line) => line.length > 0).join("\n");

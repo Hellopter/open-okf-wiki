@@ -23,7 +23,7 @@ followups:
 Then write exactly these Markdown headings:
 `# Research Handoff`, `## Scope`, `## Coverage`, `## Evidence`,
 `## Conflicts and alternatives`, and `## Gaps and failed reads`. Cite every
-factual finding with precise `repo:<scope>/<path>#Lx-Ly` evidence. Keep
+factual finding with a Markdown source link from `common.md`. Keep
 source-local facts, cross-source synthesis candidates, conflicts, and minority
 evidence separate. State every unresolved question and failed read in the
 handoff.

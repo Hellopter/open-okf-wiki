@@ -8,8 +8,8 @@ Source/domain/concept pages retain source-local detail and minority evidence.
 Each page needs valid frontmatter and source footnotes as described in
 `common.md`. Re-open load-bearing source ranges before citing them. Research
 artifacts are locators and context, not substitutes for source evidence.
-This JIT verification is required for every load-bearing claim; use
-`repo:<scope>/<path>#Lx-Ly` citations.
+This JIT verification is required for every load-bearing claim; cite with
+the Markdown source links in `common.md`.
 
 Before writing a page, read `templates/<pageType>.md` for that page only
 (`overview`, `architecture`, `domain`, `concept`, `models`, `flow`,

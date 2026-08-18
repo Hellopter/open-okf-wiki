@@ -9,9 +9,12 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - `scopeId` is the original workspace Source directory name. Implicit single
   Source still uses the synthetic folder `source`. Mixed-case in-flight Runs
   fail closed on resume; start a new Run.
-- Citations are `repo:<scopeId>/<path>#Lx-Ly` for research and published pages.
-  Wiki source folders use that same name; domain and concept segments stay
-  lowercase slugs.
+- Citations are CommonMark source links `[label](<scopeId>/<path>#Lx)`
+  with GitHub line anchors (`#Lx` or `#Lx-Ly`). Research and review
+  `## Evidence` lists those links (also `[n]: url` definitions or a bare
+  locator). Published pages keep GFM footnotes whose link target is that
+  URL. Wiki source folders use that same scope name; domain and concept
+  segments stay lowercase slugs.
 
 ### Lead session budget
 

@@ -65,7 +65,7 @@ test("parseResearchHandoff derives its summary from Skill-format substantive pro
     "",
     "## Evidence",
     "",
-    "- repo:source/runtime.ts#L1-L10",
+    "- [runtime.ts](source/runtime.ts#L1-L10)",
   ].join("\n");
   const result = parseResearchHandoff(research("followups: []", body), "complete", ["source"]);
   assert.equal(result.summary, "The runtime maps each request to a pinned Source and preserves conflicts for later synthesis.");

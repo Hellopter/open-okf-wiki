@@ -26,7 +26,7 @@ misleading topology, broken semantic links, terminology, depth, source-local
 detail, minority/conflict preservation, and whether diagrams agree with cited
 behavior. Root pages must synthesize across Sources without erasing local
 provenance. `## Evidence` must include at least one
-`repo:<scope>/<path>#Lx-Ly` citation, including on a pass.
+Markdown source citation from `common.md`, including on a pass.
 
 After the review file covers the complete brief, call `wiki_review_finish`
 with only `verdict: pass` or `verdict: changes_requested`. Use

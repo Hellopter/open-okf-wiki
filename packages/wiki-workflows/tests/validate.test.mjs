@@ -56,7 +56,7 @@ function page({
   type = "__AUTO__",
   title = "Example",
   description = "Example documentation",
-  sources = [{ id: "api-index", resource: "repo:api/src/index.ts#L1-L2" }],
+  sources = [{ id: "api-index", resource: "api/src/index.ts#L1-L2" }],
   body = "",
 } = {}) {
   const citations = sources
@@ -315,8 +315,8 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
 
   await writePage(root, "architecture.md", page({
     sources: [
-      { id: "duplicate", resource: "repo:api/src/index.ts#L1-L1" },
-      { id: "duplicate", resource: "repo:api/src/index.ts#L2-L2" },
+      { id: "duplicate", resource: "api/src/index.ts#L1-L1" },
+      { id: "duplicate", resource: "api/src/index.ts#L2-L2" },
     ],
   }));
   assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
@@ -334,36 +334,36 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
   }]);
 
   const duplicateLink = page().replace(
-    "[Source](repo:api/src/index.ts#L1-L2)",
-    "[Source](repo:api/src/index.ts#L1-L2) [Again](repo:api/src/index.ts#L1-L2)",
+    "[Source](api/src/index.ts#L1-L2)",
+    "[Source](api/src/index.ts#L1-L2) [Again](api/src/index.ts#L1-L2)",
   );
   await writePage(root, "architecture.md", duplicateLink);
   assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
     page: "architecture.md",
-    message: "Source footnote definition must contain exactly one repo resource: api-index — use exactly one [Source](repo:...) link in [^api-index]",
+    message: "Source footnote definition must contain exactly one source link: api-index — use exactly one [label](scope/path#Lx) link in [^api-index]",
   }]);
 
   await writePage(root, "architecture.md", page({ body: "Unknown source.[^unknown]\n" }));
   assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
     page: "architecture.md",
-    message: "Source footnote reference is not declared in frontmatter sources: unknown — add { id: \"unknown\", resource: \"repo:...\" } to frontmatter sources",
+    message: "Source footnote reference is not declared in frontmatter sources: unknown — add { id: \"unknown\", resource: \"scope/path#Lx\" } to frontmatter sources",
   }, {
     code: "source-reference",
     page: "architecture.md",
-    message: "Source footnote reference has no definition: unknown — add [^unknown]: [Source](repo:...) matching the frontmatter resource",
+    message: "Source footnote reference has no definition: unknown — add [^unknown]: [label](scope/path#Lx) matching the frontmatter resource",
   }]);
 
   const mismatch = page().replace(
-    "[^api-index]: [Source](repo:api/src/index.ts#L1-L2)",
-    "[^api-index]: [Source](repo:api/src/index.ts#L1-L1)",
+    "[^api-index]: [Source](api/src/index.ts#L1-L2)",
+    "[^api-index]: [Source](api/src/index.ts#L1-L1)",
   );
   await writePage(root, "architecture.md", mismatch);
   assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
     page: "architecture.md",
-    message: "Source footnote resource does not match frontmatter source api-index: repo:api/src/index.ts#L1-L1 — set the footnote link equal to frontmatter resource repo:api/src/index.ts#L1-L2",
+    message: "Source footnote resource does not match frontmatter source api-index: api/src/index.ts#L1-L1 — set the footnote link equal to frontmatter resource api/src/index.ts#L1-L2",
   }]);
 
   const unused = page().replace("Evidence.[^api-index]\n\n", "");
@@ -374,15 +374,15 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
     message: "Frontmatter source is not cited by a footnote: api-index — cite the claim with [^api-index] in the body",
   }]);
 
-  await writePage(root, "architecture.md", page({ body: "[Direct](repo:api/src/index.ts#L1-L2)\n" }));
+  await writePage(root, "architecture.md", page({ body: "[Direct](api/src/index.ts#L1-L2)\n" }));
   assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), [{
     code: "source-reference",
     page: "architecture.md",
-    message: "Direct repo citation must use a declared source footnote: repo:api/src/index.ts#L1-L2 — cite with [^id] in body and define [^id]: [Source](repo:...) instead of linking repo: in prose",
+    message: "Direct source citation must use a declared source footnote: api/src/index.ts#L1-L2 — cite with [^id] in body and define [^id]: [label](scope/path#Lx) instead of linking the source file in prose",
   }]);
 
   const legacy = page().replace(
-    "  - id: api-index\n    resource: repo:api/src/index.ts#L1-L2",
+    "  - id: api-index\n    resource: api/src/index.ts#L1-L2",
     "  - api/src/index.ts#L1-L2",
   );
   await writePage(root, "architecture.md", legacy);
@@ -407,7 +407,7 @@ test("returns precisely routed issues for missing pages, frontmatter, evidence, 
     "tags: [documentation, 2]",
     "sources:",
     "  - id: broken-source",
-    "    resource: repo:api/src/index.ts#L3-L3",
+    "    resource: api/src/index.ts#L3-L3",
     "---",
     "",
     "```mermaid",
@@ -417,7 +417,7 @@ test("returns precisely routed issues for missing pages, frontmatter, evidence, 
     "[Missing](./not-planned.md)",
     "Evidence.[^broken-source]",
     "",
-    "[^broken-source]: [Source](repo:api/src/index.ts#L3-L3)",
+    "[^broken-source]: [Source](api/src/index.ts#L3-L3)",
   ].join("\n"));
 
   const result = await validateWiki(root, target);
@@ -427,7 +427,7 @@ test("returns precisely routed issues for missing pages, frontmatter, evidence, 
   assert.deepEqual(result.issues, [
     { code: "frontmatter", page: "api/core/broken/concept.md", message: "Frontmatter requires a non-empty description" },
     { code: "frontmatter", page: "api/core/broken/concept.md", message: "Frontmatter tags must be a non-empty string array" },
-    { code: "source-reference", page: "api/core/broken/concept.md", message: "frontmatter source broken-source line range exceeds file (2 lines): repo:api/src/index.ts#L3-L3" },
+    { code: "source-reference", page: "api/core/broken/concept.md", message: "frontmatter source broken-source line range exceeds file (2 lines): api/src/index.ts#L3-L3" },
     { code: "internal-link", page: "api/core/broken/concept.md", message: "Internal Markdown link target is not in the target Wiki: ./not-planned.md" },
     { code: "missing-page", page: "api/core/missing/modules.md", message: "Target page is missing: api/core/missing/modules.md" },
     { code: "wiki-index", page: "api/core/broken/index.md", message: "Required Wiki index is missing: api/core/broken/index.md" },
@@ -671,15 +671,15 @@ test("citations resolve by case-sensitive scopeId under the pinned Source", asyn
   const root = await myRepoFixture();
   const target = { pages: ["overview.md", "MyRepo/source.md", "MyRepo/core/domain.md"] };
   await writePage(root, "overview.md", page({
-    sources: [{ id: "idx", resource: "repo:MyRepo/src/index.ts#L1-L2" }],
+    sources: [{ id: "idx", resource: "MyRepo/src/index.ts#L1-L2" }],
   }));
   assert.deepEqual(await validateWikiPage(root, target, "overview.md"), []);
 
   await writePage(root, "overview.md", page({
-    sources: [{ id: "idx", resource: "repo:myrepo/src/index.ts#L1-L2" }],
+    sources: [{ id: "idx", resource: "myrepo/src/index.ts#L1-L2" }],
   }));
   const issues = await validateWikiPage(root, target, "overview.md");
-  assert.ok(issues.some((entry) => entry.code === "source-reference" && entry.message.includes("repo:myrepo/src/index.ts#L1-L2")));
+  assert.ok(issues.some((entry) => entry.code === "source-reference" && entry.message.includes("myrepo/src/index.ts#L1-L2")));
 });
 
 test("implicit Source citations use scopeId source and reject unprefixed paths", async () => {
@@ -696,13 +696,24 @@ test("implicit Source citations use scopeId source and reject unprefixed paths",
   const target = { pages: ["overview.md", "source/source.md", "source/core/domain.md"] };
 
   await writePage(root, "overview.md", page({
-    sources: [{ id: "idx", resource: "repo:source/src/foo.ts#L1-L1" }],
+    sources: [{ id: "idx", resource: "source/src/foo.ts#L1-L1" }],
   }));
   assert.deepEqual(await validateWikiPage(root, target, "overview.md"), []);
 
   await writePage(root, "overview.md", page({
-    sources: [{ id: "idx", resource: "repo:src/foo.ts#L1-L1" }],
+    sources: [{ id: "idx", resource: "src/foo.ts#L1-L1" }],
   }));
   const issues = await validateWikiPage(root, target, "overview.md");
-  assert.ok(issues.some((entry) => entry.code === "source-reference" && entry.message.includes("repo:src/foo.ts#L1-L1")));
+  assert.ok(issues.some((entry) => entry.code === "source-reference" && entry.message.includes("src/foo.ts#L1-L1")));
+});
+
+test("source footnotes accept GitHub single-line anchors equal to a one-line range", async () => {
+  const root = await fixture();
+  const target = spec();
+  await writePage(root, "overview.md");
+  const matched = page({
+    sources: [{ id: "api-index", resource: "api/src/index.ts#L1-L1" }],
+  }).replace("[^api-index]: [Source](api/src/index.ts#L1-L1)", "[^api-index]: [src/index.ts](./api/src/index.ts#L1)");
+  await writePage(root, "architecture.md", matched);
+  assert.deepEqual(await validateWikiPage(root, target, "architecture.md"), []);
 });

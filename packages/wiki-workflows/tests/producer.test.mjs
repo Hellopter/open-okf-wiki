@@ -21,7 +21,7 @@ function spec() {
 }
 
 function content(type, title) {
-  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: runtime", "    resource: repo:source/src/index.ts#L1-L1", "---", "", "Runtime behavior.[^runtime]", "", "[^runtime]: [Source](repo:source/src/index.ts#L1-L1)", ""].join("\n");
+  return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: runtime", "    resource: source/src/index.ts#L1-L1", "---", "", "Runtime behavior.[^runtime]", "", "[^runtime]: [Source](source/src/index.ts#L1-L1)", ""].join("\n");
 }
 
 function leadFence(request) {

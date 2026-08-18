@@ -109,7 +109,7 @@ function researchHandoff(coverage = "Surveyed the source.") {
     "# Research Handoff",
     "## Scope", "- **Source:** source",
     "## Coverage", coverage,
-    "## Evidence", "repo:source/a.ts#L1-L1",
+    "## Evidence", "source/a.ts#L1-L1",
     "## Conflicts and alternatives", "None",
     "## Gaps and failed reads", "None",
     "",
@@ -127,7 +127,7 @@ function reviewHandoff() {
     "---",
     "# Review Handoff",
     "## Findings", "The page needs one evidence correction.",
-    "## Evidence", "repo:source/a.ts#L1-L1",
+    "## Evidence", "source/a.ts#L1-L1",
     "",
   ].join("\n");
 }
@@ -555,8 +555,8 @@ test("Pi research finish rejects an invalid citation and accepts a same-session 
     sourcePlan: pinnedPlan(root),
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
-      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff().replace("repo:source/a.ts#L1-L1", "source/a.ts#L1-L1") });
-      await assert.rejects(execute(options.customTools, "wiki_research_finish", { status: "complete" }), /wiki_research_finish rejected:.*invalid citations: source\/a\.ts#L1-L1 need repo:scope\/path#Lx-Ly/);
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff().replace("source/a.ts#L1-L1", "repo:source/a.ts#L1-L1") });
+      await assert.rejects(execute(options.customTools, "wiki_research_finish", { status: "complete" }), /wiki_research_finish rejected:.*invalid citations: repo:source\/a\.ts#L1-L1 need \[label\]\(scope\/path#Lx\)/);
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
       await execute(options.customTools, "wiki_research_finish", { status: "complete" });
     })(options),
@@ -566,7 +566,7 @@ test("Pi research finish rejects an invalid citation and accepts a same-session 
     leafContext(root, candidateWikiRoot),
   );
   assert.equal(result.status, "complete");
-  assert.match(result.markdown, /repo:source\/a\.ts#L1-L1/);
+  assert.match(result.markdown, /source\/a\.ts#L1-L1/);
 });
 
 test("Pi research finish names a citation that exceeds the source file", async (t) => {
@@ -575,10 +575,10 @@ test("Pi research finish names a citation that exceeds the source file", async (
     sourcePlan: pinnedPlan(root),
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
-      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff().replace("repo:source/a.ts#L1-L1", "repo:source/a.ts#L8-L8") });
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff().replace("source/a.ts#L1-L1", "source/a.ts#L8-L8") });
       await assert.rejects(
         execute(options.customTools, "wiki_research_finish", { status: "complete" }),
-        /wiki_research_finish rejected:.*invalid citations: repo:source\/a\.ts#L8-L8 a\.ts:1 lines/,
+        /wiki_research_finish rejected:.*invalid citations: source\/a\.ts#L8-L8 a\.ts:1 lines/,
       );
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
       await execute(options.customTools, "wiki_research_finish", { status: "complete" });
@@ -620,7 +620,7 @@ test("Pi research finish reports every named defect from one rejected finish", a
         "---", "followups: []", "summary: forged", "---",
         "# Research Handoff",
         "## Coverage", "assignment:forged",
-        "## Evidence", "source/a.ts#L1-L1",
+        "## Evidence", "repo:source/a.ts#L1-L1",
         "## Conflicts and alternatives", "None",
         "## Gaps and failed reads", "None",
         "",
@@ -631,7 +631,7 @@ test("Pi research finish reports every named defect from one rejected finish", a
           assert.match(error.message, /wiki_research_finish rejected:/);
           assert.match(error.message, /unknown fields: summary/);
           assert.match(error.message, /missing headings: Scope/);
-          assert.match(error.message, /invalid citations: source\/a\.ts#L1-L1 need repo:scope\/path#Lx-Ly/);
+          assert.match(error.message, /invalid citations: repo:source\/a\.ts#L1-L1 need \[label\]\(scope\/path#Lx\)/);
           assert.match(error.message, /undeclared assignment IDs: forged \(declared: assignment-1\)/);
           return true;
         },
@@ -751,7 +751,7 @@ test("Lead taxonomy tool durably accepts a compact source-qualified checkpoint",
     createSession: async (options) => sessionFactory(async () => {
       const names = new Set(options.customTools.map((tool) => tool.name));
       if (names.has("wiki_research_finish")) {
-        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\n# Research Handoff\n## Scope\nCovered the assigned Source.\n## Coverage\nComplete.\n## Conflicts and alternatives\nNone.\n## Gaps and failed reads\nNone.\n## Evidence\nrepo:source/a.ts#L1-L1\n" });
+        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\n# Research Handoff\n## Scope\nCovered the assigned Source.\n## Coverage\nComplete.\n## Conflicts and alternatives\nNone.\n## Gaps and failed reads\nNone.\n## Evidence\nsource/a.ts#L1-L1\n" });
         await execute(options.customTools, "wiki_research_finish", { status: "complete" });
         return;
       }

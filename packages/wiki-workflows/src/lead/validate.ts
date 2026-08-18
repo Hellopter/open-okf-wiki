@@ -5,15 +5,14 @@ import { inside, readText } from "../files.js";
 import { okfSources, parsePage, stringifyPage } from "../frontmatter.js";
 import type { WikiValidation, WikiValidationIssue } from "../types.js";
 import { isRecord } from "../util.js";
+import { parseSourceCitation, sourceCitationsEqual } from "../citations.js";
 import { wikiSourceSlug } from "../inspect.js";
-import { isReservedWikiPagePath, isSafeWikiPagePath, isWikiSourceSegment } from "./path.js";
+import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
 import { wikiSpecPagePaths, wikiSpecPages, wikiSpecPageType, type WikiSpec, type WikiSpecPage } from "./spec.js";
 import { loadWikiWorkspace, type ResolvedWikiSource } from "../workspace.js";
 import { validateWikiIndexes } from "./indexes.js";
 import type { WikiPinnedSourcePlan } from "../runtime-types.js";
 
-const SOURCE_REFERENCE = /^([^\\/#][^#\\]*?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
-const REPOSITORY_CITATION = /^repo:(.+)$/;
 const MERMAID_FLOW_DIRECTIONS = new Set(["TB", "TD", "BT", "RL", "LR"]);
 const MERMAID_DIAGRAM_TYPES = new Set(["sequenceDiagram", "classDiagram", "stateDiagram-v2", "erDiagram"]);
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
@@ -542,12 +541,12 @@ async function validateBody(
   await validateSourceFootnotes(page, footnotes, sources, roots, issues);
 
   for (const target of markdownTargets(footnotes.bodyWithoutDefinitions)) {
-    if (target.startsWith("repo:")) {
-      await validateSourceReference(page, target, roots, "repo citation", issues);
+    if (parseSourceCitation(target)) {
+      await validateSourceReference(page, target, roots, "source citation", issues);
       issue(
         issues,
         "source-reference",
-        `Direct repo citation must use a declared source footnote: ${target} — cite with [^id] in body and define [^id]: [Source](repo:...) instead of linking repo: in prose`,
+        `Direct source citation must use a declared source footnote: ${target} — cite with [^id] in body and define [^id]: [label](scope/path#Lx) instead of linking the source file in prose`,
         page,
       );
       continue;
@@ -582,7 +581,7 @@ async function validateSourceFootnotes(
       issue(
         issues,
         "source-reference",
-        `Source footnote definition is not declared in frontmatter sources: ${definition.id} — add { id: "${definition.id}", resource: "repo:..." } to frontmatter sources or remove the orphan definition`,
+        `Source footnote definition is not declared in frontmatter sources: ${definition.id} — add { id: "${definition.id}", resource: "scope/path#Lx" } to frontmatter sources or remove the orphan definition`,
         page,
       );
     }
@@ -593,7 +592,7 @@ async function validateSourceFootnotes(
       issue(
         issues,
         "source-reference",
-        `Source footnote reference is not declared in frontmatter sources: ${id} — add { id: "${id}", resource: "repo:..." } to frontmatter sources`,
+        `Source footnote reference is not declared in frontmatter sources: ${id} — add { id: "${id}", resource: "scope/path#Lx" } to frontmatter sources`,
         page,
       );
     }
@@ -601,7 +600,7 @@ async function validateSourceFootnotes(
       issue(
         issues,
         "source-reference",
-        `Source footnote reference has no definition: ${id} — add [^${id}]: [Source](repo:...) matching the frontmatter resource`,
+        `Source footnote reference has no definition: ${id} — add [^${id}]: [label](scope/path#Lx) matching the frontmatter resource`,
         page,
       );
     }
@@ -619,17 +618,19 @@ async function validateSourceFootnotes(
     }
     const definition = definitions.get(id);
     if (!definition) continue;
-    const resources = markdownTargetOccurrences(definition.content).filter((target) => target.startsWith("repo:"));
+    const resources = markdownTargetOccurrences(definition.content).filter((target) => parseSourceCitation(target));
     if (resources.length !== 1) {
       issue(
         issues,
         "source-reference",
-        `Source footnote definition must contain exactly one repo resource: ${id} — use exactly one [Source](repo:...) link in [^${id}]`,
+        `Source footnote definition must contain exactly one source link: ${id} — use exactly one [label](scope/path#Lx) link in [^${id}]`,
         page,
       );
       continue;
     }
-    if (resources[0] !== resource) {
+    const footnote = parseSourceCitation(resources[0]);
+    const declared = parseSourceCitation(resource);
+    if (!footnote || !declared || !sourceCitationsEqual(footnote, declared)) {
       await validateSourceReference(page, resources[0], roots, `source footnote ${id}`, issues);
       issue(
         issues,
@@ -650,7 +651,7 @@ async function validateSourceReference(
 ): Promise<void> {
   const parsed = parseSourceReference(reference);
   if (!parsed) {
-    issue(issues, "source-reference", `${label} must be repo:<scope>/<path>#Lx-Ly: ${reference}`, page);
+    issue(issues, "source-reference", `${label} must be <scope>/<path>#Lx: ${reference}`, page);
     return;
   }
   if (parsed.end < parsed.start) {
@@ -713,19 +714,9 @@ async function validateSourceFile(
 }
 
 function parseSourceReference(value: string): SourceRange | undefined {
-  const repository = REPOSITORY_CITATION.exec(value);
-  if (!repository) return undefined;
-  const match = SOURCE_REFERENCE.exec(repository[1]);
-  if (!match) return undefined;
-  const resourcePath = match[1];
-  const slash = resourcePath.indexOf("/");
-  if (slash < 1) return undefined;
-  const scopeId = resourcePath.slice(0, slash);
-  const remainder = resourcePath.slice(slash + 1);
-  if (!isWikiSourceSegment(scopeId)) return undefined;
-  const segments = remainder.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return undefined;
-  return { scopeId, path: remainder, start: Number(match[2]), end: Number(match[3] ?? match[2]) };
+  const parsed = parseSourceCitation(value);
+  if (!parsed) return undefined;
+  return { scopeId: parsed.scope, path: parsed.path, start: parsed.startLine, end: parsed.endLine };
 }
 
 function validateInternalMarkdownLink(

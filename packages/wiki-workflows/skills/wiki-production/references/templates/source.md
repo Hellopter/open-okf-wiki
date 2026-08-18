@@ -6,7 +6,7 @@ tags:
   - source
 sources:
   - id: source-overview
-    resource: repo:<source-relative-path>#L1-L1
+    resource: <scope>/<source-relative-path>#L1
 ---
 
 # Overview
@@ -15,4 +15,4 @@ sources:
 
 Source evidence.[^source-overview]
 
-[^source-overview]: [Source](repo:<source-relative-path>#L1-L1)
+[^source-overview]: [<file>](<scope>/<source-relative-path>#L1)
