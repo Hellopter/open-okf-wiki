@@ -47,6 +47,8 @@ export interface EvidenceHandoffValidationInput {
   contract: WikiDelegateContract;
   completedAssignmentIds?: readonly string[];
   followups?: readonly WikiResearchFollowupDraft[];
+  /** Optional line-count lookup for well-formed citations. Undefined skips the file check. */
+  fileLines?: (citation: EvidenceLedgerCitation) => number | "missing" | undefined;
 }
 
 export interface EvidenceHandoffInspection {
@@ -69,7 +71,7 @@ export function inspectEvidenceHandoff(input: EvidenceHandoffValidationInput): E
   if (!hasLevelOne) defects.push("missing level-one role heading");
   const missing = requiredHeadings(role).filter((heading) => !sections.includes(heading.slug));
   if (missing.length) defects.push(`missing headings: ${listed(missing.map((heading) => heading.display))}`);
-  const parsed = collectIndexes(lines);
+  const parsed = collectIndexes(lines, input.fileLines);
   defects.push(...parsed.defects);
   defects.push(...collectRoleIndexDefects(role, input.contract, parsed.indexes));
   if (defects.length) return { defects };
@@ -133,13 +135,15 @@ function collectSections(lines: string[]): { sections: string[]; hasLevelOne: bo
   return { sections, hasLevelOne: /^#\s+/.test(first) };
 }
 
-function collectIndexes(lines: string[]): { indexes: EvidenceLedgerIndexes; defects: string[] } {
+function collectIndexes(
+  lines: string[],
+  fileLines?: (citation: EvidenceLedgerCitation) => number | "missing" | undefined,
+): { indexes: EvidenceLedgerIndexes; defects: string[] } {
   const assignments: string[] = [];
   const pages: string[] = [];
   const findings: EvidenceLedgerFinding[] = [];
   const citations: EvidenceLedgerCitation[] = [];
-  const invalidCitations: string[] = [];
-  const invalidRanges: string[] = [];
+  const invalid: string[] = [];
   for (const line of lines) {
     for (const match of line.matchAll(/\bassignment:([A-Za-z0-9][A-Za-z0-9._-]{0,127})\b/g)) assignments.push(match[1]);
     for (const match of line.matchAll(/\bpage:([^\s,;)]+)\b/g)) pages.push(match[1]);
@@ -151,23 +155,35 @@ function collectIndexes(lines: string[]): { indexes: EvidenceLedgerIndexes; defe
     for (const token of citationTokens) {
       const match = /^repo:([^/\s]+)\/([^#\s]+)#L(\d+)-L(\d+)$/.exec(token);
       if (!match) {
-        invalidCitations.push(token);
+        invalid.push(`${token} need repo:scope/path#Lx-Ly`);
         continue;
       }
-      const startLine = Number(match[3]);
-      const endLine = Number(match[4]);
-      if (endLine < startLine) {
-        invalidRanges.push(token);
+      const citation: EvidenceLedgerCitation = {
+        scope: match[1],
+        path: match[2],
+        startLine: Number(match[3]),
+        endLine: Number(match[4]),
+      };
+      if (citation.endLine < citation.startLine) {
+        invalid.push(`${token} end<start`);
         continue;
       }
-      citations.push({ scope: match[1], path: match[2], startLine, endLine });
+      const file = fileLines?.(citation);
+      if (file === "missing") {
+        invalid.push(`${token} missing`);
+        continue;
+      }
+      if (typeof file === "number" && citation.endLine > file) {
+        invalid.push(`${token} ${citation.path.split("/").pop()}:${file} lines`);
+        continue;
+      }
+      citations.push(citation);
     }
     const remainder = line.replace(/\brepo:[^\s,)]+/g, "");
-    for (const match of remainder.matchAll(/[A-Za-z0-9._-]+\/[^#\s]+#L\d+-L\d+/g)) invalidCitations.push(match[0]);
+    for (const match of remainder.matchAll(/[A-Za-z0-9._-]+\/[^#\s]+#L\d+-L\d+/g)) {
+      invalid.push(`${match[0]} need repo:scope/path#Lx-Ly`);
+    }
   }
-  const defects: string[] = [];
-  if (invalidCitations.length) defects.push(`invalid citations: ${listed(invalidCitations)}`);
-  if (invalidRanges.length) defects.push(`invalid citation line ranges: ${listed(invalidRanges)}`);
   return {
     indexes: {
       assignmentIds: unique(assignments),
@@ -175,7 +191,7 @@ function collectIndexes(lines: string[]): { indexes: EvidenceLedgerIndexes; defe
       findings: uniqueFindings(findings),
       citations,
     },
-    defects,
+    defects: invalid.length ? [`invalid citations: ${listed(invalid)}`] : [],
   };
 }
 

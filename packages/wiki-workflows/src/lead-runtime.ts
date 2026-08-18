@@ -31,7 +31,8 @@ import {
   type WikiDelegateContract,
   type WikiResearchSignal,
 } from "./delegate-contracts.js";
-import { inspectEvidenceHandoff } from "./evidence-ledger.js";
+import { inspectEvidenceHandoff, type EvidenceLedgerCitation } from "./evidence-ledger.js";
+import { inside } from "./files.js";
 import { WikiRejectedError } from "./wiki-reject.js";
 import { decodeUtf8Fatal, inspectResearchHandoff, inspectReviewHandoff, summarizeWikiMarkdown } from "./wiki-work-files.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
@@ -56,7 +57,7 @@ import {
 } from "./lead.js";
 import { wikiToolRejected } from "./wiki-tool-error.js";
 import type { WikiReviewResult } from "./delegate-contracts.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { WikiAgentRole, WikiGenerationProfile } from "./workspace.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
@@ -462,6 +463,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
 
   async run(task: WikiDelegateContract, context: WikiLeafTaskContext): Promise<WikiLeafResult> {
     if (!this.options.sourcePlan) throw new Error("Pinned source plan is required for Wiki leaf execution");
+    const fileLines = evidenceFileLines(this.options.sourcePlan);
     const policy = pinnedWorkspaceToolPolicy(this.options.sourcePlan, context.candidateWikiRoot, this.options.skillRoot);
     const artifactHandoffs = Object.entries(context.contextArtifacts).map(([id, ref]) => {
       const file = path.resolve(policy.workspaceRoot, ref.relativePath);
@@ -493,7 +495,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
         const markdown = Buffer.from(bytes).toString("utf8");
         const parsed = inspectReviewHandoff(bytes, verdict, task.reviewPaths ?? []);
-        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task });
+        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task, fileLines });
         rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
         markdownSnapshot = markdown;
         review = parsed.result!;
@@ -504,7 +506,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
         const markdown = Buffer.from(bytes).toString("utf8");
         const parsed = inspectResearchHandoff(bytes, status, task.sourceScopeIds);
-        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task });
+        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task, fileLines });
         rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
         markdownSnapshot = markdown;
         researchSignal = parsed.signal!;
@@ -513,7 +515,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         if (writeFinished) throw new Error("wiki_write_finish may be accepted only once");
         const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
         const markdown = Buffer.from(bytes).toString("utf8");
-        rejectHandoffDefects(inspectEvidenceHandoff({ markdown, contract: task }).defects);
+        rejectHandoffDefects(inspectEvidenceHandoff({ markdown, contract: task, fileLines }).defects);
         markdownSnapshot = markdown;
         writeFinished = true;
       })] : []),
@@ -849,6 +851,21 @@ function withBoard<T extends object>(compactionObserved: boolean, value: T): T &
 
 function rejectHandoffDefects(defects: readonly string[]): void {
   if (defects.length) throw new WikiRejectedError(defects);
+}
+
+function evidenceFileLines(plan: WikiPinnedSourcePlan): (citation: EvidenceLedgerCitation) => number | "missing" | undefined {
+  return (citation) => {
+    const source = plan.sources.find((entry) => entry.scopeId === citation.scope);
+    if (!source) return undefined;
+    try {
+      const text = readFileSync(inside(source.realPath, path.resolve(source.realPath, ...citation.path.split("/"))), "utf8");
+      if (!text) return 0;
+      const lines = text.split(/\r?\n/).length;
+      return text.endsWith("\n") ? lines - 1 : lines;
+    } catch {
+      return "missing";
+    }
+  };
 }
 
 function rejectWikiTool(tool: string, error: unknown): never {

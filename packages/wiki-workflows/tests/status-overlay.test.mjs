@@ -83,6 +83,26 @@ function navigationColumn(lines, width) {
   }).join("\n");
 }
 
+test("process tab pins the latest activity to the inspector bottom", async () => {
+  const process = [
+    { sequence: 1, at: "2026-08-12T00:00:00.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: true },
+  ];
+  const { component } = await componentFor(handle({
+    async view() { return { ...view, progress: { ...view.progress, recentActivity: process } }; },
+  }), 24, { kind: "lead" }, { fg: (_color, text) => text }, { process: true });
+  const rendered = component.render(80).map((line) => plain(line));
+  const processRow = rendered.findIndex((line) => /read/.test(line) && /src\/a\.ts/.test(line));
+  const tabsRow = rendered.findIndex((line) => /\[Process\]/.test(line));
+  const contextRule = rendered.findIndex((line) => /context/.test(line) && /─/.test(line));
+  assert.ok(tabsRow >= 0, "expected process tabs");
+  assert.ok(processRow > tabsRow, "expected the process row below the tabs");
+  assert.ok(contextRule > processRow, "expected context chrome below the process row");
+  assert.ok(contextRule - processRow <= 2, `process row should sit on the bottom, gap=${contextRule - processRow}`);
+  const gap = rendered.slice(tabsRow + 2, processRow).filter((line) => !line.replace(/[│\s]/g, ""));
+  assert.ok(gap.length >= 3, `expected empty space above the latest process row, got ${gap.length}`);
+  component.dispose();
+});
+
 test("up arrow leaves the bottom after overscrolling or tailing", async () => {
   const process = Array.from({ length: 40 }, (_, index) => ({
     sequence: index,
@@ -98,7 +118,7 @@ test("up arrow leaves the bottom after overscrolling or tailing", async () => {
     async view() { return { ...view, progress: { ...view.progress, recentActivity: process } }; },
   }), 16, { kind: "lead" }, { fg: (_color, text) => text }, { process: true });
   await new Promise((resolve) => setImmediate(resolve));
-  component.render(80);
+  assert.match(plain(component.render(80).join("\n")), /tool-39/);
   for (let index = 0; index < 80; index += 1) component.handleInput("\u001b[B");
   assert.match(plain(component.render(80).join("\n")), /tool-39/);
   component.handleInput("\u001b[A");
@@ -290,6 +310,12 @@ test("long task ids and Chinese content remain within every rendered width", asy
   };
   const { theme } = recordingTheme();
   const { component } = await componentFor(handle({ async view() { return localized; } }), 24, undefined, theme);
+  component.handleInput("CONFIRM");
+  await new Promise((resolve) => setImmediate(resolve));
+  const zhFooter = plain(component.render(80).at(-1));
+  assert.match(zhFooter, /跟随/);
+  assert.doesNotMatch(zhFooter, /追尾|主理/);
+  component.handleInput("\u001b[D");
   for (const width of [36, 44, 80, 100, 120, 160]) {
     const rendered = component.render(width);
     assert.ok(rendered.some((line) => line.includes("\u001b[")), `expected ANSI styling at width ${width}`);

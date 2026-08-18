@@ -145,7 +145,7 @@ export function projectWikiRunObservability(view: WikiRunView, now = Date.now())
     health,
     liveness,
     leadPresent: Boolean(lead),
-    leadLabel: language === "zh" ? "主理" : "lead",
+    leadLabel: language === "zh" ? "主导" : "lead",
     leadMarker: leadView.marker,
     leadTone: leadView.tone,
     ...(leadView.detail ? { leadDetail: leadView.detail } : {}),
@@ -221,13 +221,11 @@ export function projectWikiAgentLines(
   const id = agent.target.kind === "lead" ? "lead" : `batch-${agent.target.batch}/${agent.target.taskId}`;
   const header = `Wiki ${inspection.runId}  ·  ${id}`;
   if (tab === "process") {
-    const lines: WikiTextLine[] = [[span(header, "primary", true), span("  ·  process", "muted")]];
-    if (inspection.process.length === 0) {
-      lines.push([span("process  ", "label"), span("unavailable for this agent", "muted")]);
-    } else {
-      for (const entry of inspection.process) lines.push(processLine(entry));
-    }
-    return lines;
+    const rows = projectWikiProcessLines(inspection.process);
+    return [
+      [span(header, "primary", true), span("  ·  process", "muted")],
+      ...(rows.length ? rows : [[span("process  ", "label"), span("unavailable for this agent", "muted")]]),
+    ];
   }
   if (tab === "output") {
     const output = inspection.handoff ?? agent.summary;
@@ -246,6 +244,10 @@ export function projectWikiAgentLines(
   if (context) lines.push(fieldLine("context", context, "primary"));
   if (agent.summary) lines.push([span("summary", "label")], ...textLines(`  ${agent.summary}`, "primary"));
   return lines;
+}
+
+export function projectWikiProcessLines(process: readonly WikiActivityEntry[]): WikiTextLine[] {
+  return process.map(processLine);
 }
 
 /** Cluster id from a path-like or `domain/concept` task id. Snapshots do not carry writePaths. */
@@ -402,7 +404,7 @@ function projectContextPressure(usage: WikiContextStats | undefined): WikiContex
 }
 
 function healthNotice(language: "zh" | "en"): string {
-  return language === "zh" ? "观测降级" : "observability degraded";
+  return language === "zh" ? "可观测性降级" : "observability degraded";
 }
 
 function silenceNotice(language: "zh" | "en", activityAge: string | undefined, heartbeatAge: string | undefined): string {
@@ -417,8 +419,8 @@ function quietActivity(activity: WikiAgentSnapshot["activity"] | undefined, lang
   }
   const zh: Partial<Record<WikiAgentSnapshot["activity"], string>> = {
     streaming: "生成中",
-    delegating: "协调委派",
-    synthesizing: "综合结果",
+    delegating: "委派中",
+    synthesizing: "汇总中",
     compacting: "压缩上下文",
     retry_wait: "等待重试",
     finishing: "收尾中",
@@ -448,7 +450,7 @@ function localizedStage(stage: WikiRunStage, language: "zh" | "en"): string {
 function localizedActivity(activity: string, language: "zh" | "en"): string {
   const key = activity.replaceAll("_", " ");
   if (language === "en") return key;
-  return ({ starting: "启动", waiting_model: "等待模型", streaming: "生成", using_tool: "使用工具", delegating: "委派", synthesizing: "整合", retry_wait: "等待重试", finishing: "收尾", settled: "完成", responding: "生成", tool: "使用工具", idle: "空闲", compacting: "压缩上下文" } as Record<string, string>)[activity] ?? key;
+  return ({ starting: "启动", waiting_model: "等待模型", streaming: "生成", using_tool: "使用工具", delegating: "委派", synthesizing: "汇总", retry_wait: "等待重试", finishing: "收尾", settled: "完成", responding: "生成", tool: "使用工具", idle: "空闲", compacting: "压缩上下文" } as Record<string, string>)[activity] ?? key;
 }
 
 function isLongWait(activityAt: string | undefined, heartbeatAt: string | undefined, now: number): boolean {

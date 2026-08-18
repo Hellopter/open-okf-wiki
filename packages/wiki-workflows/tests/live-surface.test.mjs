@@ -78,7 +78,7 @@ test("widget accepts Chinese labels for the live card", () => {
     },
   }));
   assert.deepEqual(lines, [
-    "◆ 主理  协调委派",
+    "◆ 主导  委派中",
     "批次 1  0/2",
     "  ◆ write  auth",
     "  ✓ review  old",

@@ -702,8 +702,9 @@ async function validateSourceFile(
       issue(issues, "source-reference", `${label} does not name a file: ${reference}`, page);
       return;
     }
-    if (lineCount(await readFile(physicalSource, "utf8")) < range.end) {
-      issue(issues, "source-reference", `${label} line range exceeds file: ${reference}`, page);
+    const lines = lineCount(await readFile(physicalSource, "utf8"));
+    if (lines < range.end) {
+      issue(issues, "source-reference", `${label} line range exceeds file (${lines} lines): ${reference}`, page);
     }
   } catch (error) {
     if (!isMissing(error)) throw error;

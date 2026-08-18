@@ -5,6 +5,7 @@ import {
   batchStatusSemantics,
   formatWikiContext,
   projectWikiAgentLines,
+  projectWikiProcessLines,
   runStatusSemantics,
   stageSemantics,
   wikiContextPressureTone,
@@ -73,7 +74,7 @@ function initialWikiOverlayState(input: { runId: string; initialTarget?: WikiAge
   return {
     kind: input.initialTarget ? "agent" : "run",
     cursor: 0,
-    fromBottom: INSPECTOR_TOP,
+    fromBottom: input.process ? 0 : INSPECTOR_TOP,
     runId: input.runId,
     target: input.initialTarget,
     tab: input.process ? "process" : "overview",
@@ -261,7 +262,10 @@ function createStatusOverlay(args: {
       const body = renderBody(state, view, current, matched, width, bodyRows, args.theme, now, warning, busy, markdownCache);
       const footer = overlayFooter(state, view.status, language);
       const stats = contextLine(current, view, language, args.theme);
-      const framed = frameWikiOverlay({ width, title: styledTitle(view, args.theme), body, stats, footer, theme: args.theme, viewport, fromBottom: state.fromBottom, fixedTop: FIXED_BODY_ROWS });
+      const framed = frameWikiOverlay({
+        width, title: styledTitle(view, args.theme), body: body.lines, stats, footer, theme: args.theme, viewport,
+        fromBottom: state.fromBottom, fixedTop: body.fixedTop, pinBottom: state.tab === "process",
+      });
       if (state.fromBottom > framed.maxScroll) state = { ...state, fromBottom: framed.maxScroll };
       cached = { width, viewport, lines: framed.lines };
       return framed.lines;
@@ -316,11 +320,11 @@ function renderBody(
   warning?: string,
   busy?: string,
   markdownCache?: MarkdownCache,
-): string[] {
+): { lines: string[]; fixedTop: number } {
   const elapsed = runElapsed(view, now);
   const header = `${stageRail(view, theme)}${elapsed ? paint(theme, "dim", `  [${elapsed}]`) : ""}`;
   const health = selected?.kind === "agent" && agentFromView(view, selected.target)?.health === "degraded"
-    ? view.progress?.language === "zh" ? "warning  观测降级" : "warning  observability degraded"
+    ? view.progress?.language === "zh" ? "warning  可观测性降级" : "warning  observability degraded"
     : undefined;
   const operation = busy ? paint(theme, "accent", busy) : warning ? paint(theme, "warning", `warning  ${warning}`) : "";
   const healthNotice = health ? paint(theme, "warning", health) : "";
@@ -330,10 +334,12 @@ function renderBody(
   const navigation = navigationWindow(navigationLines(view, state, theme), contentRows);
   if (state.kind === "run" && width >= 100) {
     const rightWidth = Math.max(1, contentWidth - NAV_WIDTH - visibleWidth(COLUMN_SEPARATOR));
-    return [...fixed, ...columns(navigation, inspectorLines(selected, inspection, state, view, now, theme, rightWidth, markdownCache), contentWidth, contentRows, theme)];
+    const preview = inspectorPanel(selected, inspection, state, view, now, theme, rightWidth, markdownCache);
+    return { lines: [...fixed, ...columns(navigation, [...preview.heading, ...preview.content], contentWidth, contentRows, theme)], fixedTop: FIXED_BODY_ROWS };
   }
-  if (state.kind === "run") return [...fixed, ...navigation.map((line) => renderNavRow(line, contentWidth, theme))];
-  return [...fixed, ...inspectorLines(selected, inspection, state, view, now, theme, contentWidth, markdownCache)];
+  if (state.kind === "run") return { lines: [...fixed, ...navigation.map((line) => renderNavRow(line, contentWidth, theme))], fixedTop: FIXED_BODY_ROWS };
+  const inspector = inspectorPanel(selected, inspection, state, view, now, theme, contentWidth, markdownCache);
+  return { lines: [...fixed, ...inspector.heading, ...inspector.content], fixedTop: FIXED_BODY_ROWS + inspector.heading.length };
 }
 
 type NavigationLine = { text: string; selected: boolean };
@@ -354,7 +360,7 @@ function navigationWindow(lines: NavigationLine[], rows: number): NavigationLine
   return lines.slice(start, start + rows);
 }
 
-function inspectorLines(
+function inspectorPanel(
   selected: NavTarget | undefined,
   inspection: WikiAgentInspection | undefined,
   state: WikiOverlayState,
@@ -363,45 +369,45 @@ function inspectorLines(
   theme: unknown,
   width: number,
   markdownCache?: MarkdownCache,
-): string[] {
+): { heading: string[]; content: string[] } {
   if (selected?.kind === "batch") {
-    return wrapLines(batchInspectorLines(view, selected.batch, theme), width);
+    return { heading: [], content: wrapLines(batchInspectorLines(view, selected.batch, theme), width) };
   }
   const agent = selected?.kind === "agent" ? agentFromView(view, selected.target) : undefined;
   const unavailable = selected?.kind === "agent" && selected.target.kind === "lead"
     ? paint(theme, "muted", "Leader starting. Agent details are not available.")
     : paint(theme, "muted", "Agent details are not available.");
-  if (!agent && state.kind === "run") return wrapLines([unavailable], width);
+  if (!agent && state.kind === "run") return { heading: [], content: wrapLines([unavailable], width) };
 
   const tabs = (["overview", "process", "output"] as const).map((tab) => state.tab === tab
     ? strong(theme, `[${tab[0]!.toUpperCase()}${tab.slice(1)}]`, "accent")
     : paint(theme, "dim", `[${tab}]`)).join("  ");
-  const heading = agent ? [tabs, liveAgentLine(agent, now, theme)] : [tabs];
+  const heading = wrapLines(agent ? [tabs, liveAgentLine(agent, now, theme)] : [tabs], width);
 
   if (state.tab === "process") {
     const process = selected?.kind === "agent" ? processFromView(view, selected.target) : [];
-    const empty = view.progress?.language === "zh" ? "暂无过程尾迹" : "no process tail";
+    const empty = view.progress?.language === "zh" ? "暂无过程记录" : "no process tail";
     if (process.length === 0 || !agent) {
-      return wrapLines([...heading, paint(theme, "muted", empty)], width);
+      return { heading, content: wrapLines([paint(theme, "muted", empty)], width) };
     }
-    return wrapLines([
-      ...heading,
-      ...projectWikiAgentLines({ runId: view.id, agent, process }, "process").map((line) => styleAgentLine(line, theme)),
-    ], width);
+    return {
+      heading,
+      content: wrapLines(projectWikiProcessLines(process).map((line) => styleAgentLine(line, theme)), width),
+    };
   }
 
-  if (!agent) return wrapLines([...heading, unavailable], width);
+  if (!agent) return { heading, content: wrapLines([unavailable], width) };
 
   if (state.tab === "output") {
     const matched = matchingInspection(selected, inspection);
     const output = matched?.handoff ?? matched?.agent.summary ?? agent.summary;
-    return [...wrapLines(heading, width), ...renderOutput(output, width, theme, markdownCache)];
+    return { heading, content: renderOutput(output, width, theme, markdownCache) };
   }
 
-  return wrapLines([
-    ...heading,
-    ...projectWikiAgentLines({ runId: view.id, agent, process: [] }, "overview").map((line) => styleAgentLine(line, theme)),
-  ], width);
+  return {
+    heading,
+    content: wrapLines(projectWikiAgentLines({ runId: view.id, agent, process: [] }, "overview").map((line) => styleAgentLine(line, theme)), width),
+  };
 }
 
 function batchInspectorLines(view: WikiRunView, batchId: number, theme: unknown): string[] {
@@ -549,7 +555,7 @@ function liveAgentLine(agent: WikiAgentSnapshot, now: number, theme: unknown): s
   return `${paint(theme, statusColor, presentation.marker)} ${paint(theme, statusColor, agent.status)} ${paint(theme, "text", `· ${parts[0] ?? ""}`)} ${parts.slice(1).map((part) => paint(theme, "dim", `· ${part}`)).join(" ")}`.trimEnd();
 }
 
-function frameWikiOverlay(input: { width: number; title: string; body: string[]; stats?: string; footer: string; theme?: unknown; viewport?: number; fromBottom?: number; fixedTop?: number }): { lines: string[]; maxScroll: number } {
+function frameWikiOverlay(input: { width: number; title: string; body: string[]; stats?: string; footer: string; theme?: unknown; viewport?: number; fromBottom?: number; fixedTop?: number; pinBottom?: boolean }): { lines: string[]; maxScroll: number } {
   const width = Math.max(8, Math.floor(input.width));
   const inner = Math.max(1, width - 2);
   const chrome = 2 + (input.stats ? 2 : 0);
@@ -561,7 +567,9 @@ function frameWikiOverlay(input: { width: number; title: string; body: string[];
   const maxScroll = Math.max(0, scrollable.length - scrollableViewport);
   const fromBottom = input.fromBottom === undefined ? maxScroll : clamp(input.fromBottom, 0, maxScroll);
   const scroll = maxScroll - fromBottom;
-  const visible = [...fixed, ...scrollable.slice(scroll, scroll + scrollableViewport)];
+  const slice = scrollable.slice(scroll, scroll + scrollableViewport);
+  const pad = input.pinBottom && fromBottom === 0 ? Math.max(0, scrollableViewport - slice.length) : 0;
+  const visible = [...fixed, ...Array.from({ length: pad }, () => ""), ...slice];
   while (visible.length < viewport) visible.push("");
   const border = (text: string) => paint(input.theme, "border", text);
   const mutedBorder = (text: string) => paint(input.theme, "borderMuted", text);
@@ -627,7 +635,7 @@ function styledTitle(view: WikiRunView, theme: unknown): string {
 function overlayFooter(state: WikiOverlayState, status: WikiRunView["status"], language: "zh" | "en"): string {
   const active = status === "running" || status === "paused";
   if (state.kind === "agent") return language === "zh"
-    ? `↑↓ 滚动  ←→ 页面  t 追尾  esc`
+    ? `↑↓ 滚动  ←→ 页面  t 跟随  esc`
     : `↑↓ scroll  ←→ pages  t tail  esc`;
   const controls = active
     ? status === "paused" ? language === "zh" ? "  r 恢复  x 取消" : "  r resume  x cancel" : language === "zh" ? "  p 暂停  x 取消" : "  p pause  x cancel"
@@ -638,7 +646,8 @@ function overlayFooter(state: WikiOverlayState, status: WikiRunView["status"], l
 function cycleAgentTab(state: WikiOverlayState, direction: 1 | -1): WikiOverlayState {
   const tabs: InspectorTab[] = ["overview", "process", "output"];
   const index = tabs.indexOf(state.tab);
-  return { ...state, tab: tabs[(index + direction + tabs.length) % tabs.length]!, fromBottom: INSPECTOR_TOP };
+  const tab = tabs[(index + direction + tabs.length) % tabs.length]!;
+  return { ...state, tab, fromBottom: tab === "process" ? 0 : INSPECTOR_TOP };
 }
 
 function padLine(value: string, width: number): string { const clipped = truncateToWidth(value, width, "...", true); return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped))); }

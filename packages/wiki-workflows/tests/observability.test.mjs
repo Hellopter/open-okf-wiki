@@ -75,8 +75,8 @@ test("run projection includes batch, task lines, tool outcomes, context pressure
   assert.equal(projected.health, "healthy");
   assert.equal(projected.liveness, "quiet");
   assert.equal(projected.activityLabel, "batch 2 · 1/3");
-  assert.equal(projected.leadLabel, "主理");
-  assert.equal(projected.leadDetail, "协调委派");
+  assert.equal(projected.leadLabel, "主导");
+  assert.equal(projected.leadDetail, "委派中");
   assert.equal(projected.batch?.batch, 2);
   assert.equal(projected.batch?.label, "批次");
   assert.equal(projected.batch?.countLabel, "1/3");

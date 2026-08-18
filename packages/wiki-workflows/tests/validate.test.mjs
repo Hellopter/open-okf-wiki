@@ -427,7 +427,7 @@ test("returns precisely routed issues for missing pages, frontmatter, evidence, 
   assert.deepEqual(result.issues, [
     { code: "frontmatter", page: "api/core/broken/concept.md", message: "Frontmatter requires a non-empty description" },
     { code: "frontmatter", page: "api/core/broken/concept.md", message: "Frontmatter tags must be a non-empty string array" },
-    { code: "source-reference", page: "api/core/broken/concept.md", message: "frontmatter source broken-source line range exceeds file: repo:api/src/index.ts#L3-L3" },
+    { code: "source-reference", page: "api/core/broken/concept.md", message: "frontmatter source broken-source line range exceeds file (2 lines): repo:api/src/index.ts#L3-L3" },
     { code: "internal-link", page: "api/core/broken/concept.md", message: "Internal Markdown link target is not in the target Wiki: ./not-planned.md" },
     { code: "missing-page", page: "api/core/missing/modules.md", message: "Target page is missing: api/core/missing/modules.md" },
     { code: "wiki-index", page: "api/core/broken/index.md", message: "Required Wiki index is missing: api/core/broken/index.md" },

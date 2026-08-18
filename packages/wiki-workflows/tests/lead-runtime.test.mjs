@@ -556,7 +556,7 @@ test("Pi research finish rejects an invalid citation and accepts a same-session 
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff().replace("repo:source/a.ts#L1-L1", "source/a.ts#L1-L1") });
-      await assert.rejects(execute(options.customTools, "wiki_research_finish", { status: "complete" }), /wiki_research_finish rejected:.*invalid citations: source\/a\.ts#L1-L1/);
+      await assert.rejects(execute(options.customTools, "wiki_research_finish", { status: "complete" }), /wiki_research_finish rejected:.*invalid citations: source\/a\.ts#L1-L1 need repo:scope\/path#Lx-Ly/);
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
       await execute(options.customTools, "wiki_research_finish", { status: "complete" });
     })(options),
@@ -567,6 +567,28 @@ test("Pi research finish rejects an invalid citation and accepts a same-session 
   );
   assert.equal(result.status, "complete");
   assert.match(result.markdown, /repo:source\/a\.ts#L1-L1/);
+});
+
+test("Pi research finish names a citation that exceeds the source file", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const agent = new PiWikiLeafAgent({
+    sourcePlan: pinnedPlan(root),
+    skillRoot,
+    createSession: async (options) => sessionFactory(async () => {
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff().replace("repo:source/a.ts#L1-L1", "repo:source/a.ts#L8-L8") });
+      await assert.rejects(
+        execute(options.customTools, "wiki_research_finish", { status: "complete" }),
+        /wiki_research_finish rejected:.*invalid citations: repo:source\/a\.ts#L8-L8 a\.ts:1 lines/,
+      );
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
+      await execute(options.customTools, "wiki_research_finish", { status: "complete" });
+    })(options),
+  });
+  const result = await agent.run(
+    { id: "survey", role: "research", instruction: "Survey source", sourceScopeIds: ["source"], contextRefs: [], mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [] },
+    leafContext(root, candidateWikiRoot),
+  );
+  assert.equal(result.status, "complete");
 });
 
 test("Pi review finish rejects a missing Evidence heading and accepts a same-session rewrite", async (t) => {
@@ -609,7 +631,7 @@ test("Pi research finish reports every named defect from one rejected finish", a
           assert.match(error.message, /wiki_research_finish rejected:/);
           assert.match(error.message, /unknown fields: summary/);
           assert.match(error.message, /missing headings: Scope/);
-          assert.match(error.message, /invalid citations: source\/a\.ts#L1-L1/);
+          assert.match(error.message, /invalid citations: source\/a\.ts#L1-L1 need repo:scope\/path#Lx-Ly/);
           assert.match(error.message, /undeclared assignment IDs: forged \(declared: assignment-1\)/);
           return true;
         },

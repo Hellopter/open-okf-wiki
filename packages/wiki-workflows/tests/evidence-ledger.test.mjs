@@ -121,8 +121,8 @@ test("EvidenceLedger collects headings, citations, scopes, and assignment IDs to
   const inspected = inspectEvidenceHandoff({ markdown, contract });
   assert.ok(inspected.defects.includes("missing level-one role heading"));
   assert.match(inspected.defects.join("; "), /missing headings: Research Handoff, Scope, Conflicts and alternatives, Gaps and failed reads/);
-  assert.match(inspected.defects.join("; "), /invalid citations: source\/a\.ts#L1-L1/);
-  assert.match(inspected.defects.join("; "), /invalid citation line ranges: repo:source-a\/file\.ts#L9-L2/);
+  assert.match(inspected.defects.join("; "), /invalid citations: source\/a\.ts#L1-L1 need repo:scope\/path#Lx-Ly/);
+  assert.match(inspected.defects.join("; "), /repo:source-a\/file\.ts#L9-L2 end<start/);
   assert.match(inspected.defects.join("; "), /citation scopes outside pinned scopes: foo \(allowed: source-a, source-b\)/);
   assert.match(inspected.defects.join("; "), /undeclared assignment IDs: a3 \(declared: a1, a2\)/);
   assert.equal(inspected.indexes, undefined);
@@ -136,6 +136,32 @@ test("EvidenceLedger collects headings, citations, scopes, and assignment IDs to
       return true;
     },
   );
+});
+
+test("EvidenceLedger names why a citation is invalid without repeating the file body", () => {
+  const contract = createWikiDelegateContract(1, {
+    id: "task", role: "research", instruction: "Survey", sourceScopeIds: ["source"], contextRefs: [],
+    mode: "discovery", assignmentIds: ["assignment-1"], domainScopeIds: [], lensScopeIds: [], resolvesIds: [],
+  });
+  const markdown = [
+    "# Research Handoff", "## Scope", "ok", "## Coverage", "ok",
+    "## Conflicts and alternatives", "None", "## Gaps and failed reads", "None",
+    "## Evidence",
+    "source/a.ts#L1-L1",
+    "repo:source/missing.ts#L1-L1",
+    "repo:source/a.ts#L9-L12",
+    "repo:source/a.ts#L1-L1",
+  ].join("\n");
+  const inspected = inspectEvidenceHandoff({
+    markdown,
+    contract,
+    fileLines: (citation) => citation.path === "a.ts" ? 2 : "missing",
+  });
+  const defects = inspected.defects.join("; ");
+  assert.match(defects, /source\/a\.ts#L1-L1 need repo:scope\/path#Lx-Ly/);
+  assert.match(defects, /repo:source\/missing\.ts#L1-L1 missing/);
+  assert.match(defects, /repo:source\/a\.ts#L9-L12 a\.ts:2 lines/);
+  assert.doesNotMatch(defects, /export const|function |# Research Handoff/);
 });
 
 test("EvidenceLedger accepts the Skill-format write completion handoff", () => {
